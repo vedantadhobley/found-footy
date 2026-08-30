@@ -209,10 +209,10 @@ func ActivePollWorkflow(ctx workflow.Context, in ActivePollWorkflowInput) (Activ
 	var removedEventIDs []uuid.UUID
 	var newNamedEventIDs []uuid.UUID
 	var providerVerdicts []providerintegrity.FixtureVerdict
-	// N5: partition this cycle's reconciles into the two disjoint fixture
-	// subjects — structural wins (a structural fixture rides its fresh clock in
-	// its full refetch), so a fixture is never in both.
-	var clockEntries []livefeedactivity.FixtureClockEntry
+	// Partition each reconcile into one disjoint live-feed route. An
+	// authoritative update wins inside ReconcileFixture, so a fixture cannot
+	// appear in both batches.
+	var presentationEntries []livefeedactivity.FixturePresentationEntry
 	var updateIDs []int64
 	for _, f := range reconcileFutures {
 		var reconcileOut monitor.ReconcileFixtureOutput
@@ -238,14 +238,13 @@ func ActivePollWorkflow(ctx workflow.Context, in ActivePollWorkflowInput) (Activ
 				"natural_keys", reconcileOut.GoalAbsencesHeld)
 		}
 
-		switch {
-		case reconcileOut.Structural:
+		switch reconcileOut.FeedAction {
+		case monitor.FixtureFeedUpdate:
 			updateIDs = append(updateIDs, reconcileOut.FixtureID)
-		case reconcileOut.ClockChanged:
-			clockEntries = append(clockEntries, livefeedactivity.FixtureClockEntry{
-				FixtureID: reconcileOut.FixtureID,
-				Minute:    reconcileOut.Minute,
-				Extra:     reconcileOut.Extra,
+		case monitor.FixtureFeedPresentation:
+			presentationEntries = append(presentationEntries, livefeedactivity.FixturePresentationEntry{
+				FixtureID:  reconcileOut.FixtureID,
+				Projection: reconcileOut.Presentation,
 			})
 		}
 	}
@@ -319,18 +318,18 @@ func ActivePollWorkflow(ctx workflow.Context, in ActivePollWorkflowInput) (Activ
 	}
 
 	// ── Step 5: live-feed batch emit (N5) ──
-	// One PublishFixtureBatch per cycle: fixture.clock (inline ticks) +
+	// One PublishFixtureBatch per cycle: fixture.presentation (inline status) +
 	// fixture.update (ids to bulk-refetch). Best-effort — a lost batch heals on
 	// the consumer's next window refetch. Activation (staging→active) is not
-	// emitted here: the kickoff status-flip is captured as Structural on the
+	// emitted here: the kickoff status flip selects fixture.update on the
 	// fixture's first live reconcile, and it rides the window fetch meanwhile.
-	if len(clockEntries) > 0 || len(updateIDs) > 0 {
+	if len(presentationEntries) > 0 || len(updateIDs) > 0 {
 		emitCtx := workflow.WithActivityOptions(ctx, workflow.ActivityOptions{
 			StartToCloseTimeout: 15 * time.Second,
 			RetryPolicy:         baseAO.RetryPolicy,
 		})
 		if err := workflow.ExecuteActivity(emitCtx, "PublishFixtureBatch",
-			livefeedactivity.FixtureBatchInput{Clock: clockEntries, UpdateIDs: updateIDs}).Get(emitCtx, nil); err != nil {
+			livefeedactivity.FixtureBatchInput{Presentation: presentationEntries, UpdateIDs: updateIDs}).Get(emitCtx, nil); err != nil {
 			logger.Warn("PublishFixtureBatch failed (heals on refetch)", "error", err)
 			out.Errors = append(out.Errors, "PublishFixtureBatch: "+err.Error())
 		}

@@ -2,6 +2,7 @@
 package api
 
 import (
+	"encoding/json"
 	"testing"
 	"time"
 
@@ -77,6 +78,42 @@ func TestToPenaltyDTO(t *testing.T) {
 	got := toPenaltyDTO(p(5), p(6))
 	if got == nil || got.Home != 5 || got.Away != 6 {
 		t.Errorf("shootout → {5,6}, got %+v", got)
+	}
+}
+
+func TestToFixtureDTOEmbedsPresentationProjection(t *testing.T) {
+	minute := 62
+	f := fixture.New(
+		1530158,
+		fixture.APIStatus{Short: "2h", Long: "Second Half"},
+		time.Date(2026, 8, 30, 18, 0, 0, 0, time.UTC),
+		fixture.Team{ID: 1, Name: "Home"},
+		fixture.Team{ID: 2, Name: "Away"},
+		fixture.League{ID: 3, Name: "League", Season: 2026},
+	)
+	f.APIElapsed = &minute
+
+	body, err := json.Marshal(toFixtureDTO(f, nil, nil))
+	if err != nil {
+		t.Fatalf("marshal fixture DTO: %v", err)
+	}
+	var got map[string]any
+	if err := json.Unmarshal(body, &got); err != nil {
+		t.Fatalf("unmarshal fixture DTO: %v", err)
+	}
+	if got["presentation_state"] != "playing" || got["display"] != "clock" {
+		t.Fatalf("presentation fields = state %v display %v, want playing/clock", got["presentation_state"], got["display"])
+	}
+	clock, ok := got["clock"].(map[string]any)
+	if !ok || clock["minute"] != float64(62) {
+		t.Fatalf("clock = %#v, want minute 62", got["clock"])
+	}
+	status, ok := got["status"].(map[string]any)
+	if !ok || status["short"] != "2H" || status["long"] != "Second Half" {
+		t.Fatalf("status = %#v, want normalized 2H/Second Half", got["status"])
+	}
+	if _, exists := status["elapsed"]; exists {
+		t.Fatal("status retained legacy elapsed field; clock must be the only clock projection")
 	}
 }
 

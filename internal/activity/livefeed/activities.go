@@ -13,6 +13,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/vedantadhobley/found-footy/internal/contract/fixturepresentation"
 	"github.com/vedantadhobley/found-footy/internal/infra/event"
 )
 
@@ -20,7 +21,7 @@ import (
 // *event.NatsPublisher; an interface so tests inject a fake without a bus.
 type publisher interface {
 	PublishEventVideo(eventID uuid.UUID, fixtureID int64) error
-	PublishFixtureClock(fixtures []event.FixtureClock) error
+	PublishFixturePresentation(fixtures []event.FixturePresentation) error
 	PublishFixtureUpdate(fixtureIDs []int64) error
 }
 
@@ -49,35 +50,36 @@ func (a *Activities) PublishEventVideo(_ context.Context, in EventVideoInput) er
 	return a.Pub.PublishEventVideo(in.EventID, in.FixtureID)
 }
 
-// FixtureClockEntry is one live clock tick in a batch — the activity-layer
-// mirror of event.FixtureClock, kept here so the ActivePoll workflow can build
-// the batch without importing infra (activities are the boundary).
-type FixtureClockEntry struct {
+// FixturePresentationEntry is one inline projection in a batch. The workflow
+// carries the shared contract type without importing the NATS adapter.
+type FixturePresentationEntry struct {
 	FixtureID int64
-	Minute    int
-	Extra     *int
+	fixturepresentation.Projection
 }
 
 // FixtureBatchInput is one ActivePoll cycle's disjoint partition: fixtures whose
-// only change was the clock (Clock) and fixtures with a structural change
-// (UpdateIDs). Either may be empty; the publisher skips an empty subject.
+// inline projection changed (Presentation) and fixtures requiring an
+// authoritative snapshot (UpdateIDs). Either may be empty.
 type FixtureBatchInput struct {
-	Clock     []FixtureClockEntry
-	UpdateIDs []int64
+	Presentation []FixturePresentationEntry
+	UpdateIDs    []int64
 }
 
 // PublishFixtureBatch emits both fixture subjects for one poll cycle:
-// fixture.clock (the inline ticks) + fixture.update (the ids to bulk-refetch).
+// fixture.presentation (inline projection) + fixture.update (ids to refetch).
 // Best-effort at the caller, but both publishes are attempted and any error is
 // returned so Temporal retries — a re-published batch is harmless (a re-tick or
 // a re-signal the consumer refetches idempotently).
 func (a *Activities) PublishFixtureBatch(_ context.Context, in FixtureBatchInput) error {
-	clock := make([]event.FixtureClock, 0, len(in.Clock))
-	for _, c := range in.Clock {
-		clock = append(clock, event.FixtureClock{FixtureID: c.FixtureID, Minute: c.Minute, Extra: c.Extra})
+	presentations := make([]event.FixturePresentation, 0, len(in.Presentation))
+	for _, projection := range in.Presentation {
+		presentations = append(presentations, event.FixturePresentation{
+			FixtureID:  projection.FixtureID,
+			Projection: projection.Projection,
+		})
 	}
 	return errors.Join(
-		a.Pub.PublishFixtureClock(clock),
+		a.Pub.PublishFixturePresentation(presentations),
 		a.Pub.PublishFixtureUpdate(in.UpdateIDs),
 	)
 }

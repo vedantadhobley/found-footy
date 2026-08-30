@@ -8,6 +8,7 @@ package api
 import (
 	"time"
 
+	"github.com/vedantadhobley/found-footy/internal/contract/fixturepresentation"
 	"github.com/vedantadhobley/found-footy/internal/domain/event"
 	"github.com/vedantadhobley/found-footy/internal/domain/fixture"
 	"github.com/vedantadhobley/found-footy/internal/domain/video"
@@ -38,14 +39,6 @@ type leagueDTO struct {
 type penaltyDTO struct {
 	Home int `json:"home"`
 	Away int `json:"away"`
-}
-
-// statusDTO is the API-reported match status. Elapsed/extra are the live clock.
-type statusDTO struct {
-	Short   string `json:"short"`
-	Long    string `json:"long"`
-	Elapsed *int   `json:"elapsed"`
-	Extra   *int   `json:"extra"`
 }
 
 type teamRefDTO struct {
@@ -94,14 +87,16 @@ type eventDTO struct {
 }
 
 type fixtureDTO struct {
-	ID             int64       `json:"id"`
-	State          string      `json:"state"`
-	Kickoff        time.Time   `json:"kickoff"`
+	ID      int64     `json:"id"`
+	State   string    `json:"state"`
+	Kickoff time.Time `json:"kickoff"`
+	// Projection is embedded so REST and fixture.presentation expose the
+	// identical presentation_state/clock/status/display field set.
+	fixturepresentation.Projection
 	League         leagueDTO   `json:"league"`
 	Home           sideDTO     `json:"home"`
 	Away           sideDTO     `json:"away"`
 	Penalty        *penaltyDTO `json:"penalty"` // shootout result; null when no shootout
-	Status         statusDTO   `json:"status"`
 	LastActivityAt *time.Time  `json:"last_activity_at"`
 	Events         []eventDTO  `json:"events"`
 }
@@ -152,18 +147,17 @@ func toEventDTO(e *event.Event, videos []videoDTO, discoveryComplete bool) event
 // the domain events, since eventDTO doesn't carry first_seen_at.
 func toFixtureDTO(f *fixture.Fixture, events []eventDTO, lastActivityAt *time.Time) fixtureDTO {
 	return fixtureDTO{
-		ID: f.ID, State: string(f.State), Kickoff: f.Kickoff,
+		ID:         f.ID,
+		State:      string(f.State),
+		Kickoff:    f.Kickoff,
+		Projection: fixturepresentation.From(f.APIStatus, f.APIElapsed, f.APIExtra),
 		League: leagueDTO{
 			ID: f.League.ID, Name: f.League.Name, Season: f.League.Season,
 			Country: f.League.Country, Round: f.League.Round,
 		},
-		Home:    sideDTO{ID: f.Home.ID, Name: f.Home.Name, Score: f.HomeScore, Winner: f.HomeWinner},
-		Away:    sideDTO{ID: f.Away.ID, Name: f.Away.Name, Score: f.AwayScore, Winner: f.AwayWinner},
-		Penalty: toPenaltyDTO(f.HomePenalty, f.AwayPenalty),
-		Status: statusDTO{
-			Short: string(f.APIStatus.Short), Long: f.APIStatus.Long,
-			Elapsed: f.APIElapsed, Extra: f.APIExtra,
-		},
+		Home:           sideDTO{ID: f.Home.ID, Name: f.Home.Name, Score: f.HomeScore, Winner: f.HomeWinner},
+		Away:           sideDTO{ID: f.Away.ID, Name: f.Away.Name, Score: f.AwayScore, Winner: f.AwayWinner},
+		Penalty:        toPenaltyDTO(f.HomePenalty, f.AwayPenalty),
 		LastActivityAt: lastActivityAt,
 		Events:         ensureEvents(events),
 	}

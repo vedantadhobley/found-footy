@@ -70,11 +70,27 @@ between `null` and zero.
   "home": { "id": 505, "name": "Inter", "score": 2, "winner": true },
   "away": { "id": 489, "name": "Milan", "score": 1, "winner": false },
   "penalty": null,
-  "status": { "short": "2H", "long": "Second Half", "elapsed": 62, "extra": null },
+  "presentation_state": "playing",
+  "clock": { "minute": 62, "extra": null },
+  "status": { "short": "2H", "long": "Second Half" },
+  "display": "clock",
   "last_activity_at": "2026-08-14T16:47:30Z",
   "events": []
 }
 ```
+
+The fixture presentation is backend-derived. `presentation_state` is one of
+`playing`, `finished`, `upcoming`, or `deferred`; it controls consumer grouping
+and is not the Postgres `state` (`staging`, `active`, or `completed`). In
+particular, an `FT` fixture presents as finished during its one-hour active
+observation grace, and a monitored `PST` fixture presents as deferred.
+
+`display` is `clock` only for `1H`, `2H`, `ET`, or `LIVE` with a reported
+minute. Every pause, shootout, scheduled, terminal, deferred, and unknown
+status uses `status`. The consumer formats `clock.minute` plus `clock.extra` or
+renders `status.short`; it never maps provider codes. `status.long` is the
+provider description for accessibility and expanded context. Clock values
+remain nullable, and an unknown provider status fails closed to deferred/status.
 
 `last_activity_at` is derived at read time from activation, first terminal
 observation, and the latest first-seen time among surviving known-player
@@ -139,8 +155,8 @@ environment, such as `found-footy.prod.>`, rather than mixing dev and prod.
 
 | Wire subject | Payload | Consumer action |
 |---|---|---|
-| `found-footy.<env>.fixture.clock` | `{"fixtures":[{"fixture_id":1530158,"minute":62,"extra":null}]}` | Apply the clock fields in place. Do not fetch. |
-| `found-footy.<env>.fixture.update` | `{"fixture_ids":[1530158,1530163]}` | Fetch `/api/v1/fixtures?ids=1530158,1530163`; replace by fixture ID and re-bucket by state. |
+| `found-footy.<env>.fixture.presentation` | `{"fixtures":[{"fixture_id":1530158,"presentation_state":"playing","clock":{"minute":62,"extra":null},"status":{"short":"2H","long":"Second Half"},"display":"clock"}]}` | Replace the fixture's complete presentation projection in place. Do not fetch. |
+| `found-footy.<env>.fixture.update` | `{"fixture_ids":[1530158,1530163]}` | Fetch `/api/v1/fixtures?ids=1530158,1530163`; replace by fixture ID and re-bucket by `presentation_state`. |
 | `found-footy.<env>.event.video` | `{"event_id":"<uuid>","fixture_id":1530158}` | Fetch `/api/v1/events?ids=<uuid>`; replace the event inside its fixture. Emitted after any accepted placement changes membership or a ranking input, including popularity-only duplicates. |
 
 Every payload is wrapped in the version-1 workspace envelope:
@@ -156,10 +172,13 @@ Every payload is wrapped in the version-1 workspace envelope:
 }
 ```
 
-Within one monitor cycle, `fixture.clock` and `fixture.update` are disjoint.
-Any structural change wins and its current clock arrives in the full fixture
-refetch. A frozen clock emits nothing. `event.video` is asynchronous and can
-arrive after the fixture completes.
+Within one monitor cycle, `fixture.presentation` and `fixture.update` are
+disjoint. A presentation-state boundary or any score, event, winner, penalty,
+metadata, or completion change selects `fixture.update`. A minute change or a
+status change that remains in one presentation state selects
+`fixture.presentation`; this includes `1H -> HT -> 2H` and `ET -> BT -> ET`.
+An identical frozen projection emits nothing. `event.video` is asynchronous
+and can arrive after the fixture completes.
 
 The publisher uses core NATS, not a durable JetStream consumer contract. A
 consumer must take a full `GET /api/v1/fixtures` snapshot on initial connection,
@@ -174,10 +193,34 @@ REST. Applying the same refetch more than once must be harmless.
   clip count.
 - `player: null` is a valid unknown-player event. It is not searched until the
   provider supplies a player identity.
-- `score`, `elapsed`, `extra`, and `penalty` use `null` for not-reported. A
+- `score`, `clock.minute`, `clock.extra`, and `penalty` use `null` for
+  not-reported. A
   normal or extra-time `winner` is derived from the current score; a terminal
   shootout uses `penalty`. A tie or incomplete relevant score returns
   `winner: null` for both sides. Exceptional terminal outcomes use the
   provider's explicit result. Do not render any `null` as zero.
 - `video.url` is opaque. Follow the redirect; do not retain or parse the
   presigned target.
+
+## Vedanta Systems handoff
+
+This contract deliberately removes API-Football status interpretation from the
+BFF and React. The consumer change must:
+
+1. consume `presentation_state`, `clock`, `status`, and `display` from REST;
+2. forward `fixture.presentation` as one inline SSE projection and replace
+   those four fields by fixture ID;
+3. preserve and union the IDs in bursty `fixture.update` messages, call
+   `/api/v1/fixtures?ids=...`, then replace and re-order only those fixtures;
+4. use `presentation_state` for grouping, live badges, and finished winner
+   highlighting; use non-null `penalty` for shootout score formatting; and
+5. retain a full fixture snapshot on initial load and every browser or NATS
+   reconnect because Core NATS and SSE do not replay missed hints.
+
+The current BFF discards `fixture.update.fixture_ids` and turns both update and
+video subjects into a generic full-window refresh. That is consumer drift, not
+the producer contract. The shared schema owner under
+`~/workspace/nats/schemas/` must replace the fixture-clock schema, example, and
+README entry with `fixture.presentation` before the coordinated production
+rollout. Found Footy's committed golden is
+`internal/infra/event/testdata/found-footy.fixture.presentation.json`.

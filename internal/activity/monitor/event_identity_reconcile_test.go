@@ -338,9 +338,9 @@ func TestReconcileFixture_ClockCorrectionKeepsNaturalKey(t *testing.T) {
 	if err != nil {
 		t.Fatalf("corrected poll: %v", err)
 	}
-	if out.NewEventsDetected != 0 || len(out.EventsRemoved) != 0 || !out.Structural {
-		t.Fatalf("correction result = new %d removed %v structural %v",
-			out.NewEventsDetected, out.EventsRemoved, out.Structural)
+	if out.NewEventsDetected != 0 || len(out.EventsRemoved) != 0 || out.FeedAction != FixtureFeedUpdate {
+		t.Fatalf("correction result = new %d removed %v feed_action %q",
+			out.NewEventsDetected, out.EventsRemoved, out.FeedAction)
 	}
 	stored, err := eRepo.GetByNaturalKey(context.Background(), 1564904, "40_111_goal_1")
 	if err != nil {

@@ -10,15 +10,16 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/vedantadhobley/found-footy/internal/contract/fixturepresentation"
 	"github.com/vedantadhobley/found-footy/internal/infra/event"
 )
 
 // fakePublisher records calls + returns a configurable error.
 type fakePublisher struct {
-	calls         []EventVideoInput
-	clockBatches  [][]event.FixtureClock
-	updateBatches [][]int64
-	err           error
+	calls               []EventVideoInput
+	presentationBatches [][]event.FixturePresentation
+	updateBatches       [][]int64
+	err                 error
 }
 
 func (f *fakePublisher) PublishEventVideo(eventID uuid.UUID, fixtureID int64) error {
@@ -26,8 +27,8 @@ func (f *fakePublisher) PublishEventVideo(eventID uuid.UUID, fixtureID int64) er
 	return f.err
 }
 
-func (f *fakePublisher) PublishFixtureClock(fixtures []event.FixtureClock) error {
-	f.clockBatches = append(f.clockBatches, fixtures)
+func (f *fakePublisher) PublishFixturePresentation(fixtures []event.FixturePresentation) error {
+	f.presentationBatches = append(f.presentationBatches, fixtures)
 	return f.err
 }
 
@@ -63,22 +64,34 @@ func TestPublishEventVideoSurfacesError(t *testing.T) {
 }
 
 // TestPublishFixtureBatchForwards confirms the batch activity converts the
-// activity-layer clock entries to event.FixtureClock and forwards both subjects.
+// activity-layer projection entries to event.FixturePresentation and forwards
+// both subjects.
 func TestPublishFixtureBatchForwards(t *testing.T) {
 	f := &fakePublisher{}
 	a := &Activities{Pub: f}
 	in := FixtureBatchInput{
-		Clock:     []FixtureClockEntry{{FixtureID: 1530158, Minute: 62, Extra: nil}},
+		Presentation: []FixturePresentationEntry{{
+			FixtureID: 1530158,
+			Projection: fixturepresentation.Projection{
+				PresentationState: fixturepresentation.StatePlaying,
+				Clock:             fixturepresentation.Clock{Minute: intp(62)},
+				Status:            fixturepresentation.Status{Short: "2H", Long: "Second Half"},
+				Display:           fixturepresentation.DisplayClock,
+			},
+		}},
 		UpdateIDs: []int64{1530162, 1530163},
 	}
 	if err := a.PublishFixtureBatch(context.Background(), in); err != nil {
 		t.Fatalf("PublishFixtureBatch: %v", err)
 	}
-	if len(f.clockBatches) != 1 || len(f.clockBatches[0]) != 1 ||
-		f.clockBatches[0][0].FixtureID != 1530158 || f.clockBatches[0][0].Minute != 62 {
-		t.Errorf("clock batch = %+v, want one {1530158, 62}", f.clockBatches)
+	if len(f.presentationBatches) != 1 || len(f.presentationBatches[0]) != 1 ||
+		f.presentationBatches[0][0].FixtureID != 1530158 ||
+		*f.presentationBatches[0][0].Clock.Minute != 62 {
+		t.Errorf("presentation batch = %+v, want fixture 1530158 at minute 62", f.presentationBatches)
 	}
 	if len(f.updateBatches) != 1 || len(f.updateBatches[0]) != 2 {
 		t.Errorf("update batch = %+v, want one [1530162 1530163]", f.updateBatches)
 	}
 }
+
+func intp(value int) *int { return &value }

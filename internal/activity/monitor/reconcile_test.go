@@ -39,9 +39,8 @@ func TestReconcileFixture_NewGoalInserted_CountIs1(t *testing.T) {
 	if len(out.EventsBecameStable) != 0 {
 		t.Errorf("EventsBecameStable = %v, want empty (count is 1, not 3)", out.EventsBecameStable)
 	}
-	// A goal is a structural change (new event + a score move).
-	if !out.Structural {
-		t.Error("Structural = false, want true (a goal was inserted)")
+	if out.FeedAction != FixtureFeedUpdate {
+		t.Errorf("FeedAction = %q, want update after goal insertion", out.FeedAction)
 	}
 }
 
@@ -123,9 +122,9 @@ func pi(n int) *int { return &n }
 
 func stringp(value string) *string { return &value }
 
-// TestReconcileFixture_ClockAdvance_ClockOnly — the minute advances and nothing
-// else: ClockChanged, NOT Structural. This is the fixture.clock tick case.
-func TestReconcileFixture_ClockAdvance_ClockOnly(t *testing.T) {
+// TestReconcileFixture_ClockAdvance_PresentationOnly proves a clock tick uses
+// the inline fixture.presentation route.
+func TestReconcileFixture_ClockAdvance_PresentationOnly(t *testing.T) {
 	kickoff := time.Date(2026, 7, 8, 15, 0, 0, 0, time.UTC)
 	now := kickoff.Add(46 * time.Minute)
 	fRepo := newFakeFixtureRepo()
@@ -140,14 +139,14 @@ func TestReconcileFixture_ClockAdvance_ClockOnly(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ReconcileFixture: %v", err)
 	}
-	if !out.ClockChanged {
-		t.Error("ClockChanged = false, want true (45→46)")
+	if out.FeedAction != FixtureFeedPresentation {
+		t.Errorf("FeedAction = %q, want presentation", out.FeedAction)
 	}
-	if out.Structural {
-		t.Error("Structural = true, want false (only the clock moved)")
+	if out.Presentation.Clock.Minute == nil || *out.Presentation.Clock.Minute != 46 {
+		t.Errorf("presentation minute = %v, want 46", out.Presentation.Clock.Minute)
 	}
-	if out.Minute != 46 {
-		t.Errorf("Minute = %d, want 46", out.Minute)
+	if out.Presentation.Display != "clock" {
+		t.Errorf("presentation display = %q, want clock", out.Presentation.Display)
 	}
 }
 
@@ -168,15 +167,14 @@ func TestReconcileFixture_FrozenPoll_NeitherSignal(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ReconcileFixture: %v", err)
 	}
-	if out.ClockChanged || out.Structural {
-		t.Errorf("ClockChanged=%v Structural=%v, want both false (nothing changed)", out.ClockChanged, out.Structural)
+	if out.FeedAction != FixtureFeedNone {
+		t.Errorf("FeedAction = %q, want none", out.FeedAction)
 	}
 }
 
-// TestReconcileFixture_Halftime_StructuralNotClock — the status flips 1H→HT with
-// the clock frozen: Structural (a full-refetch change), NOT ClockChanged. Proves
-// a status change rides fixture.update even when the minute doesn't move.
-func TestReconcileFixture_Halftime_StructuralNotClock(t *testing.T) {
+// TestReconcileFixture_Halftime_PresentationOnly proves 1H→HT stays in the
+// playing presentation state and replaces the clock with the status inline.
+func TestReconcileFixture_Halftime_PresentationOnly(t *testing.T) {
 	kickoff := time.Date(2026, 7, 8, 15, 0, 0, 0, time.UTC)
 	now := kickoff.Add(45 * time.Minute)
 	fRepo := newFakeFixtureRepo()
@@ -191,17 +189,89 @@ func TestReconcileFixture_Halftime_StructuralNotClock(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ReconcileFixture: %v", err)
 	}
-	if !out.Structural {
-		t.Error("Structural = false, want true (status 1H→HT)")
+	if out.FeedAction != FixtureFeedPresentation {
+		t.Errorf("FeedAction = %q, want presentation", out.FeedAction)
 	}
-	if out.ClockChanged {
-		t.Error("ClockChanged = true, want false (clock frozen at HT)")
+	if out.Presentation.PresentationState != "playing" || out.Presentation.Display != "status" || out.Presentation.Status.Short != "HT" {
+		t.Errorf("presentation = %+v, want playing/status/HT", out.Presentation)
 	}
 }
 
-// TestReconcileFixture_ScoreChange_Structural — a score move with no event in the
-// same poll (vendor eventual consistency) still classifies as Structural.
-func TestReconcileFixture_ScoreChange_Structural(t *testing.T) {
+func TestReconcileFixture_StatusTransitionRouting(t *testing.T) {
+	cases := []struct {
+		name        string
+		from        fixture.APIStatus
+		to          apifootball.APIFixtureStatus
+		wantAction  FixtureFeedAction
+		wantState   string
+		wantDisplay string
+	}{
+		{
+			name: "extra-time break remains playing",
+			from: fixture.APIStatus{Short: apifootball.StatusExtraTime, Long: "Extra Time"},
+			to: apifootball.APIFixtureStatus{
+				Short: apifootball.StatusBreakTime, Long: "Break Time", Elapsed: pi(105),
+			},
+			wantAction: FixtureFeedPresentation, wantState: "playing", wantDisplay: "status",
+		},
+		{
+			name: "final whistle crosses into finished",
+			from: fixture.APIStatus{Short: apifootball.StatusSecondHalf, Long: "Second Half"},
+			to: apifootball.APIFixtureStatus{
+				Short: apifootball.StatusFullTime, Long: "Match Finished", Elapsed: pi(90),
+			},
+			wantAction: FixtureFeedUpdate, wantState: "finished", wantDisplay: "status",
+		},
+		{
+			name: "kickoff crosses into playing",
+			from: fixture.APIStatus{Short: apifootball.StatusNotStarted, Long: "Not Started"},
+			to: apifootball.APIFixtureStatus{
+				Short: apifootball.StatusFirstHalf, Long: "First Half", Elapsed: pi(1),
+			},
+			wantAction: FixtureFeedUpdate, wantState: "playing", wantDisplay: "clock",
+		},
+		{
+			name: "reschedule crosses from deferred to upcoming",
+			from: fixture.APIStatus{Short: apifootball.StatusPostponed, Long: "Postponed"},
+			to: apifootball.APIFixtureStatus{
+				Short: apifootball.StatusNotStarted, Long: "Not Started",
+			},
+			wantAction: FixtureFeedUpdate, wantState: "upcoming", wantDisplay: "status",
+		},
+	}
+
+	for _, tt := range cases {
+		t.Run(tt.name, func(t *testing.T) {
+			kickoff := time.Date(2026, 8, 30, 18, 0, 0, 0, time.UTC)
+			fRepo := newFakeFixtureRepo()
+			stored := mkActiveN4Fixture(999, kickoff, 90, 0, 0)
+			stored.APIStatus = tt.from
+			_ = fRepo.Upsert(context.Background(), stored)
+
+			apiFix := apifootball.APIFixture{
+				Fixture: apifootball.APIFixtureFixture{ID: 999, Status: tt.to},
+				Goals:   apifootball.APIFixtureGoals{Home: pi(0), Away: pi(0)},
+			}
+			acts := newActs(&fakeFetcher{}, fRepo, newFakeEventRepo(), kickoff.Add(2*time.Hour))
+			out, err := acts.ReconcileFixture(context.Background(), ReconcileFixtureInput{
+				APIFixture: apiFix, WorkflowID: "status-transition",
+			})
+			if err != nil {
+				t.Fatalf("ReconcileFixture: %v", err)
+			}
+			if out.FeedAction != tt.wantAction ||
+				string(out.Presentation.PresentationState) != tt.wantState ||
+				string(out.Presentation.Display) != tt.wantDisplay {
+				t.Fatalf("route = %q projection = %+v, want %q/%s/%s",
+					out.FeedAction, out.Presentation, tt.wantAction, tt.wantState, tt.wantDisplay)
+			}
+		})
+	}
+}
+
+// TestReconcileFixture_ScoreChangeRequiresUpdate verifies that a score move with
+// no event in the same poll still invalidates the authoritative snapshot.
+func TestReconcileFixture_ScoreChangeRequiresUpdate(t *testing.T) {
 	kickoff := time.Date(2026, 7, 8, 15, 0, 0, 0, time.UTC)
 	now := kickoff.Add(46 * time.Minute)
 	fRepo := newFakeFixtureRepo()
@@ -216,12 +286,12 @@ func TestReconcileFixture_ScoreChange_Structural(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ReconcileFixture: %v", err)
 	}
-	if !out.Structural {
-		t.Error("Structural = false, want true (score 0→1)")
+	if out.FeedAction != FixtureFeedUpdate {
+		t.Errorf("FeedAction = %q, want update for score change", out.FeedAction)
 	}
 }
 
-func TestReconcileFixture_MetadataChangeIsPersistedAndStructural(t *testing.T) {
+func TestReconcileFixture_MetadataChangeIsPersistedAndRequiresUpdate(t *testing.T) {
 	kickoff := time.Date(2026, 7, 8, 15, 0, 0, 0, time.UTC)
 	now := kickoff.Add(45 * time.Minute)
 	fRepo := newFakeFixtureRepo()
@@ -248,8 +318,8 @@ func TestReconcileFixture_MetadataChangeIsPersistedAndStructural(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ReconcileFixture: %v", err)
 	}
-	if !out.Structural || out.ClockChanged {
-		t.Fatalf("metadata classification: structural=%v clock=%v", out.Structural, out.ClockChanged)
+	if out.FeedAction != FixtureFeedUpdate {
+		t.Fatalf("metadata FeedAction = %q, want update", out.FeedAction)
 	}
 	got, err := fRepo.Get(context.Background(), 999)
 	if err != nil {
@@ -263,7 +333,7 @@ func TestReconcileFixture_MetadataChangeIsPersistedAndStructural(t *testing.T) {
 // TestReconcileFixture_TieClearsPriorLeader is the FF-055 regression. The
 // provider reports winner flags for the current live leader, then null/null
 // when an equalizer restores a tie. Result derivation must clear the stale
-// leader from storage and emit a structural update.
+// leader from storage and invalidate the authoritative snapshot.
 func TestReconcileFixture_TieClearsPriorLeader(t *testing.T) {
 	kickoff := time.Date(2026, 8, 19, 15, 0, 0, 0, time.UTC)
 	now := kickoff.Add(70 * time.Minute)
@@ -291,8 +361,8 @@ func TestReconcileFixture_TieClearsPriorLeader(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ReconcileFixture: %v", err)
 	}
-	if !out.Structural {
-		t.Fatal("Structural = false, want true for score and result change")
+	if out.FeedAction != FixtureFeedUpdate {
+		t.Fatalf("FeedAction = %q, want update for score and result change", out.FeedAction)
 	}
 	got, err := fRepo.Get(context.Background(), 1001)
 	if err != nil {

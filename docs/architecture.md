@@ -27,6 +27,7 @@ found-footy/
 ├── internal/
 │   ├── contract/auditlog/               ✓ FF-070 typed semantic-transition kinds, payloads, and immutable Postgres audit records
 │   ├── contract/discovery/              stable EventWorkflowInput + CandidateEvidence shared across workflow, activity, and persistence boundaries
+│   ├── contract/fixturepresentation/     ✓ FF-077 one REST/NATS presentation-state, clock, status, and display projection
 │   ├── contract/twittersearch/           ✓ FF-061: one browser/HTTP/activity wire contract for classified search states, evidence, and video refs
 │   ├── domain/                          active domain logic only
 │   │   ├── fixture/                     ✓ D1: model + State + Repo + tests
@@ -50,7 +51,7 @@ found-footy/
 │   │   ├── apifootball/                 ✓ S7 + O1a + FF-075: /status + typed /fixtures contract, exact by-ID coverage, and missing/null/empty event distinction
 │   │   ├── twitter/                     ✓ classified HTTP Search + forced-Verify client for the Go Twitter service + mock-backed tests
 │   │   ├── syndication/                 ✓ S7 + T/f: FetchJSON + ResolveVideo/Download (cookieless mp4) + typed taxonomy + tests
-│   │   ├── event/                       ✓ N1+N5 NatsPublisher — 3-subject live-feed (fixture.clock/update, event.video) + Envelope + source config + golden tests
+│   │   ├── event/                       ✓ N1+N5+FF-077 NatsPublisher — 3-subject live-feed (fixture.presentation/update, event.video) + Envelope + source config + golden tests
 │   │   ├── ffmpeg/                      ✓ V/1 + FF-005: probe + bounded-grayscale single-pass dense extraction + faststart + semaphore + typed taxonomy + tests
 │   │   └── firefoxfleet/                ✓ #160 + FF-001: per-event Firefox provisioner via Docker API — Compose-network-scoped daemon names/ownership labels/count/list/reap/release; stable event-only network alias keeps workflow addressing registry-free; idempotent lifecycle + two-fleet/one-daemon tests
 │   ├── workflow/                        shipped Temporal workflows

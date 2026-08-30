@@ -16,6 +16,7 @@ import (
 	livefeedactivity "github.com/vedantadhobley/found-footy/internal/activity/livefeed"
 	"github.com/vedantadhobley/found-footy/internal/activity/monitor"
 	videoactivity "github.com/vedantadhobley/found-footy/internal/activity/video"
+	"github.com/vedantadhobley/found-footy/internal/contract/fixturepresentation"
 	"github.com/vedantadhobley/found-footy/internal/domain/providerintegrity"
 	"github.com/vedantadhobley/found-footy/internal/infra/apifootball"
 	"github.com/vedantadhobley/found-footy/internal/workflow"
@@ -28,9 +29,8 @@ func newActivePollEnv(s *testsuite.WorkflowTestSuite) *testsuite.TestWorkflowEnv
 	// DestroyEvent (#172) is a PersistActivities method; register so the
 	// VAR-destroy test can mock it by name. Empty deps — the mock overrides it.
 	env.RegisterActivity(&videoactivity.PersistActivities{})
-	// N5 PublishFixtureBatch — registered so tests that produce a non-empty
-	// partition can mock it. Existing tests leave Structural/ClockChanged false
-	// (empty partition → not called), so no default mock is needed here.
+	// PublishFixtureBatch is registered so tests with a non-empty typed feed
+	// partition can mock it. A zero-value FeedAction emits nothing.
 	env.RegisterActivity(&livefeedactivity.Activities{})
 	// Default GetMonitorConfig — tests that don't override this get the
 	// same 5-min activation window as production. Tests that pass an
@@ -133,10 +133,8 @@ func TestActivePollWorkflow_AggregatesProviderIntegrityShadowVerdicts(t *testing
 	env.AssertExpectations(t)
 }
 
-// TestActivePollWorkflow_LiveFeedPartition — N5: a structural fixture goes to
-// fixture.update, a clock-only fixture to fixture.clock, disjoint, both riding
-// one PublishFixtureBatch. A fixture that is BOTH structural and clock-changed
-// goes to update only (structural wins).
+// TestActivePollWorkflow_LiveFeedPartition proves the typed actions remain
+// disjoint while sharing one PublishFixtureBatch activity.
 func TestActivePollWorkflow_LiveFeedPartition(t *testing.T) {
 	var s testsuite.WorkflowTestSuite
 	env := newActivePollEnv(&s)
@@ -153,14 +151,22 @@ func TestActivePollWorkflow_LiveFeedPartition(t *testing.T) {
 			},
 		}, nil).Once()
 
-	// 101 → structural AND clock moved (structural wins → update);
-	// 102 → clock-only advance (→ clock).
+	minute := 62
 	env.OnActivity("ReconcileFixture", mock.Anything,
 		mock.MatchedBy(func(in monitor.ReconcileFixtureInput) bool { return in.APIFixture.Fixture.ID == 101 })).
-		Return(monitor.ReconcileFixtureOutput{FixtureID: 101, Structural: true, ClockChanged: true, Minute: 47}, nil).Once()
+		Return(monitor.ReconcileFixtureOutput{FixtureID: 101, FeedAction: monitor.FixtureFeedUpdate}, nil).Once()
 	env.OnActivity("ReconcileFixture", mock.Anything,
 		mock.MatchedBy(func(in monitor.ReconcileFixtureInput) bool { return in.APIFixture.Fixture.ID == 102 })).
-		Return(monitor.ReconcileFixtureOutput{FixtureID: 102, ClockChanged: true, Minute: 62}, nil).Once()
+		Return(monitor.ReconcileFixtureOutput{
+			FixtureID:  102,
+			FeedAction: monitor.FixtureFeedPresentation,
+			Presentation: fixturepresentation.Projection{
+				PresentationState: fixturepresentation.StatePlaying,
+				Clock:             fixturepresentation.Clock{Minute: &minute},
+				Status:            fixturepresentation.Status{Short: "2H", Long: "Second Half"},
+				Display:           fixturepresentation.DisplayClock,
+			},
+		}, nil).Once()
 
 	var captured livefeedactivity.FixtureBatchInput
 	env.OnActivity("PublishFixtureBatch", mock.Anything, mock.Anything).
@@ -177,10 +183,11 @@ func TestActivePollWorkflow_LiveFeedPartition(t *testing.T) {
 		t.Fatalf("workflow error: %v", err)
 	}
 	if len(captured.UpdateIDs) != 1 || captured.UpdateIDs[0] != 101 {
-		t.Errorf("UpdateIDs = %v, want [101] (structural wins)", captured.UpdateIDs)
+		t.Errorf("UpdateIDs = %v, want [101]", captured.UpdateIDs)
 	}
-	if len(captured.Clock) != 1 || captured.Clock[0].FixtureID != 102 || captured.Clock[0].Minute != 62 {
-		t.Errorf("Clock = %+v, want [{102 62}]", captured.Clock)
+	if len(captured.Presentation) != 1 || captured.Presentation[0].FixtureID != 102 ||
+		captured.Presentation[0].Clock.Minute == nil || *captured.Presentation[0].Clock.Minute != 62 {
+		t.Errorf("Presentation = %+v, want fixture 102 at minute 62", captured.Presentation)
 	}
 	env.AssertExpectations(t)
 }

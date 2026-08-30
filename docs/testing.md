@@ -88,12 +88,12 @@ its own three presence votes while the old tombstone remains immutable.
 FF-055 domain tables cover score-derived home, away, tied, incomplete,
 shootout, and exceptional winner states. The monitor regression starts with a
 stored 1–0 leader and requires a later 1–1 response to clear both winner fields
-and emit a structural update. FF-063 separately proves that missing or tied
+and emit a snapshot update. FF-063 separately proves that missing or tied
 `PEN` data is retained as completion audit evidence rather than a permanent
 retirement gate.
 
 FF-040 activity tests require active and staging polls to persist corrected
-team/league/kickoff metadata and classify active metadata changes as structural.
+team/league/kickoff metadata and route active metadata changes to a snapshot.
 Real-Postgres regressions prove a delayed ingest cannot overwrite a newer
 active provider snapshot, a newer ingest can refresh provider fields without
 changing lifecycle timestamps, and delayed staging/active writers become clean
@@ -108,6 +108,15 @@ progress, clock-corrected event identity, coherent recent goal cancellation,
 stale or unsupported regression, one-fixture quarantine, and the multi-fixture
 2026-08-29 outage signature. Monitor and WorkflowTestSuite regressions prove
 the verdict is observable and aggregated but does not yet enforce mutations.
+
+FF-077 contract tables cover every documented provider status, fail unknown
+codes closed to deferred/status, select a clock only for timed play with a
+reported minute, normalize display status casing, and compare nullable clocks
+by value. Monitor regressions require minute movement, halftime, and the
+extra-time break to emit `fixture.presentation`; kickoff, final whistle, and a
+postponed reschedule must emit `fixture.update`. A typed workflow partition test
+proves one fixture cannot enter both batches. REST and NATS golden tests require
+the identical `presentation_state`/`clock`/`status`/`display` projection.
 
 FF-028 API tests require the default five-minute presign to produce a
 four-minute redirect cache, longer presigns to retain the five-minute cap, and
