@@ -6,6 +6,7 @@ package video
 import (
 	"context"
 	"errors"
+	"time"
 
 	"github.com/google/uuid"
 )
@@ -45,11 +46,18 @@ type AssetRepo interface {
 	// the live set (partial index WHERE superseded_by IS NULL).
 	Supersede(ctx context.Context, loserID, winnerID uuid.UUID) error
 
-	// ListObjectKeysByEvent returns the Garage object refs for ALL of an event's
-	// assets (live + superseded) — the destroy/reclaim path (#172/#176). Some
-	// superseded objects may already be gone (SupersedeAssets deletes them); the
-	// S3 delete is idempotent, so returning all is safe.
-	ListObjectKeysByEvent(ctx context.Context, eventID uuid.UUID) ([]ObjectRef, error)
+	// ListUnreclaimedObjectsByEvent returns every asset whose Garage deletion is
+	// not durably confirmed. It includes live and superseded assets.
+	ListUnreclaimedObjectsByEvent(ctx context.Context, eventID uuid.UUID) ([]ObjectRef, error)
+
+	// MarkObjectReclaimed records a successful idempotent Garage delete. It is
+	// idempotent and preserves the first successful timestamp.
+	MarkObjectReclaimed(ctx context.Context, assetID uuid.UUID) error
+
+	// ListUnreclaimedEventIDsBefore returns event IDs with at least one
+	// unreclaimed asset under a completed fixture whose UTC kickoff is before
+	// cutoff. This is the asset-owned media-retention worklist.
+	ListUnreclaimedEventIDsBefore(ctx context.Context, cutoff time.Time) ([]uuid.UUID, error)
 }
 
 // ShareRepo is the storage port for video_shares.

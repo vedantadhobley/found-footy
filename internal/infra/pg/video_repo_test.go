@@ -424,6 +424,20 @@ func TestShareRepo_ReadPath(t *testing.T) {
 		t.Errorf("resolve superseded sA = %+v, want superseded + B key %q", rs, b.S3Key)
 	}
 
+	// A durable reclaim marker is authoritative even if share-state cleanup
+	// races a historical placement. The old URL must 410 instead of presigning
+	// the terminal object's deleted key.
+	if err := assets.MarkObjectReclaimed(ctx, b.ID); err != nil {
+		t.Fatalf("mark B reclaimed: %v", err)
+	}
+	rs, err = shares.ResolveShare(ctx, sA.ID)
+	if err != nil {
+		t.Fatalf("ResolveShare sA after terminal reclaim: %v", err)
+	}
+	if rs.State != video.ShareStateRemoved {
+		t.Errorf("resolve reclaimed terminal = %+v, want removed", rs)
+	}
+
 	// Never-minted id → ErrNotFound (handler maps to 404).
 	if _, err := shares.ResolveShare(ctx, "s_deadbeef0000"); err != video.ErrNotFound {
 		t.Errorf("resolve missing = %v, want ErrNotFound", err)
@@ -507,9 +521,8 @@ func TestShareRepo_ListLiveForEventPopularityVisibility(t *testing.T) {
 }
 
 // TestShareRepo_RemoveByEvent covers the VAR destroy repo primitives (#172):
-// ListObjectKeysByEvent returns every asset object (live + superseded), and
-// RemoveByEvent revokes ALL the event's shares → 'removed'/var, after which
-// ResolveShare returns 'removed' (the redirect 410s).
+// unreclaimed-object reads include live and superseded assets, successful
+// reclamation is durable, and RemoveByEvent revokes every event share.
 func TestShareRepo_RemoveByEvent(t *testing.T) {
 	ctx, assets, shares, fixtureID, eventID := setupVideoRepos(t)
 	when := time.Date(2026, 8, 10, 12, 0, 0, 0, time.UTC)
@@ -540,12 +553,19 @@ func TestShareRepo_RemoveByEvent(t *testing.T) {
 	}
 
 	// Both assets' objects are returned (live + superseded).
-	keys, err := assets.ListObjectKeysByEvent(ctx, eventID)
+	keys, err := assets.ListUnreclaimedObjectsByEvent(ctx, eventID)
 	if err != nil {
-		t.Fatalf("ListObjectKeysByEvent: %v", err)
+		t.Fatalf("ListUnreclaimedObjectsByEvent: %v", err)
 	}
 	if len(keys) != 2 {
 		t.Fatalf("object keys = %d, want 2 (live + superseded)", len(keys))
+	}
+	if err := assets.MarkObjectReclaimed(ctx, a2.ID); err != nil {
+		t.Fatalf("MarkObjectReclaimed: %v", err)
+	}
+	keys, err = assets.ListUnreclaimedObjectsByEvent(ctx, eventID)
+	if err != nil || len(keys) != 1 || keys[0].AssetID != a1.ID {
+		t.Fatalf("post-mark object keys = %+v, %v; want live asset only", keys, err)
 	}
 
 	// Revoke everything for the event.

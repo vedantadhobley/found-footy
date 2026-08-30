@@ -20,20 +20,24 @@ single-event path routes.
 | Method and path | Contract |
 |---|---|
 | `GET /healthz` | `200 ok` for the API listener. |
-| `GET /api/v1/fixtures` | Flat fixture array containing staging, active, and completed rows. This is the initial and reconnect snapshot. |
-| `GET /api/v1/fixtures?ids=1,2` | Flat fixture array for up to 200 IDs. Unknown IDs are omitted. |
+| `GET /api/v1/fixtures` | Flat fixture array containing every staging/active row plus completed fixtures on the newest configured UTC kickoff dates. This is the initial and reconnect snapshot. |
+| `GET /api/v1/fixtures?ids=1,2` | Flat fixture array for up to 200 IDs. Unknown IDs are omitted; older retained rows remain addressable. |
 | `GET /api/v1/events?ids=<uuid>,<uuid>` | Flat event array for up to 200 IDs. `ids` is required; unknown IDs are omitted. |
-| `GET /api/v1/search?q=<text>` | Up to 100 fixtures, kickoff-newest first, matched case-insensitively by competition, team, scorer, or assist. |
+| `GET /api/v1/search?q=<text>` | Up to 100 publicly-windowed fixtures, kickoff-newest first, matched case-insensitively by competition, team, scorer, or assist. |
 | `GET /api/v1/videos/{share_id}` | Playback redirect or terminal share status. |
 
 Malformed ID lists, more than 200 IDs, and an empty search query return `400`
 with `{"error":"..."}`. An empty result is `200` with `[]`. Handler failures
 return `500` without exposing the internal error.
 
-The unfiltered fixture window currently has no query-layer limit. Retention
-removes some old data, but shared/tombstoned rows can remain. The resulting
-read-amplification issue is tracked as `AUD-0813-P2-1` in
-[`todo.md`](./todo.md#deferred-decisions-and-validation).
+`PUBLIC_HISTORY_COMPLETED_FIXTURE_DATES` controls the completed history and
+defaults to 14 distinct UTC kickoff dates that contain completed fixtures.
+Current-day emptiness does not consume a date. The cutoff is computed inside
+the same SQL statement as snapshot/search selection, so it is a read-model
+boundary rather than a fixture-deletion clock. SQL history remains durable and
+targeted ID reads can reach rows outside the public window. The worker uses the
+same configured count for media retention; see the
+[retention decision](./decisions/2026-08-30-retention-separates-public-media-and-audit-lifecycles.md).
 
 ### Resource composition
 
@@ -47,7 +51,10 @@ fixtureDTO
 
 Staging fixtures carry an empty `events` array. Active and completed fixtures
 carry their non-removed events; each event carries active shares joined to
-non-superseded assets. Before ranking, the read model applies FF-078's reversible
+non-superseded, unreclaimed assets. The handler assembles any fixture set with
+four bounded reads for the request: fixtures, events, discovery completion,
+and visible clips. It does not issue per-fixture or per-event child queries.
+Before ranking, the read model applies FF-078's reversible
 singleton-visibility rule. A timestamp-verified clip with popularity at least
 three suppresses every popularity-one clip. An unverified clip with popularity
 at least three suppresses only unverified popularity-one clips; it cannot hide
@@ -143,7 +150,9 @@ arrive while search is still running, and a complete search may have no clips.
 
 The video URL resolves an active or superseded share through its asset chain
 and returns `302` to a presigned Garage URL. A removed share returns `410`; a
-never-minted share returns `404`. Redirect cache lifetime is the configured
+durable reclaimed-object marker also forces `410`, so the API never presigns
+known-missing bytes across a concurrent cleanup boundary. A never-minted share
+returns `404`. Redirect cache lifetime is the configured
 presign lifetime minus a one-minute safety margin, capped at five minutes
 (FF-028). The default five-minute presign therefore sends `Cache-Control:
 public, max-age=240`; a lifetime too short to provide the margin sends

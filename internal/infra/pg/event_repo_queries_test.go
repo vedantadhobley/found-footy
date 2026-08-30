@@ -77,6 +77,40 @@ func TestEventRepo_ListPending_Empty(t *testing.T) {
 	}
 }
 
+func TestEventRepo_BatchReadsPreserveRequestedGroupingAndHideRemoved(t *testing.T) {
+	ctx, _, repo, fRepo := setupEventRepo(t)
+	seedFixture(t, ctx, fRepo, 7010)
+	seedFixture(t, ctx, fRepo, 7011)
+
+	first := makeGoalEvent(7010, 1)
+	second := makeGoalEvent(7011, 1)
+	removed := makeGoalEvent(7010, 2)
+	for i, e := range []*event.Event{first, second, removed} {
+		if err := repo.Insert(ctx, e, "batch-cycle-"+uuid.NewString()); err != nil {
+			t.Fatalf("Insert event %d: %v", i, err)
+		}
+	}
+	if _, hitZero, err := repo.RegisterEventAbsence(ctx, removed.ID, "batch-remove"); err != nil || !hitZero {
+		t.Fatalf("soft-remove event: hitZero=%v err=%v", hitZero, err)
+	}
+
+	byFixture, err := repo.ListByFixtures(ctx, []int64{7011, 7010})
+	if err != nil {
+		t.Fatalf("ListByFixtures: %v", err)
+	}
+	if len(byFixture) != 2 || byFixture[0].ID != second.ID || byFixture[1].ID != first.ID {
+		t.Fatalf("batch fixture events = %+v, want requested fixture order without removed row", byFixture)
+	}
+
+	byID, err := repo.GetByIDs(ctx, []uuid.UUID{second.ID, removed.ID, uuid.New(), first.ID})
+	if err != nil {
+		t.Fatalf("GetByIDs: %v", err)
+	}
+	if len(byID) != 3 || byID[0].ID != second.ID || byID[1].ID != removed.ID || byID[2].ID != first.ID {
+		t.Fatalf("batch events by ID = %+v, want known rows in caller order", byID)
+	}
+}
+
 func TestEventRepo_ListAllByFixture_IncludesRemovedIdentityHistory(t *testing.T) {
 	ctx, _, repo, fRepo := setupEventRepo(t)
 	seedFixture(t, ctx, fRepo, 7009)

@@ -45,9 +45,9 @@ func TestFixtureRepo_SearchFixtures(t *testing.T) {
 
 	check := func(q string, wantID int64) {
 		t.Helper()
-		got, err := repo.SearchFixtures(ctx, q, 100)
+		got, err := repo.SearchPublicFixtures(ctx, q, 100, 14)
 		if err != nil {
-			t.Fatalf("SearchFixtures(%q): %v", q, err)
+			t.Fatalf("SearchPublicFixtures(%q): %v", q, err)
 		}
 		if wantID == 0 {
 			if len(got) != 0 {

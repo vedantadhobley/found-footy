@@ -5,6 +5,8 @@
 // they're video-domain shapes, but they're consumed only by the read API.
 package video
 
+import "github.com/google/uuid"
+
 const (
 	// PublicVisibilityPopularityThreshold is the source-vote count at which a
 	// clip can suppress singleton alternatives in the public read model.
@@ -35,8 +37,9 @@ type LiveClip struct {
 // ObjectRef is a Garage object location (bucket + key). Used by the destroy /
 // retention-reclaim paths to delete an event's asset bytes (#172/#176).
 type ObjectRef struct {
-	Bucket string
-	Key    string
+	AssetID uuid.UUID
+	Bucket  string
+	Key     string
 }
 
 // ResolvedShare is what the GET /videos/{share_id} redirect handler needs:

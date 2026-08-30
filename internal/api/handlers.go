@@ -29,18 +29,18 @@ import (
 
 // FixtureReader is the fixture read surface the API needs.
 type FixtureReader interface {
-	Get(ctx context.Context, id int64) (*fixture.Fixture, error)
-	ListByState(ctx context.Context, state fixture.State) ([]*fixture.Fixture, error)
-	// SearchFixtures returns fixtures whose competition, team, or event
+	ListPublicWindow(ctx context.Context, completedFixtureDates int) ([]*fixture.Fixture, error)
+	GetByIDs(ctx context.Context, ids []int64) ([]*fixture.Fixture, error)
+	// SearchPublicFixtures returns fixtures whose competition, team, or event
 	// scorer/assist names match the free-text query — the /search backing,
 	// capped at limit.
-	SearchFixtures(ctx context.Context, q string, limit int) ([]*fixture.Fixture, error)
+	SearchPublicFixtures(ctx context.Context, q string, limit, completedFixtureDates int) ([]*fixture.Fixture, error)
 }
 
 // EventReader is the event read surface the API needs.
 type EventReader interface {
-	Get(ctx context.Context, id uuid.UUID) (*event.Event, error)
-	ListByFixture(ctx context.Context, fixtureID int64) ([]*event.Event, error)
+	GetByIDs(ctx context.Context, ids []uuid.UUID) ([]*event.Event, error)
+	ListByFixtures(ctx context.Context, fixtureIDs []int64) ([]*event.Event, error)
 	// DiscoveryComplete returns the subset of eventIDs whose discovery workflow
 	// has finished — the signal event.DerivePhase uses to separate `searching`
 	// from `complete`. Batched to avoid an N+1 across a fixture's events.
@@ -49,7 +49,7 @@ type EventReader interface {
 
 // VideoReader is the video read surface: the live-clip list + share resolution.
 type VideoReader interface {
-	ListLiveForEvent(ctx context.Context, eventID uuid.UUID) ([]video.LiveClip, error)
+	ListLiveForEvents(ctx context.Context, eventIDs []uuid.UUID) (map[uuid.UUID][]video.LiveClip, error)
 	ResolveShare(ctx context.Context, id string) (video.ResolvedShare, error)
 }
 
@@ -67,7 +67,9 @@ type Handlers struct {
 	Presign    Presigner
 	Bucket     string        // the API's configured S3 bucket — for the presign-bucket guard
 	PresignTTL time.Duration // configured lifetime of URLs minted by Presign
-	Log        logging.Emitter
+	// CompletedFixtureDates is shared with worker-owned media retention.
+	CompletedFixtureDates int
+	Log                   logging.Emitter
 }
 
 const (
@@ -76,43 +78,6 @@ const (
 )
 
 // ─── assembly ───────────────────────────────────────────────────────────────
-
-// eventVideos loads an event's live clips and maps them to DTOs.
-func (h *Handlers) eventVideos(ctx context.Context, eventID uuid.UUID) ([]videoDTO, error) {
-	clips, err := h.Videos.ListLiveForEvent(ctx, eventID)
-	if err != nil {
-		return nil, err
-	}
-	out := make([]videoDTO, 0, len(clips))
-	for _, c := range clips {
-		out = append(out, toVideoDTO(c))
-	}
-	return out, nil
-}
-
-// fixtureToDTO assembles a fixture with its non-removed events + each event's
-// live videos. NOTE: this is N+1 across an event's videos — fine within the
-// bounded window; a single JOIN batch is a later optimization if a busy day
-// gets heavy.
-func (h *Handlers) fixtureToDTO(ctx context.Context, f *fixture.Fixture) (fixtureDTO, error) {
-	events, err := h.Events.ListByFixture(ctx, f.ID)
-	if err != nil {
-		return fixtureDTO{}, err
-	}
-	done, err := h.discoveryComplete(ctx, events)
-	if err != nil {
-		return fixtureDTO{}, err
-	}
-	dtos := make([]eventDTO, 0, len(events))
-	for _, e := range events {
-		vids, err := h.eventVideos(ctx, e.ID)
-		if err != nil {
-			return fixtureDTO{}, err
-		}
-		dtos = append(dtos, toEventDTO(e, vids, done[e.ID]))
-	}
-	return toFixtureDTO(f, dtos, deriveLastActivity(f, events)), nil
-}
 
 // discoveryComplete batches the discovery-complete lookup for a set of events
 // (the phase signal). Returns the set of event IDs whose discovery has
@@ -126,6 +91,63 @@ func (h *Handlers) discoveryComplete(ctx context.Context, events []*event.Event)
 		ids[i] = e.ID
 	}
 	return h.Events.DiscoveryComplete(ctx, ids)
+}
+
+// assembleEvents enriches an already-batched event set with one discovery
+// query and one ranked-video query. The returned map is keyed by event ID.
+func (h *Handlers) assembleEvents(ctx context.Context, events []*event.Event) (map[uuid.UUID]eventDTO, error) {
+	done, err := h.discoveryComplete(ctx, events)
+	if err != nil {
+		return nil, err
+	}
+	ids := make([]uuid.UUID, len(events))
+	for i, e := range events {
+		ids[i] = e.ID
+	}
+	clips, err := h.Videos.ListLiveForEvents(ctx, ids)
+	if err != nil {
+		return nil, err
+	}
+	out := make(map[uuid.UUID]eventDTO, len(events))
+	for _, e := range events {
+		videos := make([]videoDTO, 0, len(clips[e.ID]))
+		for _, clip := range clips[e.ID] {
+			videos = append(videos, toVideoDTO(clip))
+		}
+		out[e.ID] = toEventDTO(e, videos, done[e.ID])
+	}
+	return out, nil
+}
+
+// assembleFixtures builds complete DTOs from four bounded reads for the whole
+// request: fixtures (already loaded), events, discovery state, and videos.
+func (h *Handlers) assembleFixtures(ctx context.Context, fixtures []*fixture.Fixture) ([]fixtureDTO, error) {
+	fixtureIDs := make([]int64, len(fixtures))
+	for i, f := range fixtures {
+		fixtureIDs[i] = f.ID
+	}
+	events, err := h.Events.ListByFixtures(ctx, fixtureIDs)
+	if err != nil {
+		return nil, err
+	}
+	assembledEvents, err := h.assembleEvents(ctx, events)
+	if err != nil {
+		return nil, err
+	}
+	eventsByFixture := make(map[int64][]*event.Event, len(fixtures))
+	for _, e := range events {
+		eventsByFixture[e.FixtureID] = append(eventsByFixture[e.FixtureID], e)
+	}
+	out := make([]fixtureDTO, 0, len(fixtures))
+	for _, f := range fixtures {
+		domainEvents := eventsByFixture[f.ID]
+		eventDTOs := make([]eventDTO, 0, len(domainEvents))
+		for _, e := range domainEvents {
+			eventDTOs = append(eventDTOs, assembledEvents[e.ID])
+		}
+		out = append(out, toFixtureDTO(f, eventDTOs, deriveLastActivity(f, domainEvents)))
+	}
+	return out, nil
 }
 
 // ─── handlers ───────────────────────────────────────────────────────────────
@@ -145,78 +167,43 @@ func (h *Handlers) GetFixtures(w http.ResponseWriter, r *http.Request) {
 		h.getFixturesByIDs(ctx, w, raw)
 		return
 	}
-	// Full window. Staging is pre-kickoff (no events) → skip its event/video loads.
-	out := []fixtureDTO{}
-	for _, s := range []struct {
-		state      fixture.State
-		withEvents bool
-	}{
-		{fixture.StateStaging, false},
-		{fixture.StateActive, true},
-		{fixture.StateCompleted, true},
-	} {
-		part, err := h.loadState(ctx, s.state, s.withEvents)
-		if err != nil {
-			h.serverError(ctx, w, "list "+string(s.state), err)
-			return
-		}
-		out = append(out, part...)
+	fixtures, err := h.Fixtures.ListPublicWindow(ctx, h.CompletedFixtureDates)
+	if err != nil {
+		h.serverError(ctx, w, "list public fixtures", err)
+		return
+	}
+	out, err := h.assembleFixtures(ctx, fixtures)
+	if err != nil {
+		h.serverError(ctx, w, "assemble public fixtures", err)
+		return
 	}
 	writeJSON(w, http.StatusOK, out)
 }
 
-// getFixturesByIDs assembles just the requested fixtures. Unknown ids are
-// silently omitted (a fixture may have aged out of retention since the hint).
+// getFixturesByIDs assembles just the requested fixtures. Unknown IDs are
+// silently omitted; public-window aging does not delete fixture history.
 func (h *Handlers) getFixturesByIDs(ctx context.Context, w http.ResponseWriter, raw string) {
 	ids, err := parseInt64CSV(raw)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, "invalid ids")
 		return
 	}
-	out := make([]fixtureDTO, 0, len(ids))
-	for _, id := range ids {
-		f, err := h.Fixtures.Get(ctx, id)
-		if errors.Is(err, fixture.ErrNotFound) {
-			continue
-		}
-		if err != nil {
-			h.serverError(ctx, w, "batch get fixture", err)
-			return
-		}
-		d, err := h.fixtureToDTO(ctx, f)
-		if err != nil {
-			h.serverError(ctx, w, "assemble fixture", err)
-			return
-		}
-		out = append(out, d)
+	fixtures, err := h.Fixtures.GetByIDs(ctx, ids)
+	if err != nil {
+		h.serverError(ctx, w, "batch get fixtures", err)
+		return
+	}
+	out, err := h.assembleFixtures(ctx, fixtures)
+	if err != nil {
+		h.serverError(ctx, w, "assemble fixtures", err)
+		return
 	}
 	writeJSON(w, http.StatusOK, out)
 }
 
-// loadState lists + assembles one state bucket. withEvents=false shortcuts
-// staging (no events yet) to skip the per-fixture event/video loads.
-func (h *Handlers) loadState(ctx context.Context, state fixture.State, withEvents bool) ([]fixtureDTO, error) {
-	fx, err := h.Fixtures.ListByState(ctx, state)
-	if err != nil {
-		return nil, err
-	}
-	out := make([]fixtureDTO, 0, len(fx))
-	for _, f := range fx {
-		if !withEvents {
-			out = append(out, toFixtureDTO(f, nil, deriveLastActivity(f, nil)))
-			continue
-		}
-		d, err := h.fixtureToDTO(ctx, f)
-		if err != nil {
-			return nil, err
-		}
-		out = append(out, d)
-	}
-	return out, nil
-}
-
 // searchLimit caps how many matched fixtures /search returns (kickoff-newest
-// first). Matches the bounded-window model — deeper history isn't retained.
+// first). Matches the bounded-window model; deeper SQL history is not searched
+// by the public route.
 const searchLimit = 100
 
 // Search is the free-text fixture search (GET /api/v1/search?q=…). It matches
@@ -232,19 +219,15 @@ func (h *Handlers) Search(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "q required")
 		return
 	}
-	fx, err := h.Fixtures.SearchFixtures(ctx, q, searchLimit)
+	fx, err := h.Fixtures.SearchPublicFixtures(ctx, q, searchLimit, h.CompletedFixtureDates)
 	if err != nil {
 		h.serverError(ctx, w, "search fixtures", err)
 		return
 	}
-	out := make([]fixtureDTO, 0, len(fx))
-	for _, f := range fx {
-		d, err := h.fixtureToDTO(ctx, f)
-		if err != nil {
-			h.serverError(ctx, w, "assemble search result", err)
-			return
-		}
-		out = append(out, d)
+	out, err := h.assembleFixtures(ctx, fx)
+	if err != nil {
+		h.serverError(ctx, w, "assemble search results", err)
+		return
 	}
 	writeJSON(w, http.StatusOK, out)
 }
@@ -265,31 +248,19 @@ func (h *Handlers) GetEvents(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid ids")
 		return
 	}
-	evs := make([]*event.Event, 0, len(ids))
-	for _, id := range ids {
-		e, err := h.Events.Get(ctx, id)
-		if errors.Is(err, event.ErrNotFound) {
-			continue
-		}
-		if err != nil {
-			h.serverError(ctx, w, "batch get event", err)
-			return
-		}
-		evs = append(evs, e)
-	}
-	done, err := h.discoveryComplete(ctx, evs)
+	evs, err := h.Events.GetByIDs(ctx, ids)
 	if err != nil {
-		h.serverError(ctx, w, "batch event phase", err)
+		h.serverError(ctx, w, "batch get events", err)
+		return
+	}
+	assembled, err := h.assembleEvents(ctx, evs)
+	if err != nil {
+		h.serverError(ctx, w, "assemble events", err)
 		return
 	}
 	out := make([]eventDTO, 0, len(evs))
 	for _, e := range evs {
-		vids, err := h.eventVideos(ctx, e.ID)
-		if err != nil {
-			h.serverError(ctx, w, "event videos", err)
-			return
-		}
-		out = append(out, toEventDTO(e, vids, done[e.ID]))
+		out = append(out, assembled[e.ID])
 	}
 	writeJSON(w, http.StatusOK, out)
 }

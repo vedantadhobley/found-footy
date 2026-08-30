@@ -8,9 +8,9 @@ Current behavior for `IngestWorkflow`. See the
 Daily fixture ingest. Refreshes the tracked-teams filter, fetches the
 relevant day(s) from api-sports.io with a smart timezone-lookahead,
 categorizes each fixture by API state, stores it in Postgres, ensures a
-canonical-name row for every team seen, then runs two-part retention
-(hard-delete clipless completed fixtures + reclaim Garage bytes for
-clip-bearing ones) beyond the retention window.
+canonical-name row for every team seen, then reclaims Garage objects that have
+left the shared public-history window. Routine retention preserves every SQL
+audit row.
 
 ### Signature
 
@@ -22,7 +22,6 @@ type IngestWorkflowInput struct {
     ManualFixtureIDs []int64        // non-empty = fetch by IDs (bypasses the tracked-teams filter + date scan)
     FetchFuture      bool           // daily schedule sets true → today + smart-lookahead future days
     ActivationWindow time.Duration  // kickoff-lookahead auto-activation; zero → config (WORKFLOWS_ACTIVATION_WINDOW, default 5m)
-    RetentionDays    int            // prune completed older than this; zero → config, then skip
 }
 
 type IngestWorkflowOutput struct {
@@ -35,8 +34,7 @@ type IngestWorkflowOutput struct {
     Completed             int
     ExistingAliases       int
     InsertedAliases       int
-    PrunedFixtures        int  // clipless completed fixtures hard-deleted (Step 4a)
-    ReclaimedEvents       int  // clip-bearing events byte-reclaimed via DestroyEvent (Step 4b)
+    ReclaimedEvents       int  // events whose outside-window objects were reclaimed
     Errors                []string // aggregated per-fixture/per-team failure context
 }
 ```
@@ -51,9 +49,10 @@ ingest isn't throughput-bound, and sequencing keeps failure attribution
 simple).
 
 ```
-0.  GetIngestConfig() → {ActivationWindow, RetentionDays, MaxLookaheadDays}
-      Read once at start (workflows can't touch env). Input overrides
-      (ActivationWindow, RetentionDays) win; zero falls back to config.
+0.  GetIngestConfig()
+      → {ActivationWindow, CompletedFixtureDates, MaxLookaheadDays}
+      Read once at start because workflows cannot touch environment config.
+      ActivationWindow input overrides the configured activation value.
 0.5 IF NOT manual-IDs path:
       RefreshTrackedTeamsIfStale()                         [120s timeout]
         → {Refreshed, TotalTeams, PerLeagueCounts, PreservedLeagues}
@@ -86,38 +85,32 @@ simple).
       write is StoreFromIngest, not a generic full-row upsert.
 3.  IF len(TeamRefs) > 0:
       EnsureAliasPlaceholders(TeamRefs) → {Existing, Inserted, Errors}
-4.  IF RetentionDays > 0 — two-part retention (#176, decisions.md 2026-08-11):
-    4a. PruneOldFixtures(anchor - RetentionDays days)
-          → {Deleted, ReclaimEventIDs}
-        PG-only. Hard-deletes completed fixtures older than the threshold
-        (keyed on completed_at) that have NO surviving video_shares — the
-        clipless half (deleting share-less rows 404s nothing). ALSO returns
-        the events of clip-BEARING aged fixtures that still have a live share
-        (ListReclaimableEventIDs), for 4b.
-    4b. FOR each ReclaimEventID: DestroyEvent(id, reason='policy') [2m timeout]
-        Revoke the event's shares → 410 + delete its Garage bytes (the #172
-        primitive), KEEPING all rows as tombstones so no shared URL ever
-        404s. Each activity attempt tries every known key and returns aggregate
-        delete failures so Temporal retries after share revocation. Exhausted
-        failures enter out.Errors without aborting unrelated ingest work;
-        FF-024's bounded object reconciliation remains the abnormal-failure
-        net. Successful reclaim is idempotent. This is where Garage bytes
-        finally get reclaimed — closes audit G4.
+4.  PlanMediaRetention(CompletedFixtureDates)
+      → {Cutoff, EventIDs}
+      Compute midnight UTC for the oldest of the newest N distinct completed
+      fixture kickoff dates. Select events below it that still own at least one
+      asset with object_reclaimed_at IS NULL. No fixture or audit row is
+      deleted.
+    FOR each EventID: DestroyEvent(id, reason='policy') [2m timeout]
+      Revoke all shares → 410, attempt every unreclaimed Garage object, and
+      stamp object_reclaimed_at only after a successful idempotent delete.
+      Partial failures return an aggregate error so Temporal retries only the
+      still-unstamped objects. Exhausted failures enter out.Errors without
+      aborting unrelated ingest work and remain eligible on the next ingest.
 ```
 
-Anchor: `ManualDate` if set, else `workflow.Now(ctx)` — deterministic
-across replays. Manual-date override propagates through the whole
-workflow (fetch window AND retention cutoff both computed from the
-anchor) so re-ingesting a past date behaves consistently.
+Anchor: `ManualDate` if set, else `workflow.Now(ctx)` — deterministic across
+replays. It controls fixture fetch only. Retention always derives its window
+from current durable completed-fixture dates.
 
 The ingest activity methods — `GetIngestConfig`,
 `RefreshTrackedTeamsIfStale`, `FetchFixturesForDay`, `FetchFixturesByIDs`,
-`CategorizeAndUpsertFixtures`, `EnsureAliasPlaceholders`,
-and `PruneOldFixtures` — live in
+`CategorizeAndUpsertFixtures`, and `EnsureAliasPlaceholders` — live in
 `internal/activity/ingest/*.go`, registered on the worker as
-methods of `*ingest.Activities`. Step 4b's `DestroyEvent` is the
-video-package `PersistActivities` activity (shared with #172's VAR
-teardown), not an ingest activity — the workflow calls it by string name.
+methods of `*ingest.Activities`. `PlanMediaRetention` lives in
+`internal/activity/retention`; `DestroyEvent` is the video-package
+`PersistActivities` activity shared with VAR teardown. Its stable Temporal
+name is retained even though policy retention also invokes it.
 
 ### Reconcile logic — the load-bearing merge
 
@@ -209,10 +202,14 @@ ingestActs := &ingestactivity.Activities{
     TopFlightCacheHours:   cfg.APIFootball.TopFlightCacheHours,
     FetchWindowFutureDays: cfg.APIFootball.FetchWindowFutureDays,
     ActivationWindow:      cfg.Workflows.ActivationWindow,
-    RetentionDays:         cfg.Workflows.RetentionDays,
+    CompletedFixtureDates: cfg.History.CompletedFixtureDates,
 }
 w.RegisterWorkflow(ffwf.IngestWorkflow)
 w.RegisterActivity(ingestActs)
+w.RegisterActivity(&retentionactivity.Activities{
+    Fixtures: fixtureRepo,
+    Assets:   assetRepo,
+})
 ```
 
 Registration happens BEFORE `w.Start(ctx)` — Temporal's reflection

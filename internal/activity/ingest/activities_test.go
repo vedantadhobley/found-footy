@@ -8,8 +8,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/google/uuid"
-
 	"github.com/vedantadhobley/found-footy/internal/domain/alias"
 	"github.com/vedantadhobley/found-footy/internal/domain/fixture"
 	"github.com/vedantadhobley/found-footy/internal/domain/team"
@@ -89,8 +87,8 @@ func (f *fakeFetcher) ListTeamsForLeague(_ context.Context, leagueID, _ int) ([]
 }
 
 // fakeFixtureRepo — in-memory Repo satisfying fixture.Repo.
-// Only implements what the ingest activities call: Get, Upsert,
-// PruneCompleted. Other methods panic — a test that reaches them
+// Only implements what the ingest activities call: Get and Upsert.
+// Other methods panic — a test that reaches them
 // signals scope drift.
 type fakeFixtureRepo struct {
 	mu   sync.Mutex
@@ -150,26 +148,6 @@ func (r *fakeFixtureRepo) ListStagingBeforeKickoff(context.Context, time.Time) (
 }
 func (r *fakeFixtureRepo) AssessCompletion(context.Context, int64, time.Time) (fixture.CompletionAssessment, error) {
 	panic("fakeFixtureRepo.AssessCompletion: not implemented (test scope drift)")
-}
-
-func (r *fakeFixtureRepo) PruneCompleted(_ context.Context, threshold time.Time) (int, error) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	deleted := 0
-	for id, f := range r.data {
-		if f.State == fixture.StateCompleted && f.CompletedAt != nil && f.CompletedAt.Before(threshold) {
-			delete(r.data, id)
-			deleted++
-		}
-	}
-	return deleted, nil
-}
-
-// ListReclaimableEventIDs — the fake models no events or shares, so a
-// clip-bearing event to reclaim never exists here. Returns empty; the
-// PruneOldFixtures test asserts only the clipless Deleted count.
-func (r *fakeFixtureRepo) ListReclaimableEventIDs(context.Context, time.Time) ([]uuid.UUID, error) {
-	return nil, nil
 }
 
 // fakeAliasRepo — in-memory alias.Repo.

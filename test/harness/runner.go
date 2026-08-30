@@ -14,6 +14,7 @@ import (
 
 	"github.com/vedantadhobley/found-footy/internal/activity/ingest"
 	"github.com/vedantadhobley/found-footy/internal/activity/monitor"
+	retentionactivity "github.com/vedantadhobley/found-footy/internal/activity/retention"
 	videoactivity "github.com/vedantadhobley/found-footy/internal/activity/video"
 	"github.com/vedantadhobley/found-footy/internal/config"
 	"github.com/vedantadhobley/found-footy/internal/infra/apifootball"
@@ -197,7 +198,7 @@ func runIngest(ctx context.Context, t *testing.T, pool *pg.Pool, afClient *apifo
 		TopFlightCacheHours:   24,
 		FetchWindowFutureDays: 7,
 		ActivationWindow:      5 * time.Minute,
-		RetentionDays:         14,
+		CompletedFixtureDates: 14,
 		Now: func() time.Time {
 			if s.IngestInput != nil && s.IngestInput.ManualDate != nil {
 				return s.IngestInput.ManualDate.UTC()
@@ -210,12 +211,12 @@ func runIngest(ctx context.Context, t *testing.T, pool *pg.Pool, afClient *apifo
 	env := ts.NewTestWorkflowEnvironment()
 	env.RegisterWorkflow(ffwf.IngestWorkflow)
 	env.RegisterActivity(acts)
-	// #176: retention Step 4 reclaims clip-bearing aged events via
-	// DestroyEvent. Scenarios assert the SQL-side outcome (clipless prune +
-	// which fixtures survive) against real pg; the byte reclaim itself is a
-	// no-op here — register PersistActivities for DestroyEvent + stub it so
-	// an ingest scenario with aged clip-bearing fixtures doesn't panic on
-	// the unregistered activity. Mirrors runActivePoll's #172 stub.
+	env.RegisterActivity(&retentionactivity.Activities{
+		Fixtures: pg.NewFixtureRepo(pool),
+		Assets:   pg.NewAssetRepo(pool),
+	})
+	// FF-079 retention plans against real pg. Object deletion is a no-op in
+	// the harness because Garage is outside scenario scope.
 	env.RegisterActivity(&videoactivity.PersistActivities{})
 	env.OnActivity("DestroyEvent", mock.Anything, mock.Anything).Return(nil)
 
@@ -228,7 +229,6 @@ func runIngest(ctx context.Context, t *testing.T, pool *pg.Pool, afClient *apifo
 		}
 		in.ManualFixtureIDs = s.IngestInput.ManualFixtureIDs
 		in.ActivationWindow = s.IngestInput.ActivationWindow
-		in.RetentionDays = s.IngestInput.RetentionDays
 	}
 
 	env.ExecuteWorkflow(ffwf.IngestWorkflow, in)

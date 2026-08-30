@@ -77,8 +77,8 @@ func (r RemovalReason) Valid() bool {
 // before insert — no SQL constraint can express it. FrameHashes is persisted
 // as a queryable record (debugging / re-dedup), not as a decision-maker.
 //
-// EventID is the dedup scope; FixtureID is a denormalized convenience
-// (s3 path + prune). Dedup is never cross-event — decisions.md 2026-07-25.
+// EventID is the dedup scope; FixtureID is a denormalized convenience for the
+// object path and retention worklist. Dedup is never cross-event.
 type Asset struct {
 	ID        uuid.UUID
 	EventID   uuid.UUID
@@ -86,6 +86,9 @@ type Asset struct {
 
 	S3Bucket string
 	S3Key    string // computed by the S3 client from (fixture_id, id); NOT stored redundantly per §3 principle #3, but IS on the row for read speed
+	// ObjectReclaimedAt records successful idempotent deletion of the Garage
+	// object. The asset row remains as durable audit and share-resolution history.
+	ObjectReclaimedAt *time.Time
 
 	MD5              []byte           // 16-byte whole-file digest — the exact-dup layer
 	FrameHashVersion FrameHashVersion // algorithm + preprocessing + sample interval; only equal versions compare
@@ -186,6 +189,9 @@ func (a *Asset) ValidateInvariants() error {
 	}
 	if a.SupersededBy != nil && *a.SupersededBy == a.ID {
 		return fmt.Errorf("video.Asset.ValidateInvariants: asset cannot supersede itself")
+	}
+	if a.ObjectReclaimedAt != nil && a.ObjectReclaimedAt.Before(a.FirstSeenAt) {
+		return fmt.Errorf("video.Asset.ValidateInvariants: object reclaimed before first observation")
 	}
 	return nil
 }

@@ -5,8 +5,43 @@ import (
 	"context"
 	"fmt"
 
+	"github.com/google/uuid"
+
 	"github.com/vedantadhobley/found-footy/internal/domain/event"
 )
+
+// GetByIDs returns known events in caller order. Unknown IDs are omitted.
+func (r *EventRepo) GetByIDs(ctx context.Context, ids []uuid.UUID) ([]*event.Event, error) {
+	if len(ids) == 0 {
+		return []*event.Event{}, nil
+	}
+	rows, err := r.pool.Query(ctx,
+		"SELECT "+eventColumns+` FROM events
+		 WHERE id = ANY($1::uuid[])
+		 ORDER BY array_position($1::uuid[], id)`, ids)
+	if err != nil {
+		return nil, fmt.Errorf("pg.EventRepo.GetByIDs: %w", err)
+	}
+	defer rows.Close()
+	return collectEvents(rows, "GetByIDs")
+}
+
+// ListByFixtures returns every non-removed event for the requested fixtures in
+// stable fixture/minute order. The API groups this one batch in memory.
+func (r *EventRepo) ListByFixtures(ctx context.Context, fixtureIDs []int64) ([]*event.Event, error) {
+	if len(fixtureIDs) == 0 {
+		return []*event.Event{}, nil
+	}
+	rows, err := r.pool.Query(ctx,
+		"SELECT "+eventColumns+` FROM events
+		 WHERE fixture_id = ANY($1::bigint[]) AND NOT removed
+		 ORDER BY array_position($1::bigint[], fixture_id), minute, first_seen_at, id`, fixtureIDs)
+	if err != nil {
+		return nil, fmt.Errorf("pg.EventRepo.ListByFixtures: %w", err)
+	}
+	defer rows.Close()
+	return collectEvents(rows, "ListByFixtures")
+}
 
 // ListPending returns non-removed events whose monitor or download work is
 // incomplete, ordered by first observation.
@@ -63,6 +98,25 @@ func (r *EventRepo) ListByFixture(ctx context.Context, fixtureID int64) ([]*even
 	}
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("pg.EventRepo.ListByFixture: rows: %w", err)
+	}
+	return events, nil
+}
+
+func collectEvents(rows interface {
+	Next() bool
+	Scan(dest ...any) error
+	Err() error
+}, operation string) ([]*event.Event, error) {
+	var events []*event.Event
+	for rows.Next() {
+		e, err := scanEvent(rows)
+		if err != nil {
+			return nil, err
+		}
+		events = append(events, e)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("pg.EventRepo.%s: rows: %w", operation, err)
 	}
 	return events, nil
 }

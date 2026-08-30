@@ -14,6 +14,9 @@ its historical heading anchors valid.
 
 New decisions after the frozen archive:
 
+- [Retention separates public, media, and audit lifecycles](./2026-08-30-retention-separates-public-media-and-audit-lifecycles.md)
+  — FF-079 bounds the public read model and Garage storage by completed UTC
+  kickoff dates while preserving SQL history and retry-safe reclamation facts.
 - [Popularity prunes public singleton clips asymmetrically](./2026-08-30-popularity-prunes-public-singletons.md)
   — FF-078 treats timestamp verification as stronger evidence: a verified
   popularity threshold affects every tier, while an unverified threshold

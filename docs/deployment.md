@@ -58,6 +58,12 @@ unknown-timeout, and exhausted-activity probes. Both default to 15 and validate
 to 1–20. At the default one-minute spacing, an outage can extend discovery but
 cannot hold fixture completion indefinitely.
 
+`PUBLIC_HISTORY_COMPLETED_FIXTURE_DATES` is jointly owned by worker and API and
+defaults to 14. It counts distinct UTC kickoff dates containing completed
+fixtures, not elapsed days or empty calendar dates. The API applies it to
+snapshot/search reads; ingest applies it to Garage reclamation. SQL audit rows
+are not expired by this setting.
+
 `.env.example` is the canonical checked template, not a second source of
 runtime defaults. `internal/config/contract_test.go` derives variable ownership
 from Go struct tags and verifies the template, both Compose files, required
@@ -413,8 +419,9 @@ via `ensureIngestSchedule` in `internal/app/worker/worker.go`.
 - Cron: `5 0 * * *` (00:05 UTC)
 - Overlap policy: `SCHEDULE_OVERLAP_POLICY_SKIP` (if a prior run is
   still executing, skip this one)
-- Args: `IngestWorkflowInput{RetentionDays: 14}` — plan §5 W1
-  default retention
+- Args: `IngestWorkflowInput{FetchFuture: true}`. The workflow reads
+  `PUBLIC_HISTORY_COMPLETED_FIXTURE_DATES` at execution time, so the
+  create-only schedule does not freeze retention policy.
 
 Idempotent: on subsequent worker restarts, the create call returns
 `temporal.ErrScheduleAlreadyRunning` and the code logs an `already

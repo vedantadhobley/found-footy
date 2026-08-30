@@ -157,13 +157,6 @@ func (r *fakeFixtureRepo) ListStagingBeforeKickoff(_ context.Context, threshold 
 	}
 	return out, nil
 }
-func (r *fakeFixtureRepo) PruneCompleted(context.Context, time.Time) (int, error) {
-	panic("fakeFixtureRepo.PruneCompleted: not implemented (test scope drift)")
-}
-
-func (r *fakeFixtureRepo) ListReclaimableEventIDs(context.Context, time.Time) ([]uuid.UUID, error) {
-	panic("fakeFixtureRepo.ListReclaimableEventIDs: not implemented (test scope drift)")
-}
 
 // AssessCompletion is the fixture-only portion of the production assessment.
 // Event/downstream truth tables live in the pg integration tests.

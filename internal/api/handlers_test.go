@@ -29,16 +29,23 @@ type fakeFixtures struct {
 	byState map[fixture.State][]*fixture.Fixture
 }
 
-func (f *fakeFixtures) Get(_ context.Context, id int64) (*fixture.Fixture, error) {
-	if fx, ok := f.byID[id]; ok {
-		return fx, nil
+func (f *fakeFixtures) ListPublicWindow(_ context.Context, _ int) ([]*fixture.Fixture, error) {
+	var out []*fixture.Fixture
+	for _, state := range []fixture.State{fixture.StateStaging, fixture.StateActive, fixture.StateCompleted} {
+		out = append(out, f.byState[state]...)
 	}
-	return nil, fixture.ErrNotFound
+	return out, nil
 }
-func (f *fakeFixtures) ListByState(_ context.Context, s fixture.State) ([]*fixture.Fixture, error) {
-	return f.byState[s], nil
+func (f *fakeFixtures) GetByIDs(_ context.Context, ids []int64) ([]*fixture.Fixture, error) {
+	var out []*fixture.Fixture
+	for _, id := range ids {
+		if fx, ok := f.byID[id]; ok {
+			out = append(out, fx)
+		}
+	}
+	return out, nil
 }
-func (f *fakeFixtures) SearchFixtures(_ context.Context, q string, _ int) ([]*fixture.Fixture, error) {
+func (f *fakeFixtures) SearchPublicFixtures(_ context.Context, q string, _, _ int) ([]*fixture.Fixture, error) {
 	// A lightweight league/team substring match — enough to exercise the
 	// handler's wire-through + assembly. The full 4-arm SQL (incl. scorer/
 	// assist) is covered by TestFixtureRepo_SearchFixtures.
@@ -55,21 +62,32 @@ func (f *fakeFixtures) SearchFixtures(_ context.Context, q string, _ int) ([]*fi
 }
 
 type fakeEvents struct {
-	byID          map[uuid.UUID]*event.Event
-	byFixture     map[int64][]*event.Event
-	discoveryDone map[uuid.UUID]bool // event IDs whose discovery has completed
+	byID           map[uuid.UUID]*event.Event
+	byFixture      map[int64][]*event.Event
+	discoveryDone  map[uuid.UUID]bool // event IDs whose discovery has completed
+	listCalls      int
+	discoveryCalls int
 }
 
-func (f *fakeEvents) Get(_ context.Context, id uuid.UUID) (*event.Event, error) {
-	if e, ok := f.byID[id]; ok {
-		return e, nil
+func (f *fakeEvents) GetByIDs(_ context.Context, ids []uuid.UUID) ([]*event.Event, error) {
+	var out []*event.Event
+	for _, id := range ids {
+		if e, ok := f.byID[id]; ok {
+			out = append(out, e)
+		}
 	}
-	return nil, event.ErrNotFound
+	return out, nil
 }
-func (f *fakeEvents) ListByFixture(_ context.Context, fixtureID int64) ([]*event.Event, error) {
-	return f.byFixture[fixtureID], nil
+func (f *fakeEvents) ListByFixtures(_ context.Context, fixtureIDs []int64) ([]*event.Event, error) {
+	f.listCalls++
+	var out []*event.Event
+	for _, fixtureID := range fixtureIDs {
+		out = append(out, f.byFixture[fixtureID]...)
+	}
+	return out, nil
 }
 func (f *fakeEvents) DiscoveryComplete(_ context.Context, ids []uuid.UUID) (map[uuid.UUID]bool, error) {
+	f.discoveryCalls++
 	out := make(map[uuid.UUID]bool, len(ids))
 	for _, id := range ids {
 		if f.discoveryDone[id] {
@@ -80,12 +98,18 @@ func (f *fakeEvents) DiscoveryComplete(_ context.Context, ids []uuid.UUID) (map[
 }
 
 type fakeVideos struct {
-	byEvent map[uuid.UUID][]video.LiveClip
-	resolve map[string]video.ResolvedShare
+	byEvent   map[uuid.UUID][]video.LiveClip
+	resolve   map[string]video.ResolvedShare
+	listCalls int
 }
 
-func (f *fakeVideos) ListLiveForEvent(_ context.Context, eventID uuid.UUID) ([]video.LiveClip, error) {
-	return f.byEvent[eventID], nil
+func (f *fakeVideos) ListLiveForEvents(_ context.Context, eventIDs []uuid.UUID) (map[uuid.UUID][]video.LiveClip, error) {
+	f.listCalls++
+	out := make(map[uuid.UUID][]video.LiveClip, len(eventIDs))
+	for _, eventID := range eventIDs {
+		out[eventID] = f.byEvent[eventID]
+	}
+	return out, nil
 }
 func (f *fakeVideos) ResolveShare(_ context.Context, id string) (video.ResolvedShare, error) {
 	if rs, ok := f.resolve[id]; ok {
@@ -136,9 +160,10 @@ func scaffold() (*Handlers, int64, uuid.UUID) {
 			byEvent: map[uuid.UUID][]video.LiveClip{evID: {clip}},
 			resolve: map[string]video.ResolvedShare{},
 		},
-		Presign:    &fakePresign{url: "https://garage.example/presigned"},
-		Bucket:     "found-footy",
-		PresignTTL: 5 * time.Minute,
+		Presign:               &fakePresign{url: "https://garage.example/presigned"},
+		Bucket:                "found-footy",
+		PresignTTL:            5 * time.Minute,
+		CompletedFixtureDates: 14,
 	}
 	return h, fxID, evID
 }
@@ -163,6 +188,20 @@ func TestGetFixtures_Window(t *testing.T) {
 	}
 	if len(list) != 1 || list[0].State != "active" || len(list[0].Events) != 1 {
 		t.Fatalf("window = %+v, want one active fixture carrying its event", list)
+	}
+}
+
+func TestGetFixtures_UsesOneBatchPerChildProjection(t *testing.T) {
+	h, _, _ := scaffold()
+	rec := get(h, "/api/v1/fixtures")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	events := h.Events.(*fakeEvents)
+	videos := h.Videos.(*fakeVideos)
+	if events.listCalls != 1 || events.discoveryCalls != 1 || videos.listCalls != 1 {
+		t.Fatalf("batch calls events=%d discovery=%d videos=%d, want 1/1/1",
+			events.listCalls, events.discoveryCalls, videos.listCalls)
 	}
 }
 

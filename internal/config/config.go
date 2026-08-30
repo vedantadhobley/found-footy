@@ -34,9 +34,9 @@ var binarySections = map[Binary][]string{
 	BinaryWorker: {
 		"Observability", "Postgres", "NATS", "S3", "Temporal", "LLM",
 		"APIFootball", "Syndication", "Twitter", "FirefoxFleet", "FFmpeg",
-		"Workflows", "Discovery", "Dedup", "Video", "Vision", "Event",
+		"Workflows", "History", "Discovery", "Dedup", "Video", "Vision", "Event",
 	},
-	BinaryAPI:         {"Observability", "Postgres", "S3", "API"},
+	BinaryAPI:         {"Observability", "Postgres", "S3", "API", "History"},
 	BinaryTwitter:     {"TwitterService"},
 	BinaryTwitterAuth: {"TwitterAuth"},
 	BinaryMigrate:     {"Observability", "Postgres"},
@@ -60,9 +60,13 @@ type Config struct {
 	FirefoxFleet  FirefoxFleetConfig
 	FFmpeg        FFmpegConfig
 
-	// Cross-workflow orchestration values (activation window, polling
-	// schedules, retention). Shared by ingest and the two poll workflows.
+	// Cross-workflow orchestration values (activation window and polling
+	// schedules). Shared by ingest and the two poll workflows.
 	Workflows WorkflowsConfig
+
+	// Shared public-history policy. Both API reads and worker-owned media
+	// retention consume this exact section.
+	History HistoryConfig
 
 	// EventWorkflow tuning (attempts, spacing, age filter, per-
 	// attempt timeout). Not folded into Workflows because these are

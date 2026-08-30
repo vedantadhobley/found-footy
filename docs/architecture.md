@@ -68,10 +68,11 @@ found-footy/
 │   │   ├── telemetry.go                 ✓ FF-050: typed replay-aware EventWorkflow lifecycle/search/candidate/publication timing envelope
 │   │   └── video.go                     ✓ #165: pre-FF-022 VideoWorkflow child retained for Temporal replay; shared download/hash activity contracts
 │   ├── activity/                        activity packages + shared heartbeat helper
-│   │   ├── ingest/                      ✓ config, roster, monotonic fixture fetch/store, canonical-team placeholder, and retention activities
+│   │   ├── ingest/                      ✓ config, roster, monotonic fixture fetch/store, and canonical-team placeholder activities
 │   │   │   ├── activities.go
-│   │   │   ├── tracked_teams.go / fetch.go / categorize.go / aliases.go / retention.go
+│   │   │   ├── tracked_teams.go / fetch.go / categorize.go / aliases.go
 │   │   │   └── focused colocated test files by responsibility
+│   │   ├── retention/                   ✓ FF-079 completed-date cutoff and unreclaimed-asset worklist planning
 │   │   ├── monitor/                     ✓ shared deps/config plus activation, reconciliation, provider-observation translation, event identity, and failed-only spawn recovery
 │   │   ├── discovery/                   ✓ shared config/classified search plus candidates.go durable candidate/search recovery and completion.go checklist closure
 │   │   ├── video/                       ✓ DownloadAndStage with bounded failure detail, versioned/minimum-length HashVideo, live-asset recovery, atomic placement with removed-event cleanup, compatibility persistence, and teardown
@@ -80,11 +81,11 @@ found-footy/
 │   │   ├── livefeed/                     ✓ publish-activity boundary for all NATS live-feed emits
 │   │   ├── twittermaintenance/           ✓ FF-058: forced auth/cookie sync plus minimum-evidence live-search probe
 │   │   └── heartbeat/                    shared time-based activity heartbeat loop
-│   ├── api/                             ✓ Chi read API over Postgres + S3; no NATS/Temporal dependency; SSE is vedanta-systems'
+│   ├── api/                             ✓ Chi bounded/batched read API over Postgres + S3; no NATS/Temporal dependency; SSE is vedanta-systems'
 │   ├── app/worker/                      ✓ worker composition root + Temporal schedule reconciliation; cmd/worker contains no wiring
 │   ├── bootstrap/                       ✓ S1 + FF-026 (NOT IN PLAN — see decisions.md 2026-07-07)
 │   │   └── bootstrap.go                 Deps + LIFO closer registry; fail-fast metrics/health listener; shared binary lifecycle
-│   ├── config/                          ✓ S1 + FF-035: per-binary envconfig profiles, semantic/cross-field validation, and env/Compose contract tests
+│   ├── config/                          ✓ S1 + FF-035/FF-079: binary profiles, shared history policy, validation, and env/Compose contract tests
 │   ├── observability/
 │   │   ├── vocabulary/                  ✓ S1: typed Module + Action enums
 │   │   ├── logging/                     ✓ S1: slog Emit() + TestEmitter for unit tests
@@ -195,10 +196,11 @@ for ActivePollWorkflow's batched API call),
 `ListStagingBeforeKickoff`, `AssessCompletion` (terminal grace plus settled
 event/downstream gates, returning durable parity audit evidence; see the
 [FF-063 decision](decisions/2026-08-25-terminal-observation-grace-bounds-completion.md)),
-and the two-part retention pair (#176): `PruneCompleted` (hard-delete clipless
-aged fixtures) + `ListReclaimableEventIDs` (events of clip-bearing aged fixtures
-with live shares → the workflow's `DestroyEvent` byte-reclaim loop; keeps rows as
-410 tombstones per [decisions.md 2026-08-11](decisions.md)).
+`PublicCompletedCutoff`, `ListPublicWindow`, and `GetByIDs`. Routine retention
+does not expose a fixture delete command. The API computes its completed-date
+cutoff and selects the public rows in one statement; targeted reads retain
+older audit history. See the
+[FF-079 decision](decisions/2026-08-30-retention-separates-public-media-and-audit-lifecycles.md).
 
 ### event domain (D2)
 
@@ -263,8 +265,14 @@ FF-066 adds `ClipPlacement` and `PlacementRepo` as the accepted-candidate write
 boundary. The Postgres adapter locks the event and commits candidate
 attribution, retry-safe popularity, asset/share identity, and optional
 supersession in one transaction. `video_shares.rank` remains a replay-only
-compatibility column; `ShareRepo.ListLiveForEvent` derives the public order
-from current evidence.
+compatibility column; `ShareRepo.ListLiveForEvents` derives public order for a
+request-wide event batch from current evidence.
+
+FF-079 gives `Asset` an `ObjectReclaimedAt` lifecycle fact. `AssetRepo` lists
+unreclaimed objects independently of share state, records only successful
+idempotent Garage deletes, and plans outside-window event work from completed
+fixture kickoff dates. Public clip reads exclude reclaimed assets. Fixture,
+event, candidate, asset, and share rows remain durable.
 
 FF-071 makes the same ownership model a database invariant. Composite foreign
 keys require an asset and candidate to carry their event's fixture, a share to
