@@ -13,13 +13,15 @@
 //     cadence rather than being tied to the slower StagingPoll.
 //  2. ListActiveFixtureIDs — cheap ID pull. Includes anything step
 //     1 just activated.
-//  3. FetchLiveFixtures — one activity call regardless of ID count;
+//  3. FetchLiveFixtures — one contract-validated activity call regardless of
+//     ID count;
 //     the apifootball client chunks internally at IDsBatchLimit and
 //     fires per-chunk HTTP calls in parallel via goroutines. Partial
 //     failures surface as FailedIDs — we log them and let the next
 //     30s cycle naturally re-request (the poll IS the retry).
-//  4. ReconcileFixture — per fixture, refresh row + diff events +
-//     vote presence/absence. Concurrent across fixtures via
+//  4. ReconcileFixture — per fixture, calculate the advisory
+//     provider-integrity verdict, refresh row, diff events, and vote
+//     presence/absence. Concurrent via
 //     workflow.ExecuteActivity in a loop (dispatched in parallel;
 //     workflow waits for all).
 //
@@ -48,6 +50,7 @@ import (
 	livefeedactivity "github.com/vedantadhobley/found-footy/internal/activity/livefeed"
 	"github.com/vedantadhobley/found-footy/internal/activity/monitor"
 	videoactivity "github.com/vedantadhobley/found-footy/internal/activity/video"
+	"github.com/vedantadhobley/found-footy/internal/domain/providerintegrity"
 )
 
 // ActivePollWorkflowInput carries per-cycle overrides. All fields
@@ -81,7 +84,10 @@ type ActivePollWorkflowOutput struct {
 	// classification because the score still requires those goals.
 	GoalAbsencesHeld []string
 	UnknownDropped   int // unknown-scorer placeholders hard-deleted this cycle
-	Errors           []string
+	// ProviderIntegrity is the non-enforcing batch verdict. Anomalous fixtures
+	// remain visible here while ordinary reconciliation continues unchanged.
+	ProviderIntegrity providerintegrity.BatchVerdict
+	Errors            []string
 }
 
 // ActivePollWorkflow — the coordinator for the 30s hot path. Called
@@ -202,6 +208,7 @@ func ActivePollWorkflow(ctx workflow.Context, in ActivePollWorkflowInput) (Activ
 	}
 	var removedEventIDs []uuid.UUID
 	var newNamedEventIDs []uuid.UUID
+	var providerVerdicts []providerintegrity.FixtureVerdict
 	// N5: partition this cycle's reconciles into the two disjoint fixture
 	// subjects — structural wins (a structural fixture rides its fresh clock in
 	// its full refetch), so a fixture is never in both.
@@ -222,6 +229,9 @@ func ActivePollWorkflow(ctx workflow.Context, in ActivePollWorkflowInput) (Activ
 		newNamedEventIDs = append(newNamedEventIDs, reconcileOut.NewNamedEventIDs...)
 		out.UnknownDropped += reconcileOut.UnknownDropped
 		out.Errors = append(out.Errors, reconcileOut.Errors...)
+		if reconcileOut.ProviderIntegrity.Policy.Valid() {
+			providerVerdicts = append(providerVerdicts, reconcileOut.ProviderIntegrity)
+		}
 		if len(reconcileOut.GoalAbsencesHeld) > 0 {
 			logger.Warn("goal absence held: aggregate score requires omitted event",
 				"fixture_id", reconcileOut.FixtureID,
@@ -238,6 +248,16 @@ func ActivePollWorkflow(ctx workflow.Context, in ActivePollWorkflowInput) (Activ
 				Extra:     reconcileOut.Extra,
 			})
 		}
+	}
+	out.ProviderIntegrity = providerintegrity.AggregateFixtureVerdicts(providerVerdicts)
+	if out.ProviderIntegrity.Anomalous() {
+		logger.Warn("provider integrity shadow anomaly",
+			"global_policy", out.ProviderIntegrity.Policy,
+			"global_reasons", out.ProviderIntegrity.Reasons,
+			"regressed_fixtures", out.ProviderIntegrity.RegressedFixtures,
+			"missing_confirmed_events", out.ProviderIntegrity.MissingConfirmedEvents,
+			"fixtures", out.ProviderIntegrity.Fixtures,
+		)
 	}
 
 	// ── Step 4.4: warm a Firefox instance per newly-detected named event

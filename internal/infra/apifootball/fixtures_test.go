@@ -5,6 +5,8 @@ package apifootball_test
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -27,6 +29,7 @@ type mockFixturesServer struct {
 	receivedQuery      string   // last query (kept for back-compat with existing tests)
 	receivedQueries    []string // ALL queries in call order — used by parallel-chunk tests
 	fixturesResponse   any
+	fixturesResponder  func(*http.Request) any
 	fixturesStatusCode int
 	// perQueryStatusCode — optional per-query override. If a request's
 	// ids= param string matches a key in this map, respond with that
@@ -62,7 +65,11 @@ func newMockFixturesServer() *mockFixturesServer {
 			status = override
 		}
 		resp := m.fixturesResponse
+		responder := m.fixturesResponder
 		m.mu.Unlock()
+		if responder != nil {
+			resp = responder(r)
+		}
 
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(status)
@@ -146,9 +153,58 @@ func canonicalFixturesResponse() map[string]any {
 					"extratime": map[string]any{"home": nil, "away": nil},
 					"penalty":   map[string]any{"home": nil, "away": nil},
 				},
+				"events": []any{},
 			},
 		},
-		"errors": []any{},
+		"errors":  []any{},
+		"results": 1,
+		"paging":  map[string]any{"current": 1, "total": 1},
+	}
+}
+
+func fixturesResponseForRequest(r *http.Request) any {
+	parts := strings.Split(r.URL.Query().Get("ids"), "-")
+	ids := make([]int64, 0, len(parts))
+	for _, part := range parts {
+		var id int64
+		if _, err := fmt.Sscan(part, &id); err != nil {
+			continue
+		}
+		ids = append(ids, id)
+	}
+	return fixturesResponseForIDs(ids...)
+}
+
+func fixturesResponseForIDs(ids ...int64) map[string]any {
+	fixtures := make([]any, 0, len(ids))
+	for _, id := range ids {
+		fixture := canonicalFixturesResponse()["response"].([]map[string]any)[0]
+		fixtureObject := fixture["fixture"].(map[string]any)
+		fixtureObject["id"] = id
+		fixtures = append(fixtures, fixture)
+	}
+	return map[string]any{
+		"response": fixtures,
+		"errors":   []any{},
+		"results":  len(fixtures),
+		"paging":   map[string]any{"current": 1, "total": 1},
+	}
+}
+
+func requireFixtureContractReason(t *testing.T, err error, want apifootball.FixtureContractReason) {
+	t.Helper()
+	if err == nil {
+		t.Fatalf("expected fixture contract error %q, got nil", want)
+	}
+	if !errors.Is(err, apifootball.ErrInvalidFixtureContract) {
+		t.Fatalf("error %v does not wrap ErrInvalidFixtureContract", err)
+	}
+	var contractErr *apifootball.FixtureContractError
+	if !errors.As(err, &contractErr) {
+		t.Fatalf("error %v has no FixtureContractError", err)
+	}
+	if contractErr.Reason != want {
+		t.Fatalf("reason = %q, want %q (error: %v)", contractErr.Reason, want, err)
 	}
 }
 
@@ -229,7 +285,9 @@ func TestListFixtures_HandlesNullableFields(t *testing.T) {
 				},
 			},
 		},
-		"errors": []any{},
+		"errors":  []any{},
+		"results": 1,
+		"paging":  map[string]any{"current": 1, "total": 1},
 	}
 	defer m.Close()
 
@@ -260,7 +318,10 @@ func TestListFixtures_HandlesNullableFields(t *testing.T) {
 func TestListFixtures_QueryParamsFromWindow(t *testing.T) {
 	ctx := context.Background()
 	m := newMockFixturesServer()
-	m.fixturesResponse = map[string]any{"response": []any{}, "errors": []any{}}
+	m.fixturesResponse = map[string]any{
+		"response": []any{}, "errors": []any{}, "results": 0,
+		"paging": map[string]any{"current": 1, "total": 1},
+	}
 	defer m.Close()
 
 	c := newClientForFixtures(t, ctx, m.URL())
@@ -283,7 +344,10 @@ func TestListFixtures_QueryParamsFromWindow(t *testing.T) {
 func TestListFixtures_QueryParamsFromDate(t *testing.T) {
 	ctx := context.Background()
 	m := newMockFixturesServer()
-	m.fixturesResponse = map[string]any{"response": []any{}, "errors": []any{}}
+	m.fixturesResponse = map[string]any{
+		"response": []any{}, "errors": []any{}, "results": 0,
+		"paging": map[string]any{"current": 1, "total": 1},
+	}
 	defer m.Close()
 
 	c := newClientForFixtures(t, ctx, m.URL())
@@ -340,7 +404,7 @@ func TestListFixtures_HalfWindow_Errors(t *testing.T) {
 func TestListFixturesByIDs(t *testing.T) {
 	ctx := context.Background()
 	m := newMockFixturesServer()
-	m.fixturesResponse = canonicalFixturesResponse()
+	m.fixturesResponder = fixturesResponseForRequest
 	defer m.Close()
 
 	c := newClientForFixtures(t, ctx, m.URL())
@@ -387,7 +451,7 @@ func TestListFixturesByIDs_Empty(t *testing.T) {
 func TestListFixturesByIDs_ChunksAndParallels(t *testing.T) {
 	ctx := context.Background()
 	m := newMockFixturesServer()
-	m.fixturesResponse = canonicalFixturesResponse()
+	m.fixturesResponder = fixturesResponseForRequest
 	defer m.Close()
 
 	ids := make([]int64, 25)
@@ -415,7 +479,7 @@ func TestListFixturesByIDs_ChunksAndParallels(t *testing.T) {
 func TestListFixturesByIDs_PartialFailure(t *testing.T) {
 	ctx := context.Background()
 	m := newMockFixturesServer()
-	m.fixturesResponse = canonicalFixturesResponse()
+	m.fixturesResponder = fixturesResponseForRequest
 	m.perQueryStatusCode = map[string]int{
 		"21-22-23-24-25": http.StatusInternalServerError,
 	}
@@ -465,5 +529,197 @@ func TestListFixturesByIDs_AllChunksFail(t *testing.T) {
 	}
 	if len(failedIDs) != 25 {
 		t.Errorf("failedIDs len = %d; want 25 (all input)", len(failedIDs))
+	}
+}
+
+func TestListFixtures_RejectsInvalidEnvelope(t *testing.T) {
+	tests := []struct {
+		name   string
+		mutate func(map[string]any)
+		want   apifootball.FixtureContractReason
+	}{
+		{
+			name: "errors missing",
+			mutate: func(envelope map[string]any) {
+				delete(envelope, "errors")
+			},
+			want: apifootball.FixtureContractErrorsMissing,
+		},
+		{
+			name: "errors nonempty",
+			mutate: func(envelope map[string]any) {
+				envelope["errors"] = map[string]any{"api": "provider failure"}
+			},
+			want: apifootball.FixtureContractErrorsNonEmpty,
+		},
+		{
+			name: "results missing",
+			mutate: func(envelope map[string]any) {
+				delete(envelope, "results")
+			},
+			want: apifootball.FixtureContractResultsMissing,
+		},
+		{
+			name: "results mismatch",
+			mutate: func(envelope map[string]any) {
+				envelope["results"] = 2
+			},
+			want: apifootball.FixtureContractResultsMismatch,
+		},
+		{
+			name: "paging missing",
+			mutate: func(envelope map[string]any) {
+				delete(envelope, "paging")
+			},
+			want: apifootball.FixtureContractPagingMissing,
+		},
+		{
+			name: "paging incomplete",
+			mutate: func(envelope map[string]any) {
+				envelope["paging"] = map[string]any{"current": 1, "total": 2}
+			},
+			want: apifootball.FixtureContractPagingIncomplete,
+		},
+		{
+			name: "response missing",
+			mutate: func(envelope map[string]any) {
+				delete(envelope, "response")
+			},
+			want: apifootball.FixtureContractResponseMissing,
+		},
+		{
+			name: "response null",
+			mutate: func(envelope map[string]any) {
+				envelope["response"] = nil
+			},
+			want: apifootball.FixtureContractResponseInvalid,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ctx := context.Background()
+			m := newMockFixturesServer()
+			envelope := canonicalFixturesResponse()
+			tt.mutate(envelope)
+			m.fixturesResponse = envelope
+			defer m.Close()
+
+			c := newClientForFixtures(t, ctx, m.URL())
+			_, err := c.ListFixtures(ctx, apifootball.FixtureListParams{
+				Date: time.Date(2026, 7, 8, 0, 0, 0, 0, time.UTC),
+			})
+			requireFixtureContractReason(t, err, tt.want)
+		})
+	}
+}
+
+func TestListFixturesByIDs_RejectsIncompleteOrInvalidFixturePayload(t *testing.T) {
+	tests := []struct {
+		name   string
+		ids    []int64
+		mutate func(map[string]any)
+		want   apifootball.FixtureContractReason
+	}{
+		{
+			name: "events missing",
+			ids:  []int64{101},
+			mutate: func(envelope map[string]any) {
+				delete(envelope["response"].([]any)[0].(map[string]any), "events")
+			},
+			want: apifootball.FixtureContractEventsMissing,
+		},
+		{
+			name: "events null",
+			ids:  []int64{101},
+			mutate: func(envelope map[string]any) {
+				envelope["response"].([]any)[0].(map[string]any)["events"] = nil
+			},
+			want: apifootball.FixtureContractEventsNull,
+		},
+		{
+			name: "requested id missing",
+			ids:  []int64{101, 102},
+			mutate: func(envelope map[string]any) {
+				envelope["response"] = envelope["response"].([]any)[:1]
+				envelope["results"] = 1
+			},
+			want: apifootball.FixtureContractRequestedMissing,
+		},
+		{
+			name: "returned id duplicate",
+			ids:  []int64{101, 102},
+			mutate: func(envelope map[string]any) {
+				items := envelope["response"].([]any)
+				items[1].(map[string]any)["fixture"].(map[string]any)["id"] = int64(101)
+			},
+			want: apifootball.FixtureContractReturnedDuplicate,
+		},
+		{
+			name: "returned id unrequested",
+			ids:  []int64{101},
+			mutate: func(envelope map[string]any) {
+				envelope["response"].([]any)[0].(map[string]any)["fixture"].(map[string]any)["id"] = int64(999)
+			},
+			want: apifootball.FixtureContractReturnedUnrequested,
+		},
+		{
+			name: "fixture id zero",
+			ids:  []int64{101},
+			mutate: func(envelope map[string]any) {
+				envelope["response"].([]any)[0].(map[string]any)["fixture"].(map[string]any)["id"] = int64(0)
+			},
+			want: apifootball.FixtureContractFixtureIdentity,
+		},
+		{
+			name: "same team identity",
+			ids:  []int64{101},
+			mutate: func(envelope map[string]any) {
+				teams := envelope["response"].([]any)[0].(map[string]any)["teams"].(map[string]any)
+				teams["away"].(map[string]any)["id"] = 40
+			},
+			want: apifootball.FixtureContractTeamIdentity,
+		},
+		{
+			name: "negative score",
+			ids:  []int64{101},
+			mutate: func(envelope map[string]any) {
+				envelope["response"].([]any)[0].(map[string]any)["goals"].(map[string]any)["home"] = -1
+			},
+			want: apifootball.FixtureContractNegativeScore,
+		},
+		{
+			name: "event team outside fixture",
+			ids:  []int64{101},
+			mutate: func(envelope map[string]any) {
+				fixture := envelope["response"].([]any)[0].(map[string]any)
+				fixture["events"] = []any{map[string]any{
+					"time":   map[string]any{"elapsed": 1, "extra": nil},
+					"team":   map[string]any{"id": 999, "name": "Other"},
+					"player": map[string]any{"id": 1, "name": "Player"},
+					"assist": map[string]any{"id": nil, "name": nil},
+					"type":   "Goal", "detail": "Normal Goal", "comments": nil,
+				}}
+			},
+			want: apifootball.FixtureContractEventTeamInvalid,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ctx := context.Background()
+			m := newMockFixturesServer()
+			envelope := fixturesResponseForIDs(tt.ids...)
+			tt.mutate(envelope)
+			m.fixturesResponse = envelope
+			defer m.Close()
+
+			c := newClientForFixtures(t, ctx, m.URL())
+			_, failedIDs, err := c.ListFixturesByIDs(ctx, tt.ids)
+			if len(failedIDs) != len(tt.ids) {
+				t.Fatalf("failedIDs = %v, want all requested IDs %v", failedIDs, tt.ids)
+			}
+			requireFixtureContractReason(t, err, tt.want)
+		})
 	}
 }

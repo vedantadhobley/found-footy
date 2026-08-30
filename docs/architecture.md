@@ -34,6 +34,7 @@ found-footy/
 │   │   ├── video/                       ✓ D3 + V/2 + V/3a + FF-041 + FF-066: model + repos + atomic placement contract + read rank + versioned perceptual dHash + tiered Match + hard-filter + tests
 │   │   ├── alias/                       ✓ canonical-team record + shared text operations; resolver removed 2026-08-16
 │   │   ├── team/                        ✓ TrackedTeam set — tracked-teams-cache ingest filter (team.go + repo.go)
+│   │   ├── providerintegrity/            ✓ FF-075 pure stored-vs-observed semantic evaluator and typed shadow mutation policies/reasons
 │   │   ├── discovery/                   ✓ Query builder + explicit workflow-owned candidate states
 │   │   │   ├── doc.go                   Package doc — query construction, URL extraction, source scoring
 │   │   │   ├── candidate.go             observed/in-flight/terminal ownership vocabulary
@@ -46,7 +47,7 @@ found-footy/
 │   │   ├── s3/                          ✓ S4: Garage client + instruments
 │   │   ├── llm/                         ✓ S6: OpenAI-compatible client + typed errors + Chat
 │   │   ├── temporal/                    ✓ S5: Client (with workerShutdownTimeout) + Worker
-│   │   ├── apifootball/                 ✓ S7 + O1a: /status probe + /fixtures + /fixtures/{ids}
+│   │   ├── apifootball/                 ✓ S7 + O1a + FF-075: /status + typed /fixtures contract, exact by-ID coverage, and missing/null/empty event distinction
 │   │   ├── twitter/                     ✓ classified HTTP Search + forced-Verify client for the Go Twitter service + mock-backed tests
 │   │   ├── syndication/                 ✓ S7 + T/f: FetchJSON + ResolveVideo/Download (cookieless mp4) + typed taxonomy + tests
 │   │   ├── event/                       ✓ N1+N5 NatsPublisher — 3-subject live-feed (fixture.clock/update, event.video) + Envelope + source config + golden tests
@@ -70,7 +71,7 @@ found-footy/
 │   │   │   ├── activities.go
 │   │   │   ├── tracked_teams.go / fetch.go / categorize.go / aliases.go / retention.go
 │   │   │   └── focused colocated test files by responsibility
-│   │   ├── monitor/                     ✓ shared deps/config plus activation.go, reconcile.go, emission.go, and event_identity.go; failed-only spawn recovery remains in spawner.go
+│   │   ├── monitor/                     ✓ shared deps/config plus activation, reconciliation, provider-observation translation, event identity, and failed-only spawn recovery
 │   │   ├── discovery/                   ✓ shared config/classified search plus candidates.go durable candidate/search recovery and completion.go checklist closure
 │   │   ├── video/                       ✓ DownloadAndStage with bounded failure detail, versioned/minimum-length HashVideo, live-asset recovery, atomic placement with removed-event cleanup, compatibility persistence, and teardown
 │   │   ├── vision/                      ✓ staged-clip frame extraction + model-backed validation
@@ -222,6 +223,23 @@ with reason='var'), `RegisterDownstreamWorkflow` (inserts the
 `RegisterVideoValidationWorkflow` (monotonic download-attempt counter). Debounce model per decisions.md
 2026-07-07 symmetric-counter + 2026-08-05 unknown-scorer entries.
 
+### provider-integrity domain (FF-075 shadow phase)
+
+`providerintegrity.FixtureComparison` is the provider-independent boundary
+between stored canonical facts and one validated provider observation. The pure
+evaluator returns typed `trusted`, `positive_only`, or `rejected` policies plus
+bounded reason codes. Monitor first reuses its canonical sequence allocator, so
+the evaluator compares the same natural keys reconciliation will use rather
+than maintaining a second event-matching algorithm. A recent, single-goal
+disappearance is a supported correction only when the correct score side drops
+by one and the remaining goal inventory has exact score parity.
+
+The batch aggregator recommends a global `positive_only` circuit when at least
+two fixtures regress or at least three confirmed events disappear. One
+anomalous fixture remains isolated. This phase is deliberately advisory:
+Monitor emits the verdict but still executes existing reconciliation. Durable
+circuit state, quarantine, and mutation enforcement have not shipped.
+
 ### video domain (D3)
 
 Core types `video.Asset` and `video.Share` — the split from Python's single
@@ -371,7 +389,13 @@ Adapter-specific notes:
   stage/class evidence after retry exhaustion.
 - **apifootball**: getJSON helper handles auth (`x-apisports-key` per
   doc) + rate-limit-header parsing (per-minute + daily distinct) +
-  error classification. `/fixtures` (single + by-IDs) landed in O1a.
+  error classification. FF-075 validates the decoded fixture envelope before
+  any caller receives it: `errors`, `results`, complete paging, response shape,
+  fixture/team/event identity, and nonnegative scores. By-ID chunks additionally
+  require every requested ID exactly once and distinguish missing or null
+  `events` from explicit `[]`. A rejected chunk follows the existing failed-ID
+  retry path and increments a bounded contract-reason metric.
+  `/fixtures` (single + by-IDs) landed in O1a.
   `ListFixturesByIDs` accepts any-size input, chunks internally at
   `IDsBatchLimit=20` (exported const, sourced from vendor doc), fires
   per-chunk HTTP calls in parallel via `errgroup`, returns

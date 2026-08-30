@@ -19,6 +19,7 @@ type Instruments struct {
 	reg *metrics.Registry
 
 	calls            *prometheus.CounterVec
+	contractFailures *prometheus.CounterVec
 	callDuration     *prometheus.HistogramVec
 	rateLimitRemain  prometheus.Gauge
 	dailyQuotaRemain prometheus.Gauge
@@ -40,6 +41,8 @@ type Instruments struct {
 //   - found_footy_apifootball_daily_quota_remaining — parsed from the
 //     x-ratelimit-requests-remaining header (DAILY quota, distinct
 //     from per-minute — see docs/api-football/rate-limits.md).
+//   - found_footy_apifootball_fixture_contract_failures_total{reason} —
+//     decoded 2xx fixture responses rejected before application state.
 func RegisterMetrics(reg *metrics.Registry, log logging.Emitter) *Instruments {
 	calls := prometheus.NewCounterVec(prometheus.CounterOpts{
 		Namespace: "found_footy",
@@ -56,6 +59,13 @@ func RegisterMetrics(reg *metrics.Registry, log logging.Emitter) *Instruments {
 		Buckets:   prometheus.ExponentialBuckets(0.05, 2, 14),
 	}, []string{"endpoint"})
 
+	contractFailures := prometheus.NewCounterVec(prometheus.CounterOpts{
+		Namespace: "found_footy",
+		Subsystem: "apifootball",
+		Name:      "fixture_contract_failures_total",
+		Help:      "Decoded API-Football fixture responses rejected by bounded contract reason.",
+	}, []string{"reason"})
+
 	rateLimitRemain := prometheus.NewGauge(prometheus.GaugeOpts{
 		Namespace: "found_footy",
 		Subsystem: "apifootball",
@@ -70,12 +80,15 @@ func RegisterMetrics(reg *metrics.Registry, log logging.Emitter) *Instruments {
 		Help:      "Remaining requests in the current daily quota (from response headers).",
 	})
 
-	reg.PrometheusRegistry().MustRegister(calls, callDuration, rateLimitRemain, dailyQuotaRemain)
+	reg.PrometheusRegistry().MustRegister(
+		calls, contractFailures, callDuration, rateLimitRemain, dailyQuotaRemain,
+	)
 
 	return &Instruments{
 		log:              log,
 		reg:              reg,
 		calls:            calls,
+		contractFailures: contractFailures,
 		callDuration:     callDuration,
 		rateLimitRemain:  rateLimitRemain,
 		dailyQuotaRemain: dailyQuotaRemain,

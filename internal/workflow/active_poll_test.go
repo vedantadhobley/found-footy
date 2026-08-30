@@ -16,6 +16,7 @@ import (
 	livefeedactivity "github.com/vedantadhobley/found-footy/internal/activity/livefeed"
 	"github.com/vedantadhobley/found-footy/internal/activity/monitor"
 	videoactivity "github.com/vedantadhobley/found-footy/internal/activity/video"
+	"github.com/vedantadhobley/found-footy/internal/domain/providerintegrity"
 	"github.com/vedantadhobley/found-footy/internal/infra/apifootball"
 	"github.com/vedantadhobley/found-footy/internal/workflow"
 )
@@ -84,6 +85,50 @@ func TestActivePollWorkflow_HappyPath(t *testing.T) {
 	}
 	if out.NewEvents != 1 {
 		t.Errorf("NewEvents = %d, want 1", out.NewEvents)
+	}
+	env.AssertExpectations(t)
+}
+
+func TestActivePollWorkflow_AggregatesProviderIntegrityShadowVerdicts(t *testing.T) {
+	var s testsuite.WorkflowTestSuite
+	env := newActivePollEnv(&s)
+
+	env.OnActivity("ActivateUpcoming", mock.Anything, mock.Anything).
+		Return(monitor.ActivateUpcomingOutput{}, nil).Once()
+	env.OnActivity("ListActiveFixtureIDs", mock.Anything).
+		Return(monitor.ListActiveFixtureIDsOutput{IDs: []int64{101, 102}}, nil).Once()
+	env.OnActivity("FetchLiveFixtures", mock.Anything, mock.Anything).
+		Return(monitor.FetchLiveFixturesOutput{Fixtures: []apifootball.APIFixture{
+			{Fixture: apifootball.APIFixtureFixture{ID: 101}},
+			{Fixture: apifootball.APIFixtureFixture{ID: 102}},
+		}}, nil).Once()
+
+	for _, fixtureID := range []int64{101, 102} {
+		id := fixtureID
+		env.OnActivity("ReconcileFixture", mock.Anything,
+			mock.MatchedBy(func(in monitor.ReconcileFixtureInput) bool {
+				return in.APIFixture.Fixture.ID == id
+			})).Return(monitor.ReconcileFixtureOutput{
+			FixtureID: id,
+			ProviderIntegrity: providerintegrity.FixtureVerdict{
+				FixtureID: id,
+				Policy:    providerintegrity.PolicyPositiveOnly,
+				Reasons:   []providerintegrity.Reason{providerintegrity.ReasonScoreDecreased},
+			},
+		}, nil).Once()
+	}
+
+	env.ExecuteWorkflow(workflow.ActivePollWorkflow, workflow.ActivePollWorkflowInput{})
+	if err := env.GetWorkflowError(); err != nil {
+		t.Fatalf("workflow error: %v", err)
+	}
+	var out workflow.ActivePollWorkflowOutput
+	if err := env.GetWorkflowResult(&out); err != nil {
+		t.Fatalf("workflow result: %v", err)
+	}
+	if out.ProviderIntegrity.Policy != providerintegrity.PolicyPositiveOnly ||
+		out.ProviderIntegrity.RegressedFixtures != 2 {
+		t.Fatalf("ProviderIntegrity = %+v, want systemic positive-only verdict", out.ProviderIntegrity)
 	}
 	env.AssertExpectations(t)
 }
