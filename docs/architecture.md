@@ -51,7 +51,7 @@ found-footy/
 │   │   ├── apifootball/                 ✓ S7 + O1a + FF-075: /status + typed /fixtures contract, exact by-ID coverage, and missing/null/empty event distinction
 │   │   ├── twitter/                     ✓ classified HTTP Search + forced-Verify client for the Go Twitter service + mock-backed tests
 │   │   ├── syndication/                 ✓ S7 + T/f: FetchJSON + ResolveVideo/Download (cookieless mp4) + typed taxonomy + tests
-│   │   ├── event/                       ✓ N1+N5+FF-077 NatsPublisher — 3-subject live-feed (fixture.presentation/update, event.video) + Envelope + source config + golden tests
+│   │   ├── event/                       ✓ N1+N5+FF-077 NatsPublisher — 3-subject live-feed (fixture.status/update, event.video) + Envelope + source config + golden tests
 │   │   ├── ffmpeg/                      ✓ V/1 + FF-005: probe + bounded-grayscale single-pass dense extraction + faststart + semaphore + typed taxonomy + tests
 │   │   └── firefoxfleet/                ✓ #160 + FF-001: per-event Firefox provisioner via Docker API — Compose-network-scoped daemon names/ownership labels/count/list/reap/release; stable event-only network alias keeps workflow addressing registry-free; idempotent lifecycle + two-fleet/one-daemon tests
 │   ├── workflow/                        shipped Temporal workflows

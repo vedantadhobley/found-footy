@@ -155,7 +155,7 @@ environment, such as `found-footy.prod.>`, rather than mixing dev and prod.
 
 | Wire subject | Payload | Consumer action |
 |---|---|---|
-| `found-footy.<env>.fixture.presentation` | `{"fixtures":[{"fixture_id":1530158,"presentation_state":"playing","clock":{"minute":62,"extra":null},"status":{"short":"2H","long":"Second Half"},"display":"clock"}]}` | Replace the fixture's complete presentation projection in place. Do not fetch. |
+| `found-footy.<env>.fixture.status` | `{"fixtures":[{"fixture_id":1530158,"presentation_state":"playing","clock":{"minute":62,"extra":null},"status":{"short":"2H","long":"Second Half"},"display":"clock"}]}` | Replace the fixture's complete status/time presentation projection in place. Do not fetch. |
 | `found-footy.<env>.fixture.update` | `{"fixture_ids":[1530158,1530163]}` | Fetch `/api/v1/fixtures?ids=1530158,1530163`; replace by fixture ID and re-bucket by `presentation_state`. |
 | `found-footy.<env>.event.video` | `{"event_id":"<uuid>","fixture_id":1530158}` | Fetch `/api/v1/events?ids=<uuid>`; replace the event inside its fixture. Emitted after any accepted placement changes membership or a ranking input, including popularity-only duplicates. |
 
@@ -172,11 +172,11 @@ Every payload is wrapped in the version-1 workspace envelope:
 }
 ```
 
-Within one monitor cycle, `fixture.presentation` and `fixture.update` are
+Within one monitor cycle, `fixture.status` and `fixture.update` are
 disjoint. A presentation-state boundary or any score, event, winner, penalty,
 metadata, or completion change selects `fixture.update`. A minute change or a
 status change that remains in one presentation state selects
-`fixture.presentation`; this includes `1H -> HT -> 2H` and `ET -> BT -> ET`.
+`fixture.status`; this includes `1H -> HT -> 2H` and `ET -> BT -> ET`.
 An identical frozen projection emits nothing. `event.video` is asynchronous
 and can arrive after the fixture completes.
 
@@ -208,7 +208,7 @@ This contract deliberately removes API-Football status interpretation from the
 BFF and React. The consumer change must:
 
 1. consume `presentation_state`, `clock`, `status`, and `display` from REST;
-2. forward `fixture.presentation` as one inline SSE projection and replace
+2. forward `fixture.status` as one inline SSE projection and replace
    those four fields by fixture ID;
 3. preserve and union the IDs in bursty `fixture.update` messages, call
    `/api/v1/fixtures?ids=...`, then replace and re-order only those fixtures;
@@ -221,6 +221,6 @@ The current BFF discards `fixture.update.fixture_ids` and turns both update and
 video subjects into a generic full-window refresh. That is consumer drift, not
 the producer contract. The shared schema owner under
 `~/workspace/nats/schemas/` must replace the fixture-clock schema, example, and
-README entry with `fixture.presentation` before the coordinated production
+README entry with `fixture.status` before the coordinated production
 rollout. Found Footy's committed golden is
-`internal/infra/event/testdata/found-footy.fixture.presentation.json`.
+`internal/infra/event/testdata/found-footy.fixture.status.json`.

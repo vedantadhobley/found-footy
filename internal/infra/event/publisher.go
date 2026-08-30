@@ -38,13 +38,13 @@ func NewPublisher(conn *nats.Conn, env string) (*NatsPublisher, error) {
 	return &NatsPublisher{conn: conn, source: projectPrefix + "-" + env, env: env}, nil
 }
 
-// PublishFixturePresentation emits TopicFixturePresentation for fixtures whose
+// PublishFixtureStatus emits TopicFixtureStatus for fixtures whose
 // inline projection changed without requiring an authoritative snapshot refresh.
-func (p *NatsPublisher) PublishFixturePresentation(fixtures []FixturePresentation) error {
+func (p *NatsPublisher) PublishFixtureStatus(fixtures []FixtureStatus) error {
 	if len(fixtures) == 0 {
 		return nil
 	}
-	return p.publish(TopicFixturePresentation, FixturePresentationPayload{Fixtures: fixtures})
+	return p.publish(TopicFixtureStatus, FixtureStatusPayload{Fixtures: fixtures})
 }
 
 // PublishFixtureUpdate emits TopicFixtureUpdate for fixtures whose

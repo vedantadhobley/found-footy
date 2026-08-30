@@ -44,7 +44,7 @@ type Status struct {
 }
 
 // Projection is the complete frontend fixture-status contract. REST embeds it
-// in every fixture and fixture.presentation embeds the same fields per entry.
+// in every fixture and fixture.status embeds the same fields per entry.
 type Projection struct {
 	PresentationState State   `json:"presentation_state"`
 	Clock             Clock   `json:"clock"`

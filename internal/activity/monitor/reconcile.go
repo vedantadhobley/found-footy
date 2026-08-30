@@ -183,7 +183,7 @@ func (a *Activities) ReconcileFixture(ctx context.Context, in ReconcileFixtureIn
 	out.Presentation = fixturepresentation.From(f.APIStatus, f.APIElapsed, f.APIExtra)
 	if !previousPresentation.Equal(out.Presentation) {
 		if previousPresentation.PresentationState == out.Presentation.PresentationState {
-			out.markPresentation()
+			out.markStatus()
 		} else {
 			out.markUpdate()
 		}

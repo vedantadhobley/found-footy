@@ -21,7 +21,7 @@ import (
 // *event.NatsPublisher; an interface so tests inject a fake without a bus.
 type publisher interface {
 	PublishEventVideo(eventID uuid.UUID, fixtureID int64) error
-	PublishFixturePresentation(fixtures []event.FixturePresentation) error
+	PublishFixtureStatus(fixtures []event.FixtureStatus) error
 	PublishFixtureUpdate(fixtureIDs []int64) error
 }
 
@@ -50,36 +50,36 @@ func (a *Activities) PublishEventVideo(_ context.Context, in EventVideoInput) er
 	return a.Pub.PublishEventVideo(in.EventID, in.FixtureID)
 }
 
-// FixturePresentationEntry is one inline projection in a batch. The workflow
+// FixtureStatusEntry is one inline projection in a status batch. The workflow
 // carries the shared contract type without importing the NATS adapter.
-type FixturePresentationEntry struct {
+type FixtureStatusEntry struct {
 	FixtureID int64
 	fixturepresentation.Projection
 }
 
 // FixtureBatchInput is one ActivePoll cycle's disjoint partition: fixtures whose
-// inline projection changed (Presentation) and fixtures requiring an
+// inline status projection changed (Statuses) and fixtures requiring an
 // authoritative snapshot (UpdateIDs). Either may be empty.
 type FixtureBatchInput struct {
-	Presentation []FixturePresentationEntry
-	UpdateIDs    []int64
+	Statuses  []FixtureStatusEntry
+	UpdateIDs []int64
 }
 
 // PublishFixtureBatch emits both fixture subjects for one poll cycle:
-// fixture.presentation (inline projection) + fixture.update (ids to refetch).
+// fixture.status (inline projection) + fixture.update (ids to refetch).
 // Best-effort at the caller, but both publishes are attempted and any error is
 // returned so Temporal retries — a re-published batch is harmless (a re-tick or
 // a re-signal the consumer refetches idempotently).
 func (a *Activities) PublishFixtureBatch(_ context.Context, in FixtureBatchInput) error {
-	presentations := make([]event.FixturePresentation, 0, len(in.Presentation))
-	for _, projection := range in.Presentation {
-		presentations = append(presentations, event.FixturePresentation{
+	statuses := make([]event.FixtureStatus, 0, len(in.Statuses))
+	for _, projection := range in.Statuses {
+		statuses = append(statuses, event.FixtureStatus{
 			FixtureID:  projection.FixtureID,
 			Projection: projection.Projection,
 		})
 	}
 	return errors.Join(
-		a.Pub.PublishFixturePresentation(presentations),
+		a.Pub.PublishFixtureStatus(statuses),
 		a.Pub.PublishFixtureUpdate(in.UpdateIDs),
 	)
 }

@@ -241,7 +241,7 @@ state. Parity is nullable for exceptional terminal outcomes. These fields are
 for forensic diagnosis; score quality no longer gates completion after grace.
 
 The independent `NatsPublisher` owns the live fan-out plane. It emits the three
-environment-scoped topics `fixture.presentation`, `fixture.update`, and
+environment-scoped topics `fixture.status`, `fixture.update`, and
 `event.video` inside the workspace envelope. FF-077 replaces the clock-only
 topic with the shared REST/NATS presentation projection; payloads and consumer
 recovery rules live in [`api.md`](./api.md).

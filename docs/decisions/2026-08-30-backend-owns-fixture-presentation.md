@@ -33,12 +33,12 @@ minute; otherwise it is `status`. Consumers format a clock or render the
 provided short status. They do not map API-Football codes. REST and NATS use
 the same `internal/contract/fixturepresentation.Projection` type.
 
-Monitor returns one typed publication action: no-op, `presentation`, or
+Monitor returns one typed publication action: no-op, `status`, or
 `update`. A projection change inside one presentation state is inline. A state
 boundary or any score, event, winner, penalty, metadata, or completion change
 requires an authoritative snapshot, and `update` wins if both occur.
 
-`fixture.presentation` replaces `fixture.clock`. `fixture.update` remains an
+`fixture.status` replaces `fixture.clock`. `fixture.update` remains an
 ID-only targeted invalidation, and `event.video` remains an event-scoped
 invalidation. Initial connection and reconnect still require a complete REST
 snapshot because Core NATS is transient.

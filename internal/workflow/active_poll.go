@@ -212,7 +212,7 @@ func ActivePollWorkflow(ctx workflow.Context, in ActivePollWorkflowInput) (Activ
 	// Partition each reconcile into one disjoint live-feed route. An
 	// authoritative update wins inside ReconcileFixture, so a fixture cannot
 	// appear in both batches.
-	var presentationEntries []livefeedactivity.FixturePresentationEntry
+	var statusEntries []livefeedactivity.FixtureStatusEntry
 	var updateIDs []int64
 	for _, f := range reconcileFutures {
 		var reconcileOut monitor.ReconcileFixtureOutput
@@ -241,8 +241,8 @@ func ActivePollWorkflow(ctx workflow.Context, in ActivePollWorkflowInput) (Activ
 		switch reconcileOut.FeedAction {
 		case monitor.FixtureFeedUpdate:
 			updateIDs = append(updateIDs, reconcileOut.FixtureID)
-		case monitor.FixtureFeedPresentation:
-			presentationEntries = append(presentationEntries, livefeedactivity.FixturePresentationEntry{
+		case monitor.FixtureFeedStatus:
+			statusEntries = append(statusEntries, livefeedactivity.FixtureStatusEntry{
 				FixtureID:  reconcileOut.FixtureID,
 				Projection: reconcileOut.Presentation,
 			})
@@ -318,18 +318,18 @@ func ActivePollWorkflow(ctx workflow.Context, in ActivePollWorkflowInput) (Activ
 	}
 
 	// ── Step 5: live-feed batch emit (N5) ──
-	// One PublishFixtureBatch per cycle: fixture.presentation (inline status) +
+	// One PublishFixtureBatch per cycle: fixture.status (inline status) +
 	// fixture.update (ids to bulk-refetch). Best-effort — a lost batch heals on
 	// the consumer's next window refetch. Activation (staging→active) is not
 	// emitted here: the kickoff status flip selects fixture.update on the
 	// fixture's first live reconcile, and it rides the window fetch meanwhile.
-	if len(presentationEntries) > 0 || len(updateIDs) > 0 {
+	if len(statusEntries) > 0 || len(updateIDs) > 0 {
 		emitCtx := workflow.WithActivityOptions(ctx, workflow.ActivityOptions{
 			StartToCloseTimeout: 15 * time.Second,
 			RetryPolicy:         baseAO.RetryPolicy,
 		})
 		if err := workflow.ExecuteActivity(emitCtx, "PublishFixtureBatch",
-			livefeedactivity.FixtureBatchInput{Presentation: presentationEntries, UpdateIDs: updateIDs}).Get(emitCtx, nil); err != nil {
+			livefeedactivity.FixtureBatchInput{Statuses: statusEntries, UpdateIDs: updateIDs}).Get(emitCtx, nil); err != nil {
 			logger.Warn("PublishFixtureBatch failed (heals on refetch)", "error", err)
 			out.Errors = append(out.Errors, "PublishFixtureBatch: "+err.Error())
 		}

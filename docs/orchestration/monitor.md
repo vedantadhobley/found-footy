@@ -59,14 +59,14 @@ after the shadow corpus is reviewed. See the
 **Typed live-feed classification (FF-077).** `ReconcileFixture` derives the
 same consumer projection exposed by REST before and after refreshing provider
 facts. Its output has one `FixtureFeedAction`, not independent booleans:
-`presentation`, `update`, or the zero-value no-op. A clock/status change that
-stays within one `presentation_state` selects `presentation`; a state boundary
+`status`, `update`, or the zero-value no-op. A clock/status change that
+stays within one `presentation_state` selects `status`; a state boundary
 or any new/removed/stabilized event, unknown-scorer drop, score, penalty,
 winner, metadata, or completion change selects `update`. Update always wins if
 both classes occur in one observation.
 
 ActivePoll partitions the typed actions and calls one `PublishFixtureBatch`:
-`fixture.presentation` carries the complete
+`fixture.status` carries the complete
 `presentation_state`/`clock`/`status`/`display` projection inline, while
 `fixture.update` carries IDs for an authoritative targeted REST fetch. The two
 subjects remain disjoint. Publication is best-effort; reconnect recovery is a

@@ -19,7 +19,7 @@ import (
 
 // goldenFiles are the committed envelope examples, one per subject.
 var goldenFiles = []string{
-	"found-footy.fixture.presentation.json",
+	"found-footy.fixture.status.json",
 	"found-footy.fixture.update.json",
 	"found-footy.event.video.json",
 }
@@ -75,7 +75,7 @@ func TestPayloadStructsRoundTripGoldens(t *testing.T) {
 		file string
 		into func() any
 	}{
-		{"found-footy.fixture.presentation.json", func() any { return &FixturePresentationPayload{} }},
+		{"found-footy.fixture.status.json", func() any { return &FixtureStatusPayload{} }},
 		{"found-footy.fixture.update.json", func() any { return &FixtureUpdatePayload{} }},
 		{"found-footy.event.video.json", func() any { return &EventVideoPayload{} }},
 	}
@@ -141,7 +141,7 @@ func TestTopicWireAndValid(t *testing.T) {
 	if got := TopicEventVideo.Wire("dev"); got != "found-footy.dev.event.video" {
 		t.Errorf("Wire(dev) = %q, want found-footy.dev.event.video", got)
 	}
-	if !TopicFixturePresentation.Valid() || !TopicFixtureUpdate.Valid() || !TopicEventVideo.Valid() {
+	if !TopicFixtureStatus.Valid() || !TopicFixtureUpdate.Valid() || !TopicEventVideo.Valid() {
 		t.Error("registered topics must be Valid")
 	}
 	if Topic("bogus").Valid() {
@@ -174,7 +174,7 @@ func TestPublishEmptyBatchIsNoOp(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewPublisher: %v", err)
 	}
-	if err := p.PublishFixturePresentation(nil); err != nil {
+	if err := p.PublishFixtureStatus(nil); err != nil {
 		t.Errorf("empty presentation batch: %v", err)
 	}
 	if err := p.PublishFixtureUpdate(nil); err != nil {

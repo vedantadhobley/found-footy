@@ -3,7 +3,7 @@
   "ts": "2026-08-30T05:50:00Z",
   "source": "found-footy-prod",
   "version": 1,
-  "subject": "found-footy.prod.fixture.presentation",
+  "subject": "found-footy.prod.fixture.status",
   "payload": {
     "fixtures": [
       {
