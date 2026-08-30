@@ -5,6 +5,17 @@
 // they're video-domain shapes, but they're consumed only by the read API.
 package video
 
+const (
+	// PublicVisibilityPopularityThreshold is the source-vote count at which a
+	// clip can suppress singleton alternatives in the public read model.
+	PublicVisibilityPopularityThreshold = 3
+
+	// PublicVisibilitySingletonPopularity identifies a clip backed by only its
+	// first accepted source. These clips remain durable even when omitted from
+	// the public event projection.
+	PublicVisibilitySingletonPopularity = 1
+)
+
 // LiveClip is one displayable clip: an active share joined to its LIVE asset
 // (superseded_by IS NULL), with rank derived from the current verified,
 // popularity, size, age, and share-ID evidence (rank 1 = primary).

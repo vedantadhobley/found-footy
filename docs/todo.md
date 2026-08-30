@@ -160,6 +160,23 @@ the current branch.
   validation still owes an inline period transition, a targeted fixture
   refetch, and a targeted video replacement.
 
+### FF-078 — repeated-source evidence prunes public singleton clips
+
+- **Status:** `implemented`
+- **Severity:** P3
+- **Product rule:** A timestamp-verified active clip with popularity at least
+  three suppresses all popularity-one clips for its event. An unverified clip
+  at the same threshold suppresses only unverified popularity-one clips; it
+  cannot hide a verified singleton. Popularity-two clips remain visible.
+- **Implementation:** `ListLiveForEvent` derives the rule from the current live
+  set before assigning contiguous public ranks. Suppressed assets and shares
+  remain durable, active, and directly resolvable. The behavior is reversible
+  if a threshold clip leaves the live set. No schema, workflow, or frontend
+  implementation changes are required.
+- **Completion condition:** Release the API and verify that a natural
+  popularity bump emits `event.video`, returns contiguous ranks, and preserves
+  a verified singleton against an unverified threshold clip.
+
 ### FF-003 — candidate can pass without exact-event semantic evidence
 
 - **Status:** `confirmed`

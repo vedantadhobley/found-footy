@@ -14,6 +14,10 @@ its historical heading anchors valid.
 
 New decisions after the frozen archive:
 
+- [Popularity prunes public singleton clips asymmetrically](./2026-08-30-popularity-prunes-public-singletons.md)
+  — FF-078 treats timestamp verification as stronger evidence: a verified
+  popularity threshold affects every tier, while an unverified threshold
+  affects only unverified clips.
 - [Backend owns fixture presentation](./2026-08-30-backend-owns-fixture-presentation.md)
   — FF-077 gives REST and NATS one status/clock projection, replaces
   `fixture.clock` with `fixture.status`, and leaves presentation-state

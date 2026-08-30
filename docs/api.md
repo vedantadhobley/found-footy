@@ -47,10 +47,16 @@ fixtureDTO
 
 Staging fixtures carry an empty `events` array. Active and completed fixtures
 carry their non-removed events; each event carries active shares joined to
-non-superseded assets. The query derives `rank` on every read from timestamp
-verification, popularity, file size, creation time, and share ID; the stored
-compatibility rank is never part of the public result. A batch-event lookup can
-still return a directly requested removed event with `phase: "removed"`.
+non-superseded assets. Before ranking, the read model applies FF-078's reversible
+singleton-visibility rule. A timestamp-verified clip with popularity at least
+three suppresses every popularity-one clip. An unverified clip with popularity
+at least three suppresses only unverified popularity-one clips; it cannot hide
+a timestamp-verified clip. Popularity-two clips remain visible. Omitted shares
+stay active and their direct playback URLs remain valid. The query then derives
+contiguous `rank` values from timestamp verification, popularity, file size,
+creation time, and share ID; the stored compatibility rank is never part of the
+public result. A batch-event lookup can still return a directly requested
+removed event with `phase: "removed"`.
 
 Pointers are emitted explicitly. Consumers must preserve the distinction
 between `null` and zero.
