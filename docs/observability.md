@@ -241,9 +241,10 @@ state. Parity is nullable for exceptional terminal outcomes. These fields are
 for forensic diagnosis; score quality no longer gates completion after grace.
 
 The independent `NatsPublisher` owns the live fan-out plane. It emits the three
-environment-scoped topics `fixture.clock`, `fixture.update`, and `event.video`
-inside the workspace envelope. Payloads and consumer recovery rules live in
-[`api.md`](./api.md).
+environment-scoped topics `fixture.presentation`, `fixture.update`, and
+`event.video` inside the workspace envelope. FF-077 replaces the clock-only
+topic with the shared REST/NATS presentation projection; payloads and consumer
+recovery rules live in [`api.md`](./api.md).
 
 The former standalone Composer and `found_footy_event_composer_*` metrics were
 removed with FF-070 because they allowed a split write. Audit inserts now ride

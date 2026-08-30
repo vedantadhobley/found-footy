@@ -8,6 +8,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/vedantadhobley/found-footy/internal/contract/fixturepresentation"
 	"github.com/vedantadhobley/found-footy/internal/domain/event"
 	"github.com/vedantadhobley/found-footy/internal/domain/fixture"
 	"github.com/vedantadhobley/found-footy/internal/domain/providerintegrity"
@@ -104,20 +105,11 @@ type ReconcileFixtureOutput struct {
 	// pre-write snapshot. It is observable but does not yet alter reconciliation.
 	ProviderIntegrity providerintegrity.FixtureVerdict
 
-	// ── N4 live-feed classification signals (decisions.md 2026-08-14) ──
-	// Populated every cycle; the poll workflow partitions each fixture into
-	// fixture.clock (ClockChanged, minute-only) vs fixture.update (Structural)
-	// — disjoint, structural wins.
-	Minute int  // current match minute (api elapsed) — for the clock tick payload
-	Extra  *int // stoppage minutes on top of Minute, or nil
-	// ClockChanged — minute/extra advanced vs the prior poll. A frozen clock
-	// (HT, pre-kickoff, stalled) leaves it false → no tick that cycle.
-	ClockChanged bool
-	// Structural — something a consumer must full-refetch changed this cycle:
-	// a new/removed/stabilized event, an unknown-scorer drop, a score/penalty/
-	// winner/status change, or completion. Drives fixture.update. Set
-	// incrementally (below), so it is correct at every return path.
-	Structural bool
+	// FeedAction is a typed, mutually exclusive live-feed route. Presentation
+	// carries the complete inline projection when that route wins; Update means
+	// the consumer must fetch the fixture snapshot. The zero value means no-op.
+	FeedAction   FixtureFeedAction
+	Presentation fixturepresentation.Projection
 }
 
 // ReconcileFixture is the per-fixture per-cycle work:
@@ -152,10 +144,9 @@ func (a *Activities) ReconcileFixture(ctx context.Context, in ReconcileFixtureIn
 	}
 	storedFixture := *f
 	// N4: snapshot the API-mutable fields before the Update* calls so we can
-	// classify this cycle as clock-only vs structural once they mutate f.
-	prevStatus := f.APIStatus.Short
+	// select one live-feed route after they mutate f.
+	previousPresentation := fixturepresentation.From(f.APIStatus, f.APIElapsed, f.APIExtra)
 	prevTerminalObservedAt := f.TerminalObservedAt
-	prevElapsed, prevExtra := f.APIElapsed, f.APIExtra
 	prevKickoff, prevHome, prevAway, prevLeague := f.Kickoff, f.Home, f.Away, f.League
 	prevHomeScore, prevAwayScore := f.HomeScore, f.AwayScore
 	prevHomeWinner, prevAwayWinner := f.HomeWinner, f.AwayWinner
@@ -186,18 +177,23 @@ func (a *Activities) ReconcileFixture(ctx context.Context, in ReconcileFixtureIn
 	f.UpdatePenalty(in.APIFixture.Score.Penalty.Home, in.APIFixture.Score.Penalty.Away)
 	f.UpdateResult(in.APIFixture.Teams.Home.Winner, in.APIFixture.Teams.Away.Winner)
 
-	// N4: classify the non-event changes now (event-driven structural signals +
-	// completion set out.Structural incrementally below). ClockChanged/Minute/
-	// Extra are set here so every return path carries them.
-	out.Minute = derefInt(f.APIElapsed)
-	out.Extra = f.APIExtra
-	out.ClockChanged = intPtrChanged(prevElapsed, f.APIElapsed) || intPtrChanged(prevExtra, f.APIExtra)
-	if prevStatus != f.APIStatus.Short || timePtrChanged(prevTerminalObservedAt, f.TerminalObservedAt) ||
+	// Classify the consumer projection before event work. A status/clock change
+	// that remains in one presentation state is inline; a state change requires
+	// a snapshot so the consumer can rebucket and apply its new recency.
+	out.Presentation = fixturepresentation.From(f.APIStatus, f.APIElapsed, f.APIExtra)
+	if !previousPresentation.Equal(out.Presentation) {
+		if previousPresentation.PresentationState == out.Presentation.PresentationState {
+			out.markPresentation()
+		} else {
+			out.markUpdate()
+		}
+	}
+	if timePtrChanged(prevTerminalObservedAt, f.TerminalObservedAt) ||
 		!prevKickoff.Equal(f.Kickoff) || prevHome != f.Home || prevAway != f.Away || prevLeague != f.League ||
 		intPtrChanged(prevHomeScore, f.HomeScore) || intPtrChanged(prevAwayScore, f.AwayScore) ||
 		intPtrChanged(prevHomePen, f.HomePenalty) || intPtrChanged(prevAwayPen, f.AwayPenalty) ||
 		boolPtrChanged(prevHomeWinner, f.HomeWinner) || boolPtrChanged(prevAwayWinner, f.AwayWinner) {
-		out.Structural = true
+		out.markUpdate()
 	}
 
 	refreshed, err := a.FixtureRepo.RefreshActivePoll(ctx, f)
@@ -293,7 +289,7 @@ func (a *Activities) ReconcileFixture(ctx context.Context, in ReconcileFixtureIn
 			}
 			if justTriggered {
 				out.EventsBecameStable = append(out.EventsBecameStable, key)
-				out.Structural = true
+				out.markUpdate()
 
 				// Fast path: spawn Discovery immediately on confirmation
 				// so the completion check sees "downstream pending" this
@@ -310,14 +306,14 @@ func (a *Activities) ReconcileFixture(ctx context.Context, in ReconcileFixtureIn
 			// #199: re-persist provider-mutable fields that arrive/change AFTER
 			// first detection — assist (API-Football fills the assister in late,
 			// often post-match), minute/extra (VAR corrections), detail
-			// (reclassification). Only on a real delta → UPDATE + flag Structural
-			// so the fixture rides fixture.update and the consumer refetches.
+			// (reclassification). Only on a real delta → fixture.update so the
+			// consumer refetches.
 			// Identity (team/player/type, the natural_key) is never touched here.
 			if existing.MutableFieldsChanged(domainEv) {
 				if err := a.EventRepo.UpdateMutableFields(ctx, existing.ID, domainEv); err != nil {
 					out.Errors = append(out.Errors, fmt.Sprintf("update mutable event=%s: %v", key, err))
 				} else {
-					out.Structural = true
+					out.markUpdate()
 				}
 			}
 		} else {
@@ -346,7 +342,7 @@ func (a *Activities) ReconcileFixture(ctx context.Context, in ReconcileFixtureIn
 				continue
 			}
 			out.NewEventsDetected++
-			out.Structural = true
+			out.markUpdate()
 
 			// event.detected is a confirmed-detection signal for durable /
 			// external consumers — don't emit for an unknown-player placeholder
@@ -386,7 +382,7 @@ func (a *Activities) ReconcileFixture(ctx context.Context, in ReconcileFixtureIn
 				continue
 			}
 			out.UnknownDropped++
-			out.Structural = true
+			out.markUpdate()
 			continue
 		}
 		if pgEv.Type == event.TypeGoal && scoreInventory.scoreRequiresMissingGoal(pgEv.Team.ID) {
@@ -410,7 +406,7 @@ func (a *Activities) ReconcileFixture(ctx context.Context, in ReconcileFixtureIn
 		if hitZero {
 			out.EventsRemoved = append(out.EventsRemoved, key)
 			out.EventsRemovedIDs = append(out.EventsRemovedIDs, pgEv.ID)
-			out.Structural = true
+			out.markUpdate()
 		}
 	}
 
@@ -474,7 +470,7 @@ func (a *Activities) ReconcileFixture(ctx context.Context, in ReconcileFixtureIn
 		return out, nil
 	}
 	out.Completed = true
-	out.Structural = true
+	out.markUpdate()
 	return out, nil
 }
 

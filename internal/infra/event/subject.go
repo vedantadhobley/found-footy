@@ -1,5 +1,5 @@
 // subject.go — the topic/subject model for the found-footy live-feed producer.
-// A Topic is the env-agnostic message kind (fixture.clock, fixture.update,
+// A Topic is the env-agnostic message kind (fixture.presentation, fixture.update,
 // event.video); the full NATS subject on the wire is found-footy.<env>.<topic>.
 //
 // Env is a SUBJECT token, not merely the envelope `source` field — so a consumer
@@ -21,14 +21,14 @@ const projectPrefix = "found-footy"
 type Topic string
 
 const (
-	// TopicFixtureClock — batch of live clock ticks: fixtures whose only change
-	// this monitor cycle was the match minute advancing. Payload:
-	// FixtureClockPayload. Disjoint from TopicFixtureUpdate per cycle; a frozen
-	// clock (half-time / pre-kickoff) emits nothing.
-	TopicFixtureClock Topic = "fixture.clock"
+	// TopicFixturePresentation — batch of complete inline presentation
+	// projections. It covers clock movement and status changes that stay within
+	// one presentation state. Payload: FixturePresentationPayload. Disjoint from
+	// TopicFixtureUpdate per cycle.
+	TopicFixturePresentation Topic = "fixture.presentation"
 
-	// TopicFixtureUpdate — batch of fixture ids that changed structurally this
-	// cycle (new/removed event, kickoff, FT, score, penalty, winner, status).
+	// TopicFixtureUpdate — batch of fixture ids whose authoritative snapshot
+	// changed this cycle (new/removed event, kickoff, FT, score, result, metadata).
 	// Payload: FixtureUpdatePayload. The consumer bulk-refetches GET /fixtures?ids=.
 	TopicFixtureUpdate Topic = "fixture.update"
 
@@ -53,7 +53,7 @@ func (t Topic) String() string { return string(t) }
 // publisher against a typo before a message reaches the bus.
 func (t Topic) Valid() bool {
 	switch t {
-	case TopicFixtureClock, TopicFixtureUpdate, TopicEventVideo:
+	case TopicFixturePresentation, TopicFixtureUpdate, TopicEventVideo:
 		return true
 	default:
 		return false

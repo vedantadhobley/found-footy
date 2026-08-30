@@ -87,6 +87,10 @@ the current branch.
   observation; ActivePoll aggregates and logs typed shadow verdicts. The
   evaluator does not alter mutations, and no circuit/quarantine state exists
   yet. Review live shadow evidence before the migration and enforcement slice.
+- **Production checkpoint (2026-08-30):** Commit `fe7db30` passed the immutable
+  rollout and release-identity verification. The shadow evaluator is now
+  collecting natural provider observations; enforcement remains intentionally
+  absent until that evidence is reviewed.
 - **Design:** [API-Football provider-integrity circuit breaker](./design/proposals/provider-integrity-circuit-breaker.md).
 
 ### FF-076 — scorer name without provider ID is treated as anonymous
@@ -121,6 +125,38 @@ the current branch.
   noisy team-only fallback for events with no scorer. This event does have a
   player search term, so that rationale does not apply. Do not weaken searches
   to team-only queries as the fix.
+
+### FF-077 — frontend interprets provider status and clock taxonomy
+
+- **Status:** `implemented`
+- **Severity:** P2
+- **Observed:** `ReconcileFixture` treated every status-code change as a
+  structural invalidation. `1H -> HT`, `HT -> 2H`, and extra-time breaks
+  therefore triggered `fixture.update` and a complete frontend refetch instead
+  of updating the right-hand indicator inline. Vedanta Systems separately maps
+  API-Football codes for playing/finished/upcoming/deferred grouping, clock vs
+  status display, penalty formatting, winner highlighting, and deferred labels.
+- **Cause:** Found Footy exposed provider facts but not its product
+  presentation. The monitor returned independent `ClockChanged` and
+  `Structural` booleans, while the `fixture.clock` subject was too narrow to
+  carry a frozen-clock status transition. The BFF also discards the IDs already
+  present in `fixture.update` and converts the signal to a full-window refresh.
+- **Invariant:** Found Footy is the sole API-Football status interpreter. REST
+  and inline NATS use one derived projection:
+  `presentation_state`, `clock`, `status`, and `display`. Consumers render the
+  selected generic value and group by presentation state; they do not maintain
+  provider-code sets. Found Footy's processing state remains separate.
+- **Implemented locally (2026-08-30):** `internal/contract/fixturepresentation`
+  derives the shared REST/NATS projection. Monitor emits one typed action:
+  `presentation`, `update`, or no-op. `fixture.presentation` replaces
+  `fixture.clock`; `fixture.update` remains an ID-only targeted invalidation.
+  `1H -> HT -> 2H` and `ET -> BT -> ET` stay inline, while `NS -> 1H`,
+  `2H -> FT`, `P -> PEN`, and `PST -> NS` require a snapshot.
+- **Cross-repo rollout gate:** Update the authoritative schemas under
+  `~/workspace/nats/schemas/` and the Vedanta Systems BFF/React consumer before
+  deploying this breaking contract. The exact handoff is in
+  [`api.md`](./api.md#vedanta-systems-handoff). No legacy producer path is
+  retained after the coordinated rollout.
 
 ### FF-003 — candidate can pass without exact-event semantic evidence
 

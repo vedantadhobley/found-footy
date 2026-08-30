@@ -1,11 +1,31 @@
-// signals.go — change-detection helpers for the N4 reconcile classification.
-// ReconcileFixture snapshots the API-mutable fields before the Update* calls
-// and diffs after; these compare the nil-able pointers so the poll workflow can
-// partition each fixture into fixture.clock (minute moved) vs fixture.update
-// (something structural changed). See decisions.md 2026-08-14.
+// signals.go — typed live-feed routing and change-detection helpers.
 package monitor
 
 import "time"
+
+// FixtureFeedAction is the one valid publication decision for a reconciled
+// fixture. The zero value means no live-feed work.
+type FixtureFeedAction string
+
+const (
+	FixtureFeedNone         FixtureFeedAction = ""
+	FixtureFeedPresentation FixtureFeedAction = "presentation"
+	FixtureFeedUpdate       FixtureFeedAction = "update"
+)
+
+// markPresentation selects the inline route unless a snapshot refresh already
+// won. Reconcile may discover stronger evidence after classifying the status.
+func (out *ReconcileFixtureOutput) markPresentation() {
+	if out.FeedAction != FixtureFeedUpdate {
+		out.FeedAction = FixtureFeedPresentation
+	}
+}
+
+// markUpdate selects the authoritative snapshot route. It always wins over an
+// earlier inline-presentation change from the same provider observation.
+func (out *ReconcileFixtureOutput) markUpdate() {
+	out.FeedAction = FixtureFeedUpdate
+}
 
 // intPtrChanged reports whether two *int differ in presence or value. Both nil →
 // unchanged; exactly one nil → changed; both set → value compare.
@@ -38,12 +58,4 @@ func timePtrChanged(a, b *time.Time) bool {
 		return a != b
 	}
 	return !a.Equal(*b)
-}
-
-// derefInt returns *p, or 0 if p is nil.
-func derefInt(p *int) int {
-	if p == nil {
-		return 0
-	}
-	return *p
 }

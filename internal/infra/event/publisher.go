@@ -38,18 +38,17 @@ func NewPublisher(conn *nats.Conn, env string) (*NatsPublisher, error) {
 	return &NatsPublisher{conn: conn, source: projectPrefix + "-" + env, env: env}, nil
 }
 
-// PublishFixtureClock emits TopicFixtureClock for the fixtures whose
-// minute advanced this cycle. An empty batch is a no-op (a frozen clock —
-// half-time / pre-kickoff — emits nothing), NOT an error.
-func (p *NatsPublisher) PublishFixtureClock(fixtures []FixtureClock) error {
+// PublishFixturePresentation emits TopicFixturePresentation for fixtures whose
+// inline projection changed without requiring an authoritative snapshot refresh.
+func (p *NatsPublisher) PublishFixturePresentation(fixtures []FixturePresentation) error {
 	if len(fixtures) == 0 {
 		return nil
 	}
-	return p.publish(TopicFixtureClock, FixtureClockPayload{Fixtures: fixtures})
+	return p.publish(TopicFixturePresentation, FixturePresentationPayload{Fixtures: fixtures})
 }
 
-// PublishFixtureUpdate emits TopicFixtureUpdate for the fixtures that
-// changed structurally this cycle. Ids are deduped to satisfy the
+// PublishFixtureUpdate emits TopicFixtureUpdate for fixtures whose
+// authoritative snapshot changed this cycle. Ids are deduped to satisfy the
 // contract's uniqueItems; an empty batch is a no-op.
 func (p *NatsPublisher) PublishFixtureUpdate(fixtureIDs []int64) error {
 	ids := dedupeInt64(fixtureIDs)

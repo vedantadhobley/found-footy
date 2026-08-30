@@ -28,8 +28,8 @@ transition-owned fields, and commit their audit in the same transaction.
 Active poll fixes the observation version at workflow-cycle start; staging poll
 fixes it before its provider call, so response latency does not define order.
 Active and staging responses also refresh provider-owned kickoff, team display,
-and league fields. An active metadata correction is `Structural`, so it emits
-`fixture.update`. See the
+and league fields. An active metadata correction selects `fixture.update` so
+the consumer refreshes its authoritative snapshot. See the
 [decision](../decisions/2026-08-28-fixture-writers-own-columns.md).
 
 **Provider-integrity shadow phase (FF-075).** API-Football fixture responses now
@@ -56,24 +56,29 @@ state, fixture quarantine, and positive-only reconciliation remain FF-075 work
 after the shadow corpus is reviewed. See the
 [wire-and-shadow decision](../decisions/2026-08-29-provider-fixtures-require-contract-and-shadow-trust.md).
 
-**Live-feed classification (N4, decisions.md 2026-08-14).** `ReconcileFixture`
-snapshots the fixture's API-mutable fields before the `Update*` calls and diffs
-after, so `ReconcileFixtureOutput` carries `Minute`/`Extra` + two disjoint
-signals per cycle: **`ClockChanged`** (the minute/extra advanced and nothing
-else) and **`Structural`** (a new/removed/stabilised event, an unknown-scorer
-drop, a score/penalty/winner/status/metadata change, or completion — set incrementally so
-it holds at every return path). **Step 5 (N5, shipped)** partitions the cycle's
-reconciles — structural wins, so a fixture is never in both — and fires one
-`PublishFixtureBatch` activity → `fixture.clock` (inline ticks) + `fixture.update`
-(ids to bulk-refetch). Best-effort (a lost batch heals on the consumer's next
-window refetch). Activation (staging→active) is not emitted; the kickoff
-status-flip is captured as Structural on the fixture's first live reconcile.
+**Typed live-feed classification (FF-077).** `ReconcileFixture` derives the
+same consumer projection exposed by REST before and after refreshing provider
+facts. Its output has one `FixtureFeedAction`, not independent booleans:
+`presentation`, `update`, or the zero-value no-op. A clock/status change that
+stays within one `presentation_state` selects `presentation`; a state boundary
+or any new/removed/stabilized event, unknown-scorer drop, score, penalty,
+winner, metadata, or completion change selects `update`. Update always wins if
+both classes occur in one observation.
+
+ActivePoll partitions the typed actions and calls one `PublishFixtureBatch`:
+`fixture.presentation` carries the complete
+`presentation_state`/`clock`/`status`/`display` projection inline, while
+`fixture.update` carries IDs for an authoritative targeted REST fetch. The two
+subjects remain disjoint. Publication is best-effort; reconnect recovery is a
+full snapshot. Activation itself is not emitted, but the first `NS -> 1H`
+reconcile crosses presentation state and therefore selects `fixture.update`.
+See the [presentation-contract decision](../decisions/2026-08-30-backend-owns-fixture-presentation.md).
 
 **Event mutable-field refresh (#199, decisions.md 2026-08-15).** For an existing
 known-scorer event, `ReconcileFixture` also diffs the provider's mutable
 NON-identity fields (`Event.MutableFieldsChanged` — assist, minute, extra, detail)
 against the stored row and, on a real delta, calls `UpdateMutableFields` + sets
-`Structural` so the late value rides `fixture.update`. Assists arrive after the goal
+the typed feed action to `update` so the late value rides `fixture.update`. Assists arrive after the goal
 (API-Football fills the assister post-match); minute/extra get VAR-corrected.
 Identity (the `natural_key`) is never touched. Active-fixture only — the
 completed-fixture backfill is tracked as [`FF-010`](../todo.md#confirmed-and-mitigated-backlog).

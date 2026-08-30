@@ -14,6 +14,10 @@ its historical heading anchors valid.
 
 New decisions after the frozen archive:
 
+- [Backend owns fixture presentation](./2026-08-30-backend-owns-fixture-presentation.md)
+  — FF-077 gives REST and NATS one status/clock projection, replaces
+  `fixture.clock` with `fixture.presentation`, and leaves presentation-state
+  boundaries on targeted snapshot invalidation.
 - [Provider fixture responses require a contract and shadow trust assessment](./2026-08-29-provider-fixtures-require-contract-and-shadow-trust.md)
   — FF-075 rejects malformed/incomplete fixture payloads and records
   non-enforcing semantic trust verdicts before durable circuit enforcement.

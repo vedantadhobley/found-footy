@@ -79,10 +79,10 @@ func (f *Fixture) Reschedule(newKickoff time.Time, at time.Time) error {
 // State transitions happen through the dedicated methods above.
 //
 // It deliberately does NOT touch last_activity_at: that is the wall-clock of the
-// most recent MEANINGFUL change (goal/card, status transition, activation,
-// completion) — the frontend's recency sort key — not "when we last polled." A
-// plain poll is not activity; the monitor reconcile bumps last_activity_at only
-// on a structural change. See decisions.md 2026-08-14.
+// most recent meaningful lifecycle observation or event — the frontend's
+// recency sort key — not "when we last polled." The API derives the value from
+// activation, terminal observation, completion, and event timestamps. A plain
+// poll is not activity. See decisions.md 2026-08-14.
 func (f *Fixture) UpdateFromPoll(
 	status APIStatus,
 	elapsed, extra *int,

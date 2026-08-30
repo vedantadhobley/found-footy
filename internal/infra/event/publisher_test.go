@@ -19,7 +19,7 @@ import (
 
 // goldenFiles are the committed envelope examples, one per subject.
 var goldenFiles = []string{
-	"found-footy.fixture.clock.json",
+	"found-footy.fixture.presentation.json",
 	"found-footy.fixture.update.json",
 	"found-footy.event.video.json",
 }
@@ -69,14 +69,13 @@ func TestEnvelopeRoundTripsGoldens(t *testing.T) {
 // TestPayloadStructsRoundTripGoldens verifies each typed payload struct
 // matches its schema: unmarshal the golden's `payload` object into the Go
 // struct, re-marshal, and require equality (as maps). Catches a wrong
-// json tag, a wrong type, or a broken nullability (the FixtureClock.Extra
-// null-not-omitted contract).
+// json tag, a wrong type, or broken projection nullability.
 func TestPayloadStructsRoundTripGoldens(t *testing.T) {
 	cases := []struct {
 		file string
 		into func() any
 	}{
-		{"found-footy.fixture.clock.json", func() any { return &FixtureClockPayload{} }},
+		{"found-footy.fixture.presentation.json", func() any { return &FixturePresentationPayload{} }},
 		{"found-footy.fixture.update.json", func() any { return &FixtureUpdatePayload{} }},
 		{"found-footy.event.video.json", func() any { return &EventVideoPayload{} }},
 	}
@@ -142,7 +141,7 @@ func TestTopicWireAndValid(t *testing.T) {
 	if got := TopicEventVideo.Wire("dev"); got != "found-footy.dev.event.video" {
 		t.Errorf("Wire(dev) = %q, want found-footy.dev.event.video", got)
 	}
-	if !TopicFixtureClock.Valid() || !TopicFixtureUpdate.Valid() || !TopicEventVideo.Valid() {
+	if !TopicFixturePresentation.Valid() || !TopicFixtureUpdate.Valid() || !TopicEventVideo.Valid() {
 		t.Error("registered topics must be Valid")
 	}
 	if Topic("bogus").Valid() {
@@ -175,8 +174,8 @@ func TestPublishEmptyBatchIsNoOp(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewPublisher: %v", err)
 	}
-	if err := p.PublishFixtureClock(nil); err != nil {
-		t.Errorf("empty clock batch: %v", err)
+	if err := p.PublishFixturePresentation(nil); err != nil {
+		t.Errorf("empty presentation batch: %v", err)
 	}
 	if err := p.PublishFixtureUpdate(nil); err != nil {
 		t.Errorf("empty update batch: %v", err)

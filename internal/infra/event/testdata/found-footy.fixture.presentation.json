@@ -1,0 +1,25 @@
+{
+  "id": "0198f3a0-1c2d-7e3f-8a4b-5c6d7e8f9a0b",
+  "ts": "2026-08-30T05:50:00Z",
+  "source": "found-footy-prod",
+  "version": 1,
+  "subject": "found-footy.prod.fixture.presentation",
+  "payload": {
+    "fixtures": [
+      {
+        "fixture_id": 1530158,
+        "presentation_state": "playing",
+        "clock": { "minute": 62, "extra": null },
+        "status": { "short": "2H", "long": "Second Half" },
+        "display": "clock"
+      },
+      {
+        "fixture_id": 1530162,
+        "presentation_state": "playing",
+        "clock": { "minute": 45, "extra": null },
+        "status": { "short": "HT", "long": "Halftime" },
+        "display": "status"
+      }
+    ]
+  }
+}
