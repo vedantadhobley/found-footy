@@ -128,7 +128,7 @@ the current branch.
 
 ### FF-077 — frontend interprets provider status and clock taxonomy
 
-- **Status:** `implemented`
+- **Status:** `validating`
 - **Severity:** P2
 - **Observed:** `ReconcileFixture` treated every status-code change as a
   structural invalidation. `1H -> HT`, `HT -> 2H`, and extra-time breaks
@@ -152,11 +152,13 @@ the current branch.
   `fixture.clock`; `fixture.update` remains an ID-only targeted invalidation.
   `1H -> HT -> 2H` and `ET -> BT -> ET` stay inline, while `NS -> 1H`,
   `2H -> FT`, `P -> PEN`, and `PST -> NS` require a snapshot.
-- **Cross-repo rollout gate:** Update the authoritative schemas under
-  `~/workspace/nats/schemas/` and the Vedanta Systems BFF/React consumer before
-  deploying this breaking contract. The exact handoff is in
-  [`api.md`](./api.md#vedanta-systems-handoff). No legacy producer path is
-  retained after the coordinated rollout.
+- **Production checkpoint (2026-08-30):** Found Footy release `e26966a`, shared
+  schema `fb04fee`, and Vedanta Systems `81db099` deployed together. The public
+  snapshot exposed one fixture collection with the four-field projection, no
+  legacy buckets or nested elapsed value; portal health and the BFF production
+  NATS subscription passed. No legacy producer path remains. Natural match-day
+  validation still owes an inline period transition, a targeted fixture
+  refetch, and a targeted video replacement.
 
 ### FF-003 — candidate can pass without exact-event semantic evidence
 
