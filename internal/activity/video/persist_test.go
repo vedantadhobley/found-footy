@@ -89,14 +89,30 @@ func (f *fakeAssetStore) Supersede(_ context.Context, loserID, winnerID uuid.UUI
 	}
 	return nil
 }
-func (f *fakeAssetStore) ListObjectKeysByEvent(_ context.Context, eventID uuid.UUID) ([]dvideo.ObjectRef, error) {
+func (f *fakeAssetStore) ListUnreclaimedObjectsByEvent(_ context.Context, eventID uuid.UUID) ([]dvideo.ObjectRef, error) {
 	var out []dvideo.ObjectRef
 	for _, a := range f.byID {
-		if a.EventID == eventID {
-			out = append(out, dvideo.ObjectRef{Bucket: a.S3Bucket, Key: a.S3Key})
+		if a.EventID == eventID && a.ObjectReclaimedAt == nil {
+			out = append(out, dvideo.ObjectRef{AssetID: a.ID, Bucket: a.S3Bucket, Key: a.S3Key})
 		}
 	}
 	return out, nil
+}
+
+func (f *fakeAssetStore) MarkObjectReclaimed(_ context.Context, assetID uuid.UUID) error {
+	a, ok := f.byID[assetID]
+	if !ok {
+		return dvideo.ErrNotFound
+	}
+	if a.ObjectReclaimedAt == nil {
+		stamp := time.Now().UTC()
+		a.ObjectReclaimedAt = &stamp
+	}
+	return nil
+}
+
+func (f *fakeAssetStore) ListUnreclaimedEventIDsBefore(context.Context, time.Time) ([]uuid.UUID, error) {
+	return nil, nil
 }
 
 type fakeShareStore struct {
@@ -243,9 +259,11 @@ func intp(i int) *int { return &i }
 
 func TestCommitClipPlacement_CompletesRetrySafeDurableTail(t *testing.T) {
 	a, s3, assets, _ := newPersist()
+	loserID := uuid.New()
+	assets.byID[loserID] = &dvideo.Asset{ID: loserID, S3Key: "assets/old.mp4"}
 	placements := &fakePlacementStore{
 		assets: assets,
-		losers: []dvideo.ObjectRef{{Bucket: "found-footy", Key: "assets/old.mp4"}},
+		losers: []dvideo.ObjectRef{{AssetID: loserID, Bucket: "found-footy", Key: "assets/old.mp4"}},
 	}
 	a.Placements = placements
 	in := stdPlacementInput(uuid.New())
@@ -266,6 +284,9 @@ func TestCommitClipPlacement_CompletesRetrySafeDurableTail(t *testing.T) {
 	}
 	if len(s3.deletes) != 2 || s3.deletes[0] != in.StagingKey || s3.deletes[1] != "assets/old.mp4" {
 		t.Fatalf("deletes = %v, want staging then loser cleanup", s3.deletes)
+	}
+	if assets.byID[loserID].ObjectReclaimedAt == nil {
+		t.Fatal("loser reclaim was not recorded")
 	}
 
 	// Model a retry after the first durable commit and staging cleanup. The
@@ -604,6 +625,9 @@ func TestSupersedeAssets(t *testing.T) {
 	if len(s3.deletes) != 1 || s3.deletes[0] != "assets/l.mp4" {
 		t.Errorf("byte reclaim = %v, want [assets/l.mp4] (loser only)", s3.deletes)
 	}
+	if assets.byID[loserID].ObjectReclaimedAt == nil {
+		t.Fatal("loser reclaim was not recorded")
+	}
 
 	// Retry: idempotent — popularity must not double-merge.
 	if err := a.SupersedeAssets(ctx, in); err != nil {
@@ -650,6 +674,9 @@ func TestDestroyEvent(t *testing.T) {
 	if len(s3.deletes) != 2 {
 		t.Errorf("byte reclaim = %v, want 2 (live + sup)", s3.deletes)
 	}
+	if assets.byID[liveID].ObjectReclaimedAt == nil || assets.byID[supID].ObjectReclaimedAt == nil {
+		t.Fatal("successful object deletes were not recorded")
+	}
 
 	// Idempotent: a retry leaves the already-removed shares as-is.
 	if err := a.DestroyEvent(ctx, DestroyEventInput{EventID: eventID}); err != nil {
@@ -689,7 +716,7 @@ func TestDestroyEvent_DeleteFailureRetriesAfterRevocation(t *testing.T) {
 	if err := a.DestroyEvent(context.Background(), DestroyEventInput{EventID: eventID}); err != nil {
 		t.Fatalf("DestroyEvent retry: %v", err)
 	}
-	if len(s3.deletes) != 6 {
-		t.Fatalf("delete attempts after retry = %v, want every key retried", s3.deletes)
+	if len(s3.deletes) != 5 {
+		t.Fatalf("delete attempts after retry = %v, want only the two unconfirmed keys retried", s3.deletes)
 	}
 }

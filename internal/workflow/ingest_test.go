@@ -4,7 +4,7 @@
 //
 // What we're testing: the workflow's control flow — activity call
 // order, output aggregation, conditional skipping (empty TeamRefs
-// skips alias step; zero RetentionThreshold skips prune step),
+// skips alias work), durable media-retention dispatch,
 // error propagation. NOT testing the activity logic itself — that's
 // covered by internal/activity/ingest/activities_test.go.
 package workflow_test
@@ -16,9 +16,11 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/stretchr/testify/mock"
+	"go.temporal.io/sdk/converter"
 	"go.temporal.io/sdk/testsuite"
 
 	"github.com/vedantadhobley/found-footy/internal/activity/ingest"
+	retentionactivity "github.com/vedantadhobley/found-footy/internal/activity/retention"
 	videoactivity "github.com/vedantadhobley/found-footy/internal/activity/video"
 	dvideo "github.com/vedantadhobley/found-footy/internal/domain/video"
 	"github.com/vedantadhobley/found-footy/internal/infra/apifootball"
@@ -46,16 +48,28 @@ func newEnv(s *testsuite.WorkflowTestSuite) *testsuite.TestWorkflowEnvironment {
 	// Register with zero-value deps — mocks intercept, real methods
 	// never execute.
 	env.RegisterActivity(&ingest.Activities{})
+	env.RegisterActivity(&retentionactivity.Activities{})
 	// Default no-op mocks for the two new "always-fires" activities so
 	// individual tests don't have to register them explicitly. Tests
 	// that DO care can override via a later OnActivity(...).
 	env.OnActivity("RefreshTrackedTeamsIfStale", mock.Anything, mock.Anything).
 		Return(ingest.RefreshTrackedTeamsIfStaleOutput{}, nil).Maybe()
 	env.OnActivity("GetIngestConfig", mock.Anything, mock.Anything).
-		Return(ingest.GetIngestConfigOutput{MaxLookaheadDays: 30}, nil).Maybe()
+		Return(ingest.GetIngestConfigOutput{
+			MaxLookaheadDays:      30,
+			ActivationWindow:      30 * time.Minute,
+			CompletedFixtureDates: 14,
+		}, nil).Maybe()
 	// FetchFixturesForDay is NOT defaulted — each test registers it
 	// explicitly so `.Once()` / count assertions actually enforce.
 	return env
+}
+
+// expectEmptyRetention supplies the always-run media-retention plan for tests
+// whose focus is elsewhere.
+func expectEmptyRetention(env *testsuite.TestWorkflowEnvironment) {
+	env.OnActivity("PlanMediaRetention", mock.Anything, mock.Anything).
+		Return(retentionactivity.PlanMediaRetentionOutput{}, nil).Once()
 }
 
 // stdInput — reasonable defaults matching the new plan §5 W1 shape;
@@ -66,7 +80,23 @@ func stdInput(now time.Time) workflow.IngestWorkflowInput {
 	return workflow.IngestWorkflowInput{
 		ManualDate:       &now,
 		ActivationWindow: 30 * time.Minute,
-		RetentionDays:    14,
+	}
+}
+
+func TestIngestWorkflowInput_DecodesLegacyRetentionDays(t *testing.T) {
+	payloads, err := converter.GetDefaultDataConverter().ToPayloads(map[string]any{
+		"FetchFuture":   true,
+		"RetentionDays": 14,
+	})
+	if err != nil {
+		t.Fatalf("encode legacy input: %v", err)
+	}
+	var got workflow.IngestWorkflowInput
+	if err := converter.GetDefaultDataConverter().FromPayloads(payloads, &got); err != nil {
+		t.Fatalf("decode legacy input: %v", err)
+	}
+	if !got.FetchFuture {
+		t.Fatal("known legacy field was not decoded")
 	}
 }
 
@@ -94,8 +124,7 @@ func TestIngestWorkflow_HappyPath(t *testing.T) {
 	env.OnActivity("EnsureAliasPlaceholders", mock.Anything, mock.Anything).
 		Return(ingest.EnsureAliasPlaceholdersOutput{Existing: 1, Inserted: 1}, nil).Once()
 
-	env.OnActivity("PruneOldFixtures", mock.Anything, mock.Anything).
-		Return(ingest.PruneOldFixturesOutput{Deleted: 3}, nil).Once()
+	expectEmptyRetention(env)
 
 	env.ExecuteWorkflow(workflow.IngestWorkflow, stdInput(time.Date(2026, 7, 8, 0, 5, 0, 0, time.UTC)))
 
@@ -119,17 +148,16 @@ func TestIngestWorkflow_HappyPath(t *testing.T) {
 	if out.ExistingAliases != 1 || out.InsertedAliases != 1 {
 		t.Errorf("alias counts = %+v", out)
 	}
-	if out.PrunedFixtures != 3 {
-		t.Errorf("PrunedFixtures = %d, want 3", out.PrunedFixtures)
+	if out.ReclaimedEvents != 0 {
+		t.Errorf("ReclaimedEvents = %d, want 0", out.ReclaimedEvents)
 	}
 	env.AssertExpectations(t)
 }
 
-// TestIngestWorkflow_Retention_ReclaimsClipBearingEvents — the two-part
-// retention step (#176 option B): PruneOldFixtures hard-deletes clipless
-// fixtures (Deleted) AND returns clip-bearing aged events
-// (ReclaimEventIDs); the workflow then DestroyEvents each with reason
-// 'policy' — reclaiming Garage bytes while keeping rows as 410 tombstones.
+// TestIngestWorkflow_Retention_ReclaimsMediaWithoutDeletingHistory verifies
+// that the planner supplies asset-bearing events and the workflow reclaims
+// their objects with the policy reason. SQL fixture/event history is outside
+// this workflow's deletion surface.
 func TestIngestWorkflow_Retention_ReclaimsClipBearingEvents(t *testing.T) {
 	var s testsuite.WorkflowTestSuite
 	env := newEnv(&s)
@@ -144,10 +172,11 @@ func TestIngestWorkflow_Retention_ReclaimsClipBearingEvents(t *testing.T) {
 		Return(ingest.CategorizeOutput{Completed: 2}, nil).Once()
 
 	e1, e2 := uuid.New(), uuid.New()
-	env.OnActivity("PruneOldFixtures", mock.Anything, mock.Anything).
-		Return(ingest.PruneOldFixturesOutput{
-			Deleted:         1,
-			ReclaimEventIDs: []uuid.UUID{e1, e2},
+	cutoff := time.Date(2026, 6, 20, 0, 0, 0, 0, time.UTC)
+	env.OnActivity("PlanMediaRetention", mock.Anything, mock.Anything).
+		Return(retentionactivity.PlanMediaRetentionOutput{
+			Cutoff:   &cutoff,
+			EventIDs: []uuid.UUID{e1, e2},
 		}, nil).Once()
 
 	var reasons []string
@@ -169,11 +198,8 @@ func TestIngestWorkflow_Retention_ReclaimsClipBearingEvents(t *testing.T) {
 	if err := env.GetWorkflowResult(&out); err != nil {
 		t.Fatalf("GetWorkflowResult: %v", err)
 	}
-	if out.PrunedFixtures != 1 {
-		t.Errorf("PrunedFixtures = %d, want 1 (clipless hard-delete)", out.PrunedFixtures)
-	}
 	if out.ReclaimedEvents != 2 {
-		t.Errorf("ReclaimedEvents = %d, want 2 (clip-bearing byte reclaim)", out.ReclaimedEvents)
+		t.Errorf("ReclaimedEvents = %d, want 2", out.ReclaimedEvents)
 	}
 	if len(reasons) != 2 {
 		t.Fatalf("DestroyEvent called %d times, want 2", len(reasons))
@@ -202,8 +228,7 @@ func TestIngestWorkflow_NoTeamRefs_SkipsAliasStep(t *testing.T) {
 	// (env.OnActivity with .Times(0) would enforce; the absence of a
 	// registration means testsuite will error if it's called.)
 
-	env.OnActivity("PruneOldFixtures", mock.Anything, mock.Anything).
-		Return(ingest.PruneOldFixturesOutput{Deleted: 0}, nil).Once()
+	expectEmptyRetention(env)
 
 	env.ExecuteWorkflow(workflow.IngestWorkflow, stdInput(time.Date(2026, 7, 8, 0, 5, 0, 0, time.UTC)))
 
@@ -212,39 +237,6 @@ func TestIngestWorkflow_NoTeamRefs_SkipsAliasStep(t *testing.T) {
 	}
 	if err := env.GetWorkflowError(); err != nil {
 		t.Fatalf("workflow error: %v", err)
-	}
-	env.AssertExpectations(t)
-}
-
-// TestIngestWorkflow_ZeroRetention_SkipsPrune — zero RetentionThreshold
-// short-circuits the prune step.
-func TestIngestWorkflow_ZeroRetention_SkipsPrune(t *testing.T) {
-	var s testsuite.WorkflowTestSuite
-	env := newEnv(&s)
-
-	env.OnActivity("FetchFixturesForDay", mock.Anything, mock.Anything).
-		Return(ingest.FetchFixturesForDayOutput{Count: 1, Fixtures: mkFixtures(1)}, nil).Once()
-	env.OnActivity("CategorizeAndUpsertFixtures", mock.Anything, mock.Anything).
-		Return(ingest.CategorizeOutput{Staging: 1, TeamRefs: []ingest.TeamRef{{TeamID: 40}}}, nil).Once()
-	env.OnActivity("EnsureAliasPlaceholders", mock.Anything, mock.Anything).
-		Return(ingest.EnsureAliasPlaceholdersOutput{Inserted: 1}, nil).Once()
-	// PruneOldFixtures NOT registered — should not be called.
-
-	in := stdInput(time.Date(2026, 7, 8, 0, 5, 0, 0, time.UTC))
-	in.RetentionDays = 0 // zero → skip prune
-
-	env.ExecuteWorkflow(workflow.IngestWorkflow, in)
-
-	if !env.IsWorkflowCompleted() {
-		t.Fatal("workflow did not complete")
-	}
-	if err := env.GetWorkflowError(); err != nil {
-		t.Fatalf("workflow error: %v", err)
-	}
-	var out workflow.IngestWorkflowOutput
-	env.GetWorkflowResult(&out)
-	if out.PrunedFixtures != 0 {
-		t.Errorf("PrunedFixtures = %d, want 0 (prune skipped)", out.PrunedFixtures)
 	}
 	env.AssertExpectations(t)
 }
@@ -258,7 +250,7 @@ func TestIngestWorkflow_FetchFails_AbortsEarly(t *testing.T) {
 
 	env.OnActivity("FetchFixturesForDay", mock.Anything, mock.Anything).
 		Return(ingest.FetchFixturesForDayOutput{}, errors.New("api-sports.io down")).Times(3)
-	// No Categorize / Alias / Prune expected — fetch failure aborts.
+	// No Categorize, Alias, or Retention work is expected — fetch failure aborts.
 
 	env.ExecuteWorkflow(workflow.IngestWorkflow, stdInput(time.Date(2026, 7, 8, 0, 5, 0, 0, time.UTC)))
 
@@ -282,7 +274,7 @@ func TestIngestWorkflow_CategorizeFails_PropagatesError(t *testing.T) {
 
 	env.OnActivity("CategorizeAndUpsertFixtures", mock.Anything, mock.Anything).
 		Return(ingest.CategorizeOutput{}, errors.New("pg pool exhausted")).Times(3)
-	// Alias / Prune NOT expected.
+	// Alias and retention work are not expected.
 
 	env.ExecuteWorkflow(workflow.IngestWorkflow, stdInput(time.Date(2026, 7, 8, 0, 5, 0, 0, time.UTC)))
 
@@ -313,11 +305,10 @@ func TestIngestWorkflow_ManualFixtureIDs_UsesByIDsPath(t *testing.T) {
 		Return(ingest.CategorizeOutput{Staging: 2, TeamRefs: []ingest.TeamRef{{TeamID: 40}}}, nil).Once()
 	env.OnActivity("EnsureAliasPlaceholders", mock.Anything, mock.Anything).
 		Return(ingest.EnsureAliasPlaceholdersOutput{Inserted: 1}, nil).Once()
-	// PruneOldFixtures NOT registered — RetentionDays=0 skips prune.
+	expectEmptyRetention(env)
 
 	in := stdInput(time.Date(2026, 7, 8, 0, 5, 0, 0, time.UTC))
 	in.ManualFixtureIDs = []int64{1_515_514, 1_515_515}
-	in.RetentionDays = 0
 
 	env.ExecuteWorkflow(workflow.IngestWorkflow, in)
 
@@ -332,8 +323,8 @@ func TestIngestWorkflow_ManualFixtureIDs_UsesByIDsPath(t *testing.T) {
 
 // TestIngestWorkflow_EmptyInput_UsesDefaults — scheduled invocation
 // passes empty input; workflow must self-configure with anchor =
-// workflow.Now, activation window = 30min default, RetentionDays=0
-// (schedule spec sends 14 explicitly; empty means skip).
+// workflow.Now and activity-provided policy values. The schedule itself does
+// not freeze environment policy in serialized input.
 func TestIngestWorkflow_EmptyInput_UsesDefaults(t *testing.T) {
 	var s testsuite.WorkflowTestSuite
 	env := newEnv(&s)
@@ -342,7 +333,8 @@ func TestIngestWorkflow_EmptyInput_UsesDefaults(t *testing.T) {
 		Return(ingest.FetchFixturesForDayOutput{Count: 0}, nil).Once()
 	env.OnActivity("CategorizeAndUpsertFixtures", mock.Anything, mock.Anything).
 		Return(ingest.CategorizeOutput{TeamRefs: nil}, nil).Once()
-	// Alias skipped (nil TeamRefs). Prune skipped (RetentionDays=0).
+	// Alias is skipped because TeamRefs is nil; retention still runs.
+	expectEmptyRetention(env)
 
 	env.ExecuteWorkflow(workflow.IngestWorkflow, workflow.IngestWorkflowInput{})
 

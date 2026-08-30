@@ -196,6 +196,11 @@ func (a *PersistActivities) CommitClipPlacement(ctx context.Context, in CommitCl
 		if err := a.S3.Delete(ctx, object.Key); err != nil {
 			activity.GetLogger(ctx).Warn("placement: loser byte reclaim failed",
 				"key", object.Key, "err", err)
+			continue
+		}
+		if err := a.Assets.MarkObjectReclaimed(ctx, object.AssetID); err != nil {
+			activity.GetLogger(ctx).Warn("placement: record loser reclaim failed",
+				"asset_id", object.AssetID.String(), "err", err)
 		}
 	}
 	return CommitClipPlacementOutput{
@@ -502,11 +507,14 @@ func (a *PersistActivities) SupersedeAssets(ctx context.Context, in SupersedeAss
 		}
 		// Reclaim bytes best-effort: the chain resolves reads to the winner, so
 		// the loser's object is never served. A failed delete just leaves it for
-		// the retention prune (#176) — don't fail a DB-consistent supersede on it.
+		// the durable retention planner — don't fail a DB-consistent supersede on it.
 		if loserKey != "" {
 			if err := a.S3.Delete(ctx, loserKey); err != nil {
 				activity.GetLogger(ctx).Warn("supersede: loser byte reclaim failed",
 					"key", loserKey, "err", err)
+			} else if err := a.Assets.MarkObjectReclaimed(ctx, loserID); err != nil {
+				activity.GetLogger(ctx).Warn("supersede: record loser reclaim failed",
+					"asset_id", loserID.String(), "err", err)
 			}
 		}
 	}
@@ -538,14 +546,18 @@ func (a *PersistActivities) DestroyEvent(ctx context.Context, in DestroyEventInp
 	if err := a.Shares.RemoveByEvent(ctx, in.EventID, reason); err != nil {
 		return fmt.Errorf("video.DestroyEvent: revoke shares: %w", err)
 	}
-	keys, err := a.Assets.ListObjectKeysByEvent(ctx, in.EventID)
+	objects, err := a.Assets.ListUnreclaimedObjectsByEvent(ctx, in.EventID)
 	if err != nil {
-		return fmt.Errorf("video.DestroyEvent: list object keys: %w", err)
+		return fmt.Errorf("video.DestroyEvent: list unreclaimed objects: %w", err)
 	}
 	var reclaimErrs []error
-	for _, k := range keys {
-		if err := a.S3.Delete(ctx, k.Key); err != nil {
-			reclaimErrs = append(reclaimErrs, fmt.Errorf("delete %s: %w", k.Key, err))
+	for _, object := range objects {
+		if err := a.S3.Delete(ctx, object.Key); err != nil {
+			reclaimErrs = append(reclaimErrs, fmt.Errorf("delete %s: %w", object.Key, err))
+			continue
+		}
+		if err := a.Assets.MarkObjectReclaimed(ctx, object.AssetID); err != nil {
+			reclaimErrs = append(reclaimErrs, fmt.Errorf("record reclaim %s: %w", object.AssetID, err))
 		}
 	}
 	if err := errors.Join(reclaimErrs...); err != nil {

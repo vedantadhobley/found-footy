@@ -202,7 +202,7 @@ _, err := tempClient.ScheduleClient().Create(ctx, client.ScheduleOptions{
         ID:        "ingest-scheduled",
         Workflow:  ffwf.IngestWorkflow,
         TaskQueue: tempClient.TaskQueue(),
-        Args:      []any{ffwf.IngestWorkflowInput{RetentionDays: 14, FetchFuture: true}},
+        Args:      []any{ffwf.IngestWorkflowInput{FetchFuture: true}},
     },
     Overlap: enums.SCHEDULE_OVERLAP_POLICY_SKIP,
 })
@@ -222,6 +222,10 @@ Load-bearing details:
   avoid this (a stale 25s timeout that persisted); reintroduced here — tracked
   as [`FF-009`](./todo.md#confirmed-and-mitigated-backlog). (Upside: an operator's manual
   `temporal schedule update` survives a redeploy.)
+- **History policy is not schedule state.** Ingest reads
+  `PUBLIC_HISTORY_COMPLETED_FIXTURE_DATES` through `GetIngestConfig` at
+  execution time. Existing serialized schedule input may still carry the
+  removed `RetentionDays` field; the Go payload decoder ignores it.
 - **Overlap = SKIP.** If a prior IngestWorkflow run is still
   executing (unusual — ingest is fast, but a Postgres stall could
   cause it), skip the next scheduled run rather than double-firing.
@@ -232,7 +236,7 @@ Load-bearing details:
 
 | Schedule ID | Spec | Workflow |
 |---|---|---|
-| `ingest-scheduled-daily` | cron `5 0 * * *` (00:05 UTC) | IngestWorkflow (`FetchFuture:true, RetentionDays:14`) |
+| `ingest-scheduled-daily` | cron `5 0 * * *` (00:05 UTC) | IngestWorkflow (`FetchFuture:true`; history policy loaded at execution) |
 | `active-poll-scheduled` | IntervalSpec `Every: WORKFLOWS_ACTIVE_FIXTURE_POLL_INTERVAL` (30s) | ActivePollWorkflow |
 | `staging-poll-scheduled` | cron `WORKFLOWS_STAGING_POLL_CRON` (`*/15 * * * *`) | StagingPollWorkflow |
 | `twitter-maintenance-scheduled` | cron `WORKFLOWS_TWITTER_MAINTENANCE_CRON` (`17 */6 * * *`) | TwitterMaintenanceWorkflow |

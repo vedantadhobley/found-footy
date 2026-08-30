@@ -71,11 +71,4 @@ type WorkflowsConfig struct {
 	// is gone since ActivateUpcoming now runs at 30s cadence — see
 	// decisions.md 2026-07-10 workflow-split entry.
 	ActivationWindow time.Duration `env:"WORKFLOWS_ACTIVATION_WINDOW" envDefault:"5m"`
-
-	// RetentionDays — completed fixtures older than this get pruned
-	// by IngestWorkflow's PruneOldFixtures activity. Zero = skip
-	// prune (manual triggers set this to zero explicitly; scheduled
-	// invocation uses the default). Mirrors Python's
-	// FIXTURE_RETENTION_DAYS (archive/src/workflows/ingest_workflow.py:40).
-	RetentionDays int `env:"WORKFLOWS_RETENTION_DAYS" envDefault:"14"`
 }

@@ -40,9 +40,18 @@ fakes and setup helpers:
 
 Example — `internal/activity/ingest/activities_test.go` owns the in-memory
 `fakeFixtureRepo`, `fakeAliasRepo`, and `fakeFetcher`; focused fixture,
-retention, metadata, and tracked-team cases live in sibling test files in the
+metadata and tracked-team cases live in sibling test files in the
 same package. There is no speculative `internal/testutil` package. This is the
 standard Go colocated-test layout, not production/test code mixing.
+
+FF-079 gives `internal/activity/retention` its own unit boundary. Planner tests
+cover invalid policy, no completed fixtures, dependency failures, and the
+cutoff-to-unreclaimed-event handoff. Postgres tests cover distinct UTC kickoff
+dates, hidden targeted reads, retained shareless failure/empty histories,
+unshared asset worklists, first-success reclamation timestamps, and batch event
+reads. Video activity tests require partial delete retries to revisit only
+unstamped objects. API handler tests require one event, discovery, and clip
+batch per fixture request.
 
 FF-017 browser-lifecycle tests close an injected critical-child channel and
 require `StateFailed`, `/health` 503, one `twitter.browser_failed` audit, and a
@@ -137,7 +146,7 @@ keeps the historical single-route behavior.
 `testsuite.WorkflowTestSuite` from `go.temporal.io/sdk`. Pattern:
 
 1. `env := newEnv(&s)` — creates a `TestWorkflowEnvironment`,
-   registers the workflow + a zero-value `&ingest.Activities{}` so
+   registers the workflow plus zero-value ingest and retention activities so
    `OnActivity` can find them.
 2. `env.OnActivity("ActivityName", mock.Anything, mock.Anything).Return(...)`
    per activity — testify mock intercepts by name.
@@ -145,10 +154,9 @@ keeps the historical single-route behavior.
 4. `env.IsWorkflowCompleted()`, `GetWorkflowError()`,
    `GetWorkflowResult(&out)`, `AssertExpectations(t)`.
 
-`AssertExpectations` catches both "expected activity fired" AND
-"unexpected activity did NOT fire" — the mechanism protecting the
-conditional-skip branches (empty TeamRefs skips alias step; zero
-RetentionThreshold skips prune step) in IngestWorkflow.
+`AssertExpectations` catches both "expected activity fired" and "unexpected
+activity did not fire." Empty TeamRefs skips alias work; media-retention
+planning runs on every successful ingest with activity-provided policy.
 
 EventWorkflow cancellation tests use `RegisterDelayedCallback` with the
 workflow clock and `CancelWorkflow` while the producer is in attempt spacing,
@@ -212,6 +220,9 @@ links fail at the schema boundary; media/popularity/removal-state violations
 fail independently. A migration preflight case seeds inconsistent historical
 identity, requires a fail-closed result, and verifies that no ledger row leaks
 from the rolled-back transaction.
+FF-079 extends the manifest and migration chain with
+`object_reclaimed_at`, its timestamp bound, and the completed/unreclaimed
+indexes; the newest-file hash contract covers the resulting schema snapshot.
 
 FF-034 workflow tests require candidate processing to launch even when every
 observation-insert retry fails, while the failed attempt remains uncheckpointed

@@ -20,6 +20,7 @@ import (
 	ingestactivity "github.com/vedantadhobley/found-footy/internal/activity/ingest"
 	livefeedactivity "github.com/vedantadhobley/found-footy/internal/activity/livefeed"
 	monitoractivity "github.com/vedantadhobley/found-footy/internal/activity/monitor"
+	retentionactivity "github.com/vedantadhobley/found-footy/internal/activity/retention"
 	twittermaintenanceactivity "github.com/vedantadhobley/found-footy/internal/activity/twittermaintenance"
 	videoactivity "github.com/vedantadhobley/found-footy/internal/activity/video"
 	visionactivity "github.com/vedantadhobley/found-footy/internal/activity/vision"
@@ -149,10 +150,11 @@ func Run(ctx context.Context, deps *bootstrap.Deps) error {
 		TopFlightCacheHours:   deps.Cfg.APIFootball.TopFlightCacheHours,
 		FetchWindowFutureDays: deps.Cfg.APIFootball.FetchWindowFutureDays,
 		ActivationWindow:      deps.Cfg.Workflows.ActivationWindow,
-		RetentionDays:         deps.Cfg.Workflows.RetentionDays,
+		CompletedFixtureDates: deps.Cfg.History.CompletedFixtureDates,
 	}
 	w.RegisterWorkflow(ffwf.IngestWorkflow)
 	w.RegisterActivity(ingestActs)
+	w.RegisterActivity(&retentionactivity.Activities{Fixtures: fixtureRepo, Assets: assetRepo})
 
 	// The spawner starts EventWorkflow and registers its downstream
 	// event_downstream_workflows row insert in the same activity.
@@ -383,8 +385,8 @@ func ensureTwitterMaintenanceSchedule(
 // ensureIngestSchedule registers the daily IngestWorkflow Temporal
 // Schedule if it doesn't exist. Empty input means the workflow
 // self-configures its anchor + defaults (see internal/workflow/ingest.go
-// IngestWorkflowInput docstring). RetentionDays is still hardcoded here rather
-// than reconciled from config; FF-009 owns that defect.
+// IngestWorkflowInput docstring). The shared history policy is read by an
+// activity at execution time rather than frozen into this create-only action.
 func ensureIngestSchedule(ctx context.Context, tempClient *temporal.Client, deps *bootstrap.Deps) error {
 	const scheduleID = "ingest-scheduled-daily"
 
@@ -398,8 +400,7 @@ func ensureIngestSchedule(ctx context.Context, tempClient *temporal.Client, deps
 			Workflow:  ffwf.IngestWorkflow,
 			TaskQueue: tempClient.TaskQueue(),
 			Args: []any{ffwf.IngestWorkflowInput{
-				RetentionDays: 14,   // FF-009: schedule argument is not config-reconciled
-				FetchFuture:   true, // scheduled runs get the full future-days window
+				FetchFuture: true, // scheduled runs get the full future-days window
 			}},
 		},
 		Overlap: enums.SCHEDULE_OVERLAP_POLICY_SKIP,

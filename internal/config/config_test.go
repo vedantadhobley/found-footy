@@ -28,6 +28,9 @@ func TestLoadForAPIDefaultsAndOverrides(t *testing.T) {
 	if cfg.API.ListenAddr != ":8081" {
 		t.Errorf("API ListenAddr default = %q, want :8081", cfg.API.ListenAddr)
 	}
+	if cfg.History.CompletedFixtureDates != 14 {
+		t.Errorf("CompletedFixtureDates = %d, want 14", cfg.History.CompletedFixtureDates)
+	}
 }
 
 func TestLoadForDoesNotParseAnotherBinaryEnvironment(t *testing.T) {
@@ -82,6 +85,7 @@ func TestLoadForWorkerRejectsSemanticErrors(t *testing.T) {
 		{name: "hard filter bounds inverted", values: map[string]string{"HARDFILTER_MIN_DURATION_SECS": "91"}, want: "HARDFILTER_MAX_DURATION_SECS"},
 		{name: "ffmpeg has no slots", values: map[string]string{"FFMPEG_MAX_CONCURRENT": "0"}, want: "FFMPEG_MAX_CONCURRENT"},
 		{name: "search outlives activity", values: map[string]string{"TWITTER_SEARCH_TIMEOUT": "121s"}, want: "TWITTER_SEARCH_TIMEOUT must be <= DISCOVERY_QUERY_TIMEOUT"},
+		{name: "empty public history", values: map[string]string{"PUBLIC_HISTORY_COMPLETED_FIXTURE_DATES": "0"}, want: "PUBLIC_HISTORY_COMPLETED_FIXTURE_DATES must be > 0"},
 		{name: "invalid event token", values: map[string]string{"EVENT_ENV": "Prod!"}, want: "EVENT_ENV"},
 	}
 

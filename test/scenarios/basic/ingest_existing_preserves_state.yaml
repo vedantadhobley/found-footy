@@ -33,7 +33,6 @@ setup:
 ingest_input:
   manual_date: 2026-07-08T15:30:00Z    # 30 min into the match
   activation_window: 30m
-  retention_days: 14
 
 api_responses:
   fixtures_window:

@@ -14,6 +14,7 @@ import (
 	"errors"
 	"fmt"
 	"sort"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -57,7 +58,7 @@ func NewAssetRepo(pool *Pool) *AssetRepo { return &AssetRepo{pool: pool} }
 // Column list for SELECTs. Scan order in scanAsset must match this exactly.
 const assetColumns = `
 	id, event_id, fixture_id,
-	s3_bucket, s3_key,
+	s3_bucket, s3_key, object_reclaimed_at,
 	md5, hash_version, frame_hashes,
 	width, height, duration_ms, file_size_bytes, bitrate,
 	aspect_ratio, popularity, superseded_by, first_seen_at
@@ -71,7 +72,7 @@ func scanAsset(row rowScanner) (*video.Asset, error) {
 	var supersededBy *uuid.UUID
 	if err := row.Scan(
 		&a.ID, &a.EventID, &a.FixtureID,
-		&a.S3Bucket, &a.S3Key,
+		&a.S3Bucket, &a.S3Key, &a.ObjectReclaimedAt,
 		&a.MD5, &hashVersion, &frameBytes,
 		&a.Width, &a.Height, &a.DurationMS, &a.FileSizeBytes, &bitrate,
 		&a.AspectRatio, &a.Popularity, &supersededBy, &a.FirstSeenAt,
@@ -163,24 +164,75 @@ func (r *AssetRepo) Supersede(ctx context.Context, loserID, winnerID uuid.UUID) 
 	return nil
 }
 
-// ListObjectKeysByEvent returns the (bucket, key) of every asset for an event
-// (live + superseded) — the destroy/reclaim path (#172/#176).
-func (r *AssetRepo) ListObjectKeysByEvent(ctx context.Context, eventID uuid.UUID) ([]video.ObjectRef, error) {
+// ListUnreclaimedObjectsByEvent returns every asset whose Garage deletion has
+// not yet been durably confirmed. Live and superseded assets are both covered.
+func (r *AssetRepo) ListUnreclaimedObjectsByEvent(ctx context.Context, eventID uuid.UUID) ([]video.ObjectRef, error) {
 	rows, err := r.pool.Query(ctx,
-		"SELECT s3_bucket, s3_key FROM video_assets WHERE event_id = $1", eventID)
+		`SELECT id, s3_bucket, s3_key FROM video_assets
+		 WHERE event_id = $1 AND object_reclaimed_at IS NULL
+		 ORDER BY first_seen_at, id`, eventID)
 	if err != nil {
-		return nil, fmt.Errorf("pg.AssetRepo.ListObjectKeysByEvent: %w", err)
+		return nil, fmt.Errorf("pg.AssetRepo.ListUnreclaimedObjectsByEvent: %w", err)
 	}
 	defer rows.Close()
 	var out []video.ObjectRef
 	for rows.Next() {
 		var o video.ObjectRef
-		if err := rows.Scan(&o.Bucket, &o.Key); err != nil {
-			return nil, fmt.Errorf("pg.AssetRepo.ListObjectKeysByEvent: scan: %w", err)
+		if err := rows.Scan(&o.AssetID, &o.Bucket, &o.Key); err != nil {
+			return nil, fmt.Errorf("pg.AssetRepo.ListUnreclaimedObjectsByEvent: scan: %w", err)
 		}
 		out = append(out, o)
 	}
 	return out, rows.Err()
+}
+
+// MarkObjectReclaimed records successful object deletion while preserving the
+// first success time. A missing asset is a typed error; retries of an existing
+// row are successful even when it was already marked.
+func (r *AssetRepo) MarkObjectReclaimed(ctx context.Context, assetID uuid.UUID) error {
+	tag, err := r.pool.Exec(ctx, `
+		UPDATE video_assets
+		SET object_reclaimed_at = COALESCE(object_reclaimed_at, NOW())
+		WHERE id = $1
+	`, assetID)
+	if err != nil {
+		return fmt.Errorf("pg.AssetRepo.MarkObjectReclaimed: %w", err)
+	}
+	if tag.RowsAffected() == 0 {
+		return video.ErrNotFound
+	}
+	return nil
+}
+
+// ListUnreclaimedEventIDsBefore returns one work item per event with asset
+// bytes outside the public fixture-date window. It does not inspect shares:
+// public URL state and object-storage state are independent contracts.
+func (r *AssetRepo) ListUnreclaimedEventIDsBefore(ctx context.Context, cutoff time.Time) ([]uuid.UUID, error) {
+	rows, err := r.pool.Query(ctx, `
+		SELECT DISTINCT a.event_id
+		FROM video_assets a
+		JOIN fixtures f ON f.id = a.fixture_id
+		WHERE a.object_reclaimed_at IS NULL
+		  AND f.state = 'completed'
+		  AND f.kickoff < $1
+		ORDER BY a.event_id
+	`, cutoff.UTC())
+	if err != nil {
+		return nil, fmt.Errorf("pg.AssetRepo.ListUnreclaimedEventIDsBefore: %w", err)
+	}
+	defer rows.Close()
+	var out []uuid.UUID
+	for rows.Next() {
+		var id uuid.UUID
+		if err := rows.Scan(&id); err != nil {
+			return nil, fmt.Errorf("pg.AssetRepo.ListUnreclaimedEventIDsBefore: scan: %w", err)
+		}
+		out = append(out, id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("pg.AssetRepo.ListUnreclaimedEventIDsBefore: rows: %w", err)
+	}
+	return out, nil
 }
 
 // ─── ShareRepo ─────────────────────────────────────────────────────────────
@@ -266,36 +318,54 @@ func (r *ShareRepo) GetByEvent(ctx context.Context, eventID uuid.UUID) ([]*video
 // and active membership can change after mint, and a cached order can become
 // stale when any write path misses invalidation (FF-066/FF-078).
 func (r *ShareRepo) ListLiveForEvent(ctx context.Context, eventID uuid.UUID) ([]video.LiveClip, error) {
+	byEvent, err := r.ListLiveForEvents(ctx, []uuid.UUID{eventID})
+	if err != nil {
+		return nil, err
+	}
+	return byEvent[eventID], nil
+}
+
+// ListLiveForEvents derives visibility and contiguous rank for several events
+// in one query. Ranking and threshold evidence remain event-scoped through SQL
+// partitions; the returned map omits events without public clips.
+func (r *ShareRepo) ListLiveForEvents(ctx context.Context, eventIDs []uuid.UUID) (map[uuid.UUID][]video.LiveClip, error) {
+	out := make(map[uuid.UUID][]video.LiveClip, len(eventIDs))
+	if len(eventIDs) == 0 {
+		return out, nil
+	}
 	rows, err := r.pool.Query(ctx, `
 		WITH live AS (
-			SELECT s.id AS share_id,
+			SELECT s.event_id, s.id AS share_id,
 			       s.timestamp_verified, s.extracted_minute,
 			       a.popularity, a.width, a.height, a.duration_ms,
 			       a.file_size_bytes, s.created_at
 			FROM video_shares s
 			JOIN video_assets a ON a.id = s.asset_id
-			WHERE s.event_id = $1
+			WHERE s.event_id = ANY($1::uuid[])
 			  AND s.state = 'active'
 			  AND a.superseded_by IS NULL
+			  AND a.object_reclaimed_at IS NULL
 		), evidence AS (
-			SELECT
+			SELECT event_id,
 				COALESCE(BOOL_OR(timestamp_verified AND popularity >= $2), FALSE)
 					AS has_verified_threshold,
 				COALESCE(BOOL_OR(NOT timestamp_verified AND popularity >= $2), FALSE)
 					AS has_unverified_threshold
 			FROM live
+			GROUP BY event_id
 		), visible AS (
 			SELECT live.*
 			FROM live
-			CROSS JOIN evidence
+			JOIN evidence USING (event_id)
 			WHERE live.popularity <> $3
 			   OR NOT (
 				   evidence.has_verified_threshold
 				   OR (NOT live.timestamp_verified AND evidence.has_unverified_threshold)
 			   )
 		), ranked AS (
-			SELECT share_id,
+			SELECT event_id, share_id,
 			       ROW_NUMBER() OVER (
+			           PARTITION BY event_id
 				   ORDER BY timestamp_verified DESC,
 				            popularity DESC,
 				            file_size_bytes DESC,
@@ -306,25 +376,28 @@ func (r *ShareRepo) ListLiveForEvent(ctx context.Context, eventID uuid.UUID) ([]
 			       popularity, width, height, duration_ms
 			FROM visible
 		)
-		SELECT share_id, rank, timestamp_verified, extracted_minute,
+		SELECT event_id, share_id, rank, timestamp_verified, extracted_minute,
 		       popularity, width, height, duration_ms
 		FROM ranked
-		ORDER BY rank`, eventID, video.PublicVisibilityPopularityThreshold,
+		ORDER BY array_position($1::uuid[], event_id), rank`, eventIDs, video.PublicVisibilityPopularityThreshold,
 		video.PublicVisibilitySingletonPopularity)
 	if err != nil {
-		return nil, fmt.Errorf("pg.ShareRepo.ListLiveForEvent: %w", err)
+		return nil, fmt.Errorf("pg.ShareRepo.ListLiveForEvents: %w", err)
 	}
 	defer rows.Close()
-	var out []video.LiveClip
 	for rows.Next() {
+		var eventID uuid.UUID
 		var c video.LiveClip
-		if err := rows.Scan(&c.ShareID, &c.Rank, &c.Verified, &c.ExtractedMinute,
+		if err := rows.Scan(&eventID, &c.ShareID, &c.Rank, &c.Verified, &c.ExtractedMinute,
 			&c.Popularity, &c.Width, &c.Height, &c.DurationMS); err != nil {
-			return nil, fmt.Errorf("pg.ShareRepo.ListLiveForEvent: scan: %w", err)
+			return nil, fmt.Errorf("pg.ShareRepo.ListLiveForEvents: scan: %w", err)
 		}
-		out = append(out, c)
+		out[eventID] = append(out[eventID], c)
 	}
-	return out, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("pg.ShareRepo.ListLiveForEvents: rows: %w", err)
+	}
+	return out, nil
 }
 
 // ResolveShare follows share_id → asset → superseded_by chain → live asset via
@@ -332,21 +405,30 @@ func (r *ShareRepo) ListLiveForEvent(ctx context.Context, eventID uuid.UUID) ([]
 // — the /videos/{share_id} redirect's 302 target (#167). ErrNotFound when the
 // share id was never minted (→ 404). A superseded share still resolves (URL
 // stability): the anchor asset is found via the share, then the chain walks
-// superseded_by to the single live asset. depth<64 guards a pathological cycle.
+// superseded_by to the single live asset. A reclaimed terminal object resolves
+// as removed even if a concurrent placement has not yet had its share state
+// swept; the redirect must never presign bytes known to be gone. depth<64
+// guards a pathological cycle.
 func (r *ShareRepo) ResolveShare(ctx context.Context, id string) (video.ResolvedShare, error) {
 	var rs video.ResolvedShare
 	var state string
 	err := r.pool.QueryRow(ctx, `
 		WITH RECURSIVE chain AS (
-			SELECT a.id, a.superseded_by, a.s3_bucket, a.s3_key, 0 AS depth
+			SELECT a.id, a.superseded_by, a.s3_bucket, a.s3_key,
+			       a.object_reclaimed_at, 0 AS depth
 			FROM video_assets a
 			WHERE a.id = (SELECT asset_id FROM video_shares WHERE id = $1)
 			UNION ALL
-			SELECT a.id, a.superseded_by, a.s3_bucket, a.s3_key, c.depth + 1
+			SELECT a.id, a.superseded_by, a.s3_bucket, a.s3_key,
+			       a.object_reclaimed_at, c.depth + 1
 			FROM chain c JOIN video_assets a ON a.id = c.superseded_by
 			WHERE c.depth < 64
 		)
-		SELECT (SELECT state FROM video_shares WHERE id = $1), c.s3_bucket, c.s3_key
+		SELECT CASE
+		         WHEN c.object_reclaimed_at IS NOT NULL THEN 'removed'::share_state
+		         ELSE (SELECT state FROM video_shares WHERE id = $1)
+		       END,
+		       c.s3_bucket, c.s3_key
 		FROM chain c
 		WHERE c.superseded_by IS NULL
 		LIMIT 1`, id).Scan(&state, &rs.Bucket, &rs.Key)

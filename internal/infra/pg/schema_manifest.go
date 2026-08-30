@@ -18,8 +18,10 @@ var requiredTables = []string{
 
 var requiredIndexes = []string{
 	"fixtures_staging_by_kickoff", "fixtures_active_by_polled", "fixtures_completed_recent",
+	"fixtures_completed_by_kickoff",
 	"events_fixture", "events_pending_work", "events_by_first_seen",
 	"event_downstream_workflows_pending", "video_assets_event_popularity",
+	"video_assets_unreclaimed_event", "video_assets_unreclaimed_fixture_event",
 	"video_shares_event_rank_active", "video_shares_event_asset", "video_shares_event",
 	"video_shares_asset", "event_search_candidates_event", "event_search_candidates_fixture",
 	"event_search_candidates_discovered_at", "event_search_candidates_credited_asset",
@@ -41,6 +43,7 @@ var requiredConstraints = []string{
 	"video_assets_identity_event_unique", "video_assets_identity_event_fixture_unique",
 	"video_assets_event_fixture_fkey", "video_assets_superseded_identity_fkey",
 	"video_assets_media_shape", "video_assets_popularity_positive", "video_assets_supersession_not_self",
+	"video_assets_reclaimed_after_seen",
 	"video_shares_asset_event_fkey", "video_shares_removed_state",
 	"event_search_candidates_event_fixture_fkey", "event_search_candidates_credited_identity_fkey",
 	"event_search_candidates_duration_nonnegative", "event_search_candidates_age_nonnegative",
@@ -102,6 +105,7 @@ func verifyCurrentSchema(ctx context.Context, tx pgx.Tx) error {
 		{"video_assets", "hash_version"},
 		{"fixtures", "terminal_observed_at"},
 		{"event_search_candidates", "credited_asset_id"},
+		{"video_assets", "object_reclaimed_at"},
 	} {
 		var exists bool
 		if err := tx.QueryRow(ctx, `

@@ -43,6 +43,7 @@ func (c *Config) ValidateFor(binary Binary) error {
 		validateFirefoxFleet(v, c.FirefoxFleet)
 		validateFFmpeg(v, c.FFmpeg)
 		validateWorkflows(v, c.Workflows)
+		validateHistory(v, c.History)
 		validateDiscovery(v, c.Discovery)
 		validateDedup(v, c.Dedup)
 		validateVideo(v, c.Video)
@@ -55,6 +56,7 @@ func (c *Config) ValidateFor(binary Binary) error {
 		validatePostgres(v, c.Postgres)
 		validateS3(v, c.S3)
 		validateAPI(v, c.API)
+		validateHistory(v, c.History)
 		v.check(c.API.ListenAddr != c.Observability.MetricsAddr,
 			"API_LISTEN_ADDR must differ from METRICS_ADDR")
 	case BinaryTwitter:
@@ -207,7 +209,11 @@ func validateWorkflows(v *validator, cfg WorkflowsConfig) {
 	required(v, "WORKFLOWS_STAGING_POLL_CRON", cfg.StagingPollCron)
 	required(v, "WORKFLOWS_TWITTER_MAINTENANCE_CRON", cfg.TwitterMaintenanceCron)
 	v.check(cfg.ActivationWindow >= 0, "WORKFLOWS_ACTIVATION_WINDOW must be >= 0")
-	v.check(cfg.RetentionDays >= 0, "WORKFLOWS_RETENTION_DAYS must be >= 0")
+}
+
+func validateHistory(v *validator, cfg HistoryConfig) {
+	v.check(cfg.CompletedFixtureDates > 0,
+		"PUBLIC_HISTORY_COMPLETED_FIXTURE_DATES must be > 0")
 }
 
 func validateDiscovery(v *validator, cfg DiscoveryConfig) {

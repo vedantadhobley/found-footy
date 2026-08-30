@@ -399,7 +399,7 @@ func supersedePlacementLoser(
 	tx pgx.Tx,
 	eventID, loserID, winnerID uuid.UUID,
 ) (video.ObjectRef, error) {
-	var object video.ObjectRef
+	object := video.ObjectRef{AssetID: loserID}
 	var loserEventID uuid.UUID
 	var popularity int
 	var supersededBy *uuid.UUID

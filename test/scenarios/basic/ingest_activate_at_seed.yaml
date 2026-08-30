@@ -15,7 +15,6 @@ workflow: IngestWorkflow
 ingest_input:
   manual_date: 2026-07-08T14:55:00Z    # 5 min before kickoff
   activation_window: 30m
-  retention_days: 14
 
 api_responses:
   fixtures_window:

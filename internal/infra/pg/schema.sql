@@ -133,6 +133,7 @@ CREATE TABLE fixtures (
 CREATE INDEX fixtures_staging_by_kickoff ON fixtures (kickoff) WHERE state = 'staging';
 CREATE INDEX fixtures_active_by_polled ON fixtures (last_polled_at) WHERE state = 'active';
 CREATE INDEX fixtures_completed_recent ON fixtures (completed_at DESC) WHERE state = 'completed';
+CREATE INDEX fixtures_completed_by_kickoff ON fixtures (kickoff DESC) WHERE state = 'completed';
 
 CREATE TRIGGER trg_fixtures_updated_at
     BEFORE UPDATE ON fixtures
@@ -277,13 +278,14 @@ CREATE INDEX event_downstream_workflows_pending
 CREATE TABLE video_assets (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     -- event_id is the dedup scope; fixture_id is a denormalized convenience for the
-    -- s3 path + prune queries (an event never changes fixtures, so they can't disagree).
+    -- object path + retention queries (an event never changes fixtures, so they can't disagree).
     event_id UUID NOT NULL,
     fixture_id BIGINT NOT NULL,
 
     -- Storage
     s3_bucket TEXT NOT NULL,
     s3_key TEXT NOT NULL,                                   -- computed from (fixture_id, id); the uuid id guarantees uniqueness
+    object_reclaimed_at TIMESTAMPTZ,                        -- successful idempotent Garage delete; NULL means bytes may remain
 
     -- Content identity
     md5 BYTEA NOT NULL,                                     -- 16-byte whole-file digest — the exact-dup layer
@@ -326,11 +328,17 @@ CREATE TABLE video_assets (
         (bitrate IS NULL OR bitrate > 0)
     ),
     CONSTRAINT video_assets_popularity_positive CHECK (popularity >= 1),
-    CONSTRAINT video_assets_supersession_not_self CHECK (superseded_by IS NULL OR superseded_by <> id)
+    CONSTRAINT video_assets_supersession_not_self CHECK (superseded_by IS NULL OR superseded_by <> id),
+    CONSTRAINT video_assets_reclaimed_after_seen
+        CHECK (object_reclaimed_at IS NULL OR object_reclaimed_at >= first_seen_at)
 );
 
 CREATE INDEX video_assets_event_popularity ON video_assets (event_id, popularity DESC)
     WHERE superseded_by IS NULL;
+CREATE INDEX video_assets_unreclaimed_event ON video_assets (event_id)
+    WHERE object_reclaimed_at IS NULL;
+CREATE INDEX video_assets_unreclaimed_fixture_event ON video_assets (fixture_id, event_id)
+    WHERE object_reclaimed_at IS NULL;
 
 -- 7b. video_shares — public share IDs. Public rank is derived at read time.
 CREATE TABLE video_shares (

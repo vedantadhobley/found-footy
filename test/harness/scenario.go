@@ -220,7 +220,6 @@ type IngestInput struct {
 	ManualDate       *time.Time    `yaml:"manual_date,omitempty"`
 	ManualFixtureIDs []int64       `yaml:"manual_fixture_ids,omitempty"`
 	ActivationWindow time.Duration `yaml:"activation_window,omitempty"`
-	RetentionDays    int           `yaml:"retention_days,omitempty"`
 }
 
 // ExpectedFinalState is what the harness asserts after the workflow

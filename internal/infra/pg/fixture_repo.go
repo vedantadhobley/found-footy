@@ -9,7 +9,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 
@@ -369,7 +368,81 @@ func (r *FixtureRepo) ListByState(ctx context.Context, state fixture.State) ([]*
 	return collectFixtures(rows)
 }
 
-// SearchFixtures returns fixtures matching q (case-insensitive substring) across
+// PublicCompletedCutoff returns midnight UTC for the oldest of the newest
+// completedFixtureDates distinct UTC kickoff dates. Nil means no completed
+// fixture exists. The media planner consumes this projection; API window
+// statements apply the same date rule inside their own read snapshot.
+func (r *FixtureRepo) PublicCompletedCutoff(ctx context.Context, completedFixtureDates int) (*time.Time, error) {
+	if completedFixtureDates <= 0 {
+		return nil, fmt.Errorf("pg.FixtureRepo.PublicCompletedCutoff: completed fixture dates must be > 0")
+	}
+	var cutoff *time.Time
+	if err := r.pool.QueryRow(ctx, `
+		SELECT min(fixture_date)::timestamp AT TIME ZONE 'UTC'
+		FROM (
+			SELECT DISTINCT (kickoff AT TIME ZONE 'UTC')::date AS fixture_date
+			FROM fixtures
+			WHERE state = 'completed'
+			ORDER BY fixture_date DESC
+			LIMIT $1
+		) recent_completed_dates
+	`, completedFixtureDates).Scan(&cutoff); err != nil {
+		return nil, fmt.Errorf("pg.FixtureRepo.PublicCompletedCutoff: %w", err)
+	}
+	if cutoff != nil {
+		utc := cutoff.UTC()
+		cutoff = &utc
+	}
+	return cutoff, nil
+}
+
+// ListPublicWindow returns all staging and active fixtures plus fixtures on the
+// newest completedFixtureDates distinct UTC kickoff dates. Cutoff selection and
+// fixture selection share one statement snapshot.
+func (r *FixtureRepo) ListPublicWindow(ctx context.Context, completedFixtureDates int) ([]*fixture.Fixture, error) {
+	if completedFixtureDates <= 0 {
+		return nil, fmt.Errorf("pg.FixtureRepo.ListPublicWindow: completed fixture dates must be > 0")
+	}
+	rows, err := r.pool.Query(ctx,
+		`WITH recent_completed_dates AS (
+			SELECT DISTINCT (kickoff AT TIME ZONE 'UTC')::date AS fixture_date
+			FROM fixtures
+			WHERE state = 'completed'
+			ORDER BY fixture_date DESC
+			LIMIT $1
+		), public_cutoff AS (
+			SELECT min(fixture_date)::timestamp AT TIME ZONE 'UTC' AS cutoff
+			FROM recent_completed_dates
+		)
+		 SELECT `+fixtureColumns+` FROM fixtures CROSS JOIN public_cutoff
+		 WHERE state <> 'completed'
+		    OR (public_cutoff.cutoff IS NOT NULL AND kickoff >= public_cutoff.cutoff)
+		 ORDER BY CASE state WHEN 'staging' THEN 0 WHEN 'active' THEN 1 ELSE 2 END,
+		          updated_at DESC`, completedFixtureDates)
+	if err != nil {
+		return nil, fmt.Errorf("pg.FixtureRepo.ListPublicWindow: %w", err)
+	}
+	defer rows.Close()
+	return collectFixtures(rows)
+}
+
+// GetByIDs returns known fixtures in caller order. Unknown IDs are omitted.
+func (r *FixtureRepo) GetByIDs(ctx context.Context, ids []int64) ([]*fixture.Fixture, error) {
+	if len(ids) == 0 {
+		return []*fixture.Fixture{}, nil
+	}
+	rows, err := r.pool.Query(ctx,
+		"SELECT "+fixtureColumns+` FROM fixtures
+		 WHERE id = ANY($1::bigint[])
+		 ORDER BY array_position($1::bigint[], id)`, ids)
+	if err != nil {
+		return nil, fmt.Errorf("pg.FixtureRepo.GetByIDs: %w", err)
+	}
+	defer rows.Close()
+	return collectFixtures(rows)
+}
+
+// SearchPublicFixtures returns publicly-windowed fixtures matching q across
 // competition (league) name, either team name, or any of the fixture's event
 // scorer/assist names — the free-text search backing GET /api/v1/search. Any
 // state (staging/active/completed), kickoff-newest first, capped at limit.
@@ -378,23 +451,37 @@ func (r *FixtureRepo) ListByState(ctx context.Context, state fixture.State) ([]*
 // matched verbatim, not as a wildcard. The scorer/assist arm is an EXISTS
 // subquery over the fixture's non-removed events (indexed by fixture_id); across
 // the bounded retained window a seq scan of the ~hundreds of fixtures is cheap.
-func (r *FixtureRepo) SearchFixtures(ctx context.Context, q string, limit int) ([]*fixture.Fixture, error) {
+func (r *FixtureRepo) SearchPublicFixtures(ctx context.Context, q string, limit, completedFixtureDates int) ([]*fixture.Fixture, error) {
+	if completedFixtureDates <= 0 {
+		return nil, fmt.Errorf("pg.FixtureRepo.SearchPublicFixtures: completed fixture dates must be > 0")
+	}
 	pattern := "%" + escapeLike(q) + "%"
 	rows, err := r.pool.Query(ctx,
-		"SELECT "+fixtureColumns+` FROM fixtures
-		 WHERE league_name ILIKE $1
+		`WITH recent_completed_dates AS (
+			SELECT DISTINCT (kickoff AT TIME ZONE 'UTC')::date AS fixture_date
+			FROM fixtures
+			WHERE state = 'completed'
+			ORDER BY fixture_date DESC
+			LIMIT $3
+		), public_cutoff AS (
+			SELECT min(fixture_date)::timestamp AT TIME ZONE 'UTC' AS cutoff
+			FROM recent_completed_dates
+		)
+		 SELECT `+fixtureColumns+` FROM fixtures CROSS JOIN public_cutoff
+		 WHERE (state <> 'completed' OR (public_cutoff.cutoff IS NOT NULL AND kickoff >= public_cutoff.cutoff))
+		   AND (league_name ILIKE $1
 		    OR home_team_name ILIKE $1
 		    OR away_team_name ILIKE $1
 		    OR EXISTS (
 		        SELECT 1 FROM events e
 		        WHERE e.fixture_id = fixtures.id AND NOT e.removed
 		          AND (e.player_name ILIKE $1 OR e.assist_name ILIKE $1)
-		    )
+		    ))
 		 ORDER BY kickoff DESC
 		 LIMIT $2`,
-		pattern, limit)
+		pattern, limit, completedFixtureDates)
 	if err != nil {
-		return nil, fmt.Errorf("pg.FixtureRepo.SearchFixtures: %w", err)
+		return nil, fmt.Errorf("pg.FixtureRepo.SearchPublicFixtures: %w", err)
 	}
 	defer rows.Close()
 	return collectFixtures(rows)
@@ -476,7 +563,7 @@ func (r *FixtureRepo) AssessCompletion(
 		          -- Exclude unknown-scorer placeholders (debounce_count=0). They
 		          -- never trigger downstream, so without this a placeholder that
 		          -- survives to full-time (scorer never attributed) blocks
-		          -- completion forever and the fixture never prunes. Python's
+		          -- fixture completion forever. Python's
 		          -- complete_fixture_if_ready filtered "None" event_ids out of the
 		          -- gate for the same reason. Known-scorer events always seed
 		          -- count>=1, so this only excludes placeholders, never a real goal
@@ -523,69 +610,6 @@ func (r *FixtureRepo) AssessCompletion(
 		return fixture.CompletionAssessment{}, fmt.Errorf("pg.FixtureRepo.AssessCompletion: %w", err)
 	}
 	return assessment, nil
-}
-
-// PruneCompleted deletes completed fixtures whose completed_at is
-// older than threshold AND which have NO surviving video_shares.
-// This honors the URL-stability invariant (§3): fixtures with any
-// public share stay indefinitely; only truly unreferenced fixtures
-// prune. Returns the number of rows deleted.
-//
-// The RESTRICT chain (video_shares → events → fixtures) at the FK
-// layer would block a DELETE even without this WHERE clause, but
-// checking here surfaces the "nothing to prune" outcome cleanly
-// (rowsAffected = 0) rather than the DB rejecting individual rows.
-func (r *FixtureRepo) PruneCompleted(ctx context.Context, threshold time.Time) (int, error) {
-	const query = `
-		DELETE FROM fixtures f
-		WHERE f.state = 'completed'
-		  AND f.completed_at < $1
-		  AND NOT EXISTS (
-			  SELECT 1 FROM events e
-			  JOIN video_shares s ON s.event_id = e.id
-			  WHERE e.fixture_id = f.id
-		  )
-	`
-	tag, err := r.pool.Exec(ctx, query, threshold.UTC())
-	if err != nil {
-		return 0, fmt.Errorf("pg.FixtureRepo.PruneCompleted: %w", err)
-	}
-	return int(tag.RowsAffected()), nil
-}
-
-// ListReclaimableEventIDs returns event IDs of completed fixtures older
-// than threshold that still carry a non-removed share — the byte-reclaim
-// worklist for retention's clip-bearing half (#176). DISTINCT because an
-// event can hold several shares (the superseded chain). See the
-// fixture.Repo interface doc for the URL-stability rationale: the caller
-// DestroyEvents each (Garage bytes reclaimed, rows kept as 410 tombstones).
-func (r *FixtureRepo) ListReclaimableEventIDs(ctx context.Context, threshold time.Time) ([]uuid.UUID, error) {
-	const query = `
-		SELECT DISTINCT e.id
-		FROM fixtures f
-		JOIN events e ON e.fixture_id = f.id
-		JOIN video_shares s ON s.event_id = e.id
-		WHERE f.state = 'completed'
-		  AND f.completed_at < $1
-		  AND s.state <> 'removed'
-	`
-	rows, err := r.pool.Query(ctx, query, threshold.UTC())
-	if err != nil {
-		return nil, fmt.Errorf("pg.FixtureRepo.ListReclaimableEventIDs: %w", err)
-	}
-	defer rows.Close()
-	var ids []uuid.UUID
-	for rows.Next() {
-		var id uuid.UUID
-		if err := rows.Scan(&id); err != nil {
-			return nil, fmt.Errorf("pg.FixtureRepo.ListReclaimableEventIDs: scan: %w", err)
-		}
-		ids = append(ids, id)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("pg.FixtureRepo.ListReclaimableEventIDs: rows: %w", err)
-	}
-	return ids, nil
 }
 
 // collectFixtures walks a pgx.Rows iterator and scans each into a

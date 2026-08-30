@@ -168,7 +168,7 @@ the current branch.
   three suppresses all popularity-one clips for its event. An unverified clip
   at the same threshold suppresses only unverified popularity-one clips; it
   cannot hide a verified singleton. Popularity-two clips remain visible.
-- **Implementation:** `ListLiveForEvent` derives the rule from the current live
+- **Implementation:** `ListLiveForEvents` derives the rule from each event's current live
   set before assigning contiguous public ranks. Suppressed assets and shares
   remain durable, active, and directly resolvable. The behavior is reversible
   if a threshold clip leaves the live set. No schema, workflow, or frontend
@@ -187,9 +187,9 @@ the current branch.
 
 ### FF-079 — shareless fixture retention destroys failure evidence
 
-- **Status:** `confirmed`
+- **Status:** `implemented`
 - **Severity:** P1
-- **Observed:** The daily IngestWorkflow runs retention at 00:05 UTC with a
+- **Observed before FF-079:** The daily IngestWorkflow ran retention at 00:05 UTC with a
   hardcoded 14-day cutoff. `PruneCompleted` hard-deletes every completed
   fixture older than that cutoff when no `video_shares` row exists below it.
   The fixture delete cascades through events, candidate observations,
@@ -223,24 +223,25 @@ the current branch.
      policy, and a narrower deletion/archive boundary.
   4. Every minted share row remains indefinitely so a known public URL never
      changes from `410` to `404`.
-- **Reclaim durability gap:** `ListReclaimableEventIDs` currently selects an
+- **Former reclaim durability gap:** `ListReclaimableEventIDs` selected an
   event through a non-removed share. `DestroyEvent` removes shares before it
   deletes Garage objects. If object deletion exhausts its Temporal retries,
   the removed share can keep the event off the next daily worklist even though
   bytes remain. An asset created before public share placement is also not a
   share-derived work item. Share state is therefore not durable proof of byte
   reclamation.
-- **Implementation direction:** Remove `PruneCompleted` from scheduled
-  retention. Add an explicit per-asset reclamation fact, such as
-  `video_assets.object_reclaimed_at`. Build the expired-media worklist from
-  unreclaimed assets below fixtures that have left the public window,
-  regardless of share existence or state. Revoke any shares first, delete
-  each object idempotently, and stamp only the assets whose delete succeeded;
-  retries and later daily passes must continue to select every unstamped
-  asset. FF-036 owns the bounded and batched public fixture read. FF-024 still
-  owns abandoned `staging/` objects, while FF-072 owns final objects that never
-  acquired a database owner.
-- **Required regressions:** Prove that an old shareless fixture with rejected
+- **Implementation:** Routine retention no longer exposes or calls a fixture
+  delete. `PUBLIC_HISTORY_COMPLETED_FIXTURE_DATES` defaults to 14 and is shared
+  by API and worker profiles. Snapshot and search select all staging/active
+  fixtures plus the newest N distinct completed UTC kickoff dates in one SQL
+  statement. Request assembly batches fixtures, events, discovery state, and
+  clips. The media planner selects events through unreclaimed assets below the
+  same cutoff. `DestroyEvent` stamps `video_assets.object_reclaimed_at` only
+  after each successful Garage delete; later attempts select only unstamped
+  objects regardless of share state. The old Temporal activity name remains
+  replay-compatible. FF-024 still owns abandoned `staging/` objects, while
+  FF-072 owns final objects that never acquired a database owner.
+- **Regressions:** Prove that an old shareless fixture with rejected
   candidates and an old empty fixture both retain their rows; an unshared
   asset is reclaimed without deleting its audit hierarchy; a shared asset
   produces a removed share plus a reclaimed object marker; a partial Garage
@@ -431,13 +432,13 @@ the current branch.
 | ID | Severity | Status | Summary | Completion condition |
 |---|---|---|---|---|
 | FF-008 | P2 | `confirmed` | Worker `/scratch` has no orphan sweep after process/OOM failure. | Bounded startup or scheduled sweep with active-path exclusions and tests. |
-| FF-009 | P2 | `confirmed` | Temporal schedules are create-only and retention still passes a hardcoded 14 days. | Config value wired; Describe→Update reconciliation tested and documented. |
+| FF-009 | P2 | `confirmed` | Temporal schedules are create-only, so changed cron, overlap, or workflow arguments do not reconcile on redeploy. FF-079 removed history policy from serialized ingest args. | Describe→Update reconciliation tested and documented without overwriting intentional operator state. |
 | FF-010 | P2 | `confirmed` | Completed fixtures are not revisited for late assist backfill. | Bounded completed-fixture refresh policy with vendor-call budget and tests. |
 | FF-011 | P2 | `implemented` | New placement histories use `(event_id, tweet_url)` candidate attribution as the vote key, so an activity retry observes the prior credit instead of incrementing popularity again. | Apply the FF-066 migration, release worker/API together, and verify a natural duplicate increments once through an induced or observed retry. |
 | FF-013 | P2 | `implemented` | An explicit migration binary now owns one advisory-locked transaction, immutable checksums, target hashes, a required-object manifest, and durable ledger. Worker/API perform read-only verification; dev Compose gates on migration and production retains a separately approved `make migrate-prod` action. | Release by running the migration action before the application deploy; verify the ledger and clean worker/API startup. |
 | FF-024 | P2 | `confirmed` | The Garage `staging/` prefix has no bounded orphan sweep after abnormal termination. | Protect active keys and delete only proven age-bounded orphans. |
 | FF-035 | P2 | `implemented` | Each binary now parses only its owned typed sections and rejects semantic or cross-field violations before external work. A derived contract test keeps Go tags, `.env.example`, Compose overrides, environment scope, and cookie mounts aligned; dead config keys were removed. | Roll out the committed release and verify clean startup for worker, API, Twitter, and one VNC config parse. |
-| FF-036 | P2 | `confirmed` | API completed-fixture reads are unbounded and assembled with N+1 queries. | Separate the public read window from durable URL tombstones and batch assembly. |
+| FF-036 | P2 | `implemented` | FF-079 bounds snapshots/search to configured completed UTC kickoff dates while keeping targeted SQL history. Fixture assembly uses request-wide event, discovery, and clip batches instead of N+1 reads. | Release worker/API with the FF-079 migration, then verify the public cutoff and query latency against retained production history. |
 | FF-037 | P2 | `mitigated` | LLM, Temporal, and ffmpeg admission are process-local and share work lanes. | Dedicated task/ffmpeg lanes; checked aggregate limits; shared inference owns global admission. |
 | FF-038 | P2 | `mitigated` | Firefox capacity, leases, Docker access, and the shared X account/IP search budget are not one atomic controller boundary. Natural FF-061 validation measured an internal timeline bucket with limit 50 and a roughly 15-minute reset window. | HTTP fleet controller with atomic browser and measured search admission, scoped labels, reaping, and no worker socket. |
 | FF-039 | P2 | `confirmed` | API/worker/Twitter lifecycle, readiness, metrics identity, and error classification diverge. | Shared lifecycle contract, real readiness, correct error classes, standard identity labels. |
@@ -465,7 +466,7 @@ the current branch.
 | FF-065 | P2 | `implemented` | Exact-byte followers became terminal `duplicate` while their representative still awaited vision, so a later content rejection left duplicate rows without an asset winner. New histories retain followers until the representative terminates and share its rejection/failure unless an asset actually wins. | Release the worker change and verify a natural rejected exact-byte cluster contains no duplicate outcome, while a promoted cluster retains one validation path and its full popularity. |
 | FF-066 | P2 | `implemented` | Popularity-only duplicate placements changed a public ranking input without rank repair or `event.video`; ten shares across five production events were stale. Accepted clusters now commit attribution, retry-safe popularity, share identity, supersession, and candidate outcome in one transaction; the API derives rank on every read and every successful placement invalidates consumers. | Apply `20260828_01_add_atomic_clip_placement.sql`, release worker/API together, verify schema identity, then prove a natural duplicate changes popularity/order once and emits `event.video`. Remove stored rank only after old Temporal histories age out. |
 | FF-067 | P1 | `implemented` | VAR removal and accepted-clip placement raced through independent operations. The shared event-row lock now makes removal authoritative: a late placement terminalizes uncredited candidates as `rejected/event_removed`, creates no public rows, reclaims destination plus staging bytes, and emits no invalidation. | Release the worker change, then verify a natural VAR cancellation leaves no post-removal active share or Garage object. |
-| FF-068 | P2 | `implemented` | `DestroyEvent` previously revoked shares, logged Garage delete failures, and returned success. It now attempts every known key, aggregates failures, and returns an error so the Temporal activity retries after safe revocation. | Release the worker change and induce or observe one transient delete failure followed by a successful retry; FF-024 remains the final reconciliation net after exhausted retries or abnormal termination. |
+| FF-068 | P2 | `implemented` | `DestroyEvent` revokes shares, attempts every unreclaimed key, stamps each successful delete, and aggregates failures. Temporal retries only unstamped assets, and later FF-079 ingests retain the same durable worklist after exhaustion. | Release worker/schema together and induce or observe one partial delete failure followed by a successful retry. |
 | FF-069 | P2 | `implemented` | Downstream completion previously treated zero updated rows as success. The event repository now locks and classifies the exact checklist identity as `completed_now`, `already_completed`, or typed not-found; only the first two succeed. | Release the worker change and verify a natural completion reports its stored outcome; no schema, API, or frontend change is required. |
 | FF-070 | P2 | `implemented` | Typed activation, completion, detection, stability, and removal records now commit inside the owning Postgres state transaction. The standalone Composer and ignored-error call sites are gone; audit failure rolls state back for activity retry. | Release the worker and verify one natural event produces detected/stable rows while an idempotent monitor retry does not duplicate either transition. |
 | FF-071 | P2 | `implemented` | Composite foreign keys now enforce event/fixture identity across assets, shares, candidates, credits, and supersession. Named checks enforce complete removal state, media/hash shape, non-negative candidate measurements, and positive popularity; domain validation mirrors local value/state rules. The ordered migration preflights historical rows and refuses ambiguous repair. | Run the FF-071 migration before the application rollout; verify its ledger/stamp and one natural placement under the positive-popularity contract. |

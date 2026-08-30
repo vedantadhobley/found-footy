@@ -63,13 +63,14 @@ func main() {
 		// Postgres closes after HTTP drains (LIFO). A listen failure (e.g. port in
 		// use) fails the binary fast rather than running degraded.
 		handlers := &ffapi.Handlers{
-			Fixtures:   pg.NewFixtureRepo(pool),
-			Events:     pg.NewEventRepo(pool),
-			Videos:     pg.NewShareRepo(pool),
-			Presign:    s3c,
-			Bucket:     s3c.Bucket(),
-			PresignTTL: deps.Cfg.S3.PresignedURLTTL,
-			Log:        deps.Log,
+			Fixtures:              pg.NewFixtureRepo(pool),
+			Events:                pg.NewEventRepo(pool),
+			Videos:                pg.NewShareRepo(pool),
+			Presign:               s3c,
+			Bucket:                s3c.Bucket(),
+			PresignTTL:            deps.Cfg.S3.PresignedURLTTL,
+			CompletedFixtureDates: deps.Cfg.History.CompletedFixtureDates,
+			Log:                   deps.Log,
 		}
 		srv := &http.Server{
 			Addr:         deps.Cfg.API.ListenAddr,

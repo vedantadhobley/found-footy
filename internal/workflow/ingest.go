@@ -22,6 +22,7 @@ import (
 
 	"github.com/vedantadhobley/found-footy/internal/activity/ingest"
 	livefeedactivity "github.com/vedantadhobley/found-footy/internal/activity/livefeed"
+	retentionactivity "github.com/vedantadhobley/found-footy/internal/activity/retention"
 	videoactivity "github.com/vedantadhobley/found-footy/internal/activity/video"
 	"github.com/vedantadhobley/found-footy/internal/domain/video"
 	"github.com/vedantadhobley/found-footy/internal/infra/apifootball"
@@ -52,7 +53,7 @@ const (
 // daily schedule invocation passes.
 type IngestWorkflowInput struct {
 	// ManualDate overrides the anchor date the workflow uses to
-	// compute the fetch window + retention cutoff. nil = use
+	// compute the fetch window. nil = use
 	// workflow.Now(ctx) (the scheduled path). Set to a specific
 	// day to re-ingest that day (e.g. after a data-source fix).
 	ManualDate *time.Time
@@ -68,7 +69,7 @@ type IngestWorkflowInput struct {
 	// FetchFuture controls whether the by-window fetch path also pulls
 	// FetchWindowFutureDays days beyond the anchor. Default false
 	// (manual triggers reingest a single day). The daily Temporal
-	// Schedule sets this to TRUE alongside RetentionDays=14 so
+	// Schedule sets this to TRUE so
 	// scheduled runs get the full "today + N future days" window.
 	// Ignored when ManualFixtureIDs is non-empty (that path is by-ID,
 	// not date-based).
@@ -78,12 +79,6 @@ type IngestWorkflowInput struct {
 	// duration get auto-activated during categorization. Zero →
 	// defaults to 30 * time.Minute.
 	ActivationWindow time.Duration
-
-	// RetentionDays: completed fixtures older than
-	// (anchor - RetentionDays * 24h) get pruned. Zero → skip
-	// pruning (used by ad-hoc re-ingests). The daily schedule spec
-	// sends 14 explicitly.
-	RetentionDays int
 }
 
 // IngestWorkflowOutput surfaces counts from each activity so the
@@ -114,7 +109,6 @@ type IngestWorkflowOutput struct {
 	ExistingAliases int
 	InsertedAliases int
 
-	PrunedFixtures  int
 	ReclaimedEvents int
 	Errors          []string
 }
@@ -154,10 +148,8 @@ func IngestWorkflow(ctx workflow.Context, in IngestWorkflowInput) (IngestWorkflo
 	}
 	ctx = workflow.WithActivityOptions(ctx, ao)
 
-	// Read config once at start of workflow — activation window +
-	// retention come from env-driven WorkflowsConfig, so we can't
-	// hardcode them here. Manual triggers can override individual
-	// values via the input.
+	// Read config once at start. Workflow and shared-history values come from
+	// environment-backed config through an activity, preserving determinism.
 	var cfgOut ingest.GetIngestConfigOutput
 	if err := workflow.ExecuteActivity(ctx,
 		"GetIngestConfig",
@@ -169,19 +161,12 @@ func IngestWorkflow(ctx workflow.Context, in IngestWorkflowInput) (IngestWorkflo
 	if activationWindow == 0 {
 		activationWindow = cfgOut.ActivationWindow
 	}
-	// RetentionDays: caller override takes precedence; zero from
-	// caller falls back to config; if config also 0, prune skipped.
-	retentionDays := in.RetentionDays
-	if retentionDays == 0 {
-		retentionDays = cfgOut.RetentionDays
-	}
-
 	logger.Info("IngestWorkflow started",
 		"anchor", anchor.Format(time.RFC3339),
 		"manual_date_override", in.ManualDate != nil,
 		"manual_ids_count", len(in.ManualFixtureIDs),
 		"fetch_future", in.FetchFuture,
-		"retention_days", retentionDays,
+		"completed_fixture_dates", cfgOut.CompletedFixtureDates,
 	)
 
 	// ── Step 0: refresh tracked-teams cache if stale ──
@@ -473,57 +458,39 @@ func IngestWorkflow(ctx workflow.Context, in IngestWorkflowInput) (IngestWorkflo
 		// placeholder above (EnsureAliasPlaceholders) survives.
 	}
 
-	// ── Step 4: retention (two-part, #176) ──
-	// RetentionDays == 0 → skip. Threshold from the anchor (not
-	// workflow.Now) so manual-date re-ingests keep the retention math
-	// consistent with the fetch math.
-	//
-	// Part 1 (PruneOldFixtures activity): hard-delete clip-LESS aged
-	// fixtures + return the clip-BEARING aged events needing reclaim.
-	// Part 2 (DestroyEvent loop): revoke each such event's shares (→ the
-	// #167 redirect 410s) + delete its Garage bytes, KEEPING the rows as
-	// tombstones so no shared URL ever 404s (rebuild-plan §3 URL-stability,
-	// revised — see decisions.md 2026-08-11). The GB video bytes are the
-	// real leak; the KB rows are the price of URL-stability.
-	if retentionDays > 0 {
-		threshold := anchor.AddDate(0, 0, -retentionDays)
-		var pruneOut ingest.PruneOldFixturesOutput
-		if err := workflow.ExecuteActivity(ctx,
-			"PruneOldFixtures",
-			ingest.PruneOldFixturesInput{Threshold: threshold},
-		).Get(ctx, &pruneOut); err != nil {
-			return out, err
-		}
-		out.PrunedFixtures = pruneOut.Deleted
-		logger.Info("pruned clipless", "count", out.PrunedFixtures, "threshold_days", retentionDays)
-
-		// Reclaim Garage bytes for clip-bearing aged events. Sequential:
-		// a daily job over a bounded worklist, and DestroyEvent is
-		// idempotent (revoke skips already-removed shares; S3 delete no-ops
-		// on missing keys). DestroyEvent returns aggregate delete failures so
-		// its activity policy retries every known key. An exhausted reclaim is
-		// logged + recorded but does not abort unrelated ingest work; FF-024's
-		// bounded object reconciliation remains the final abnormal-failure net.
-		if len(pruneOut.ReclaimEventIDs) > 0 {
-			reclaimCtx := workflow.WithActivityOptions(ctx, workflow.ActivityOptions{
-				StartToCloseTimeout: 2 * time.Minute,
-				RetryPolicy:         ao.RetryPolicy,
-			})
-			for _, evID := range pruneOut.ReclaimEventIDs {
-				if err := workflow.ExecuteActivity(reclaimCtx, "DestroyEvent",
-					videoactivity.DestroyEventInput{
-						EventID: evID,
-						Reason:  string(video.RemovalPolicy),
-					}).Get(reclaimCtx, nil); err != nil {
-					logger.Warn("retention reclaim failed", "event_id", evID.String(), "error", err)
-					out.Errors = append(out.Errors, "DestroyEvent(retention): "+err.Error())
-					continue
-				}
-				out.ReclaimedEvents++
+	// ── Step 4: media retention (FF-079) ──
+	// Public history and byte expiry share the newest N distinct completed UTC
+	// kickoff dates. SQL fixture/event/candidate history is never deleted.
+	var retentionOut retentionactivity.PlanMediaRetentionOutput
+	if err := workflow.ExecuteActivity(ctx,
+		"PlanMediaRetention",
+		retentionactivity.PlanMediaRetentionInput{
+			CompletedFixtureDates: cfgOut.CompletedFixtureDates,
+		},
+	).Get(ctx, &retentionOut); err != nil {
+		return out, err
+	}
+	if len(retentionOut.EventIDs) > 0 {
+		reclaimCtx := workflow.WithActivityOptions(ctx, workflow.ActivityOptions{
+			StartToCloseTimeout: 2 * time.Minute,
+			RetryPolicy:         ao.RetryPolicy,
+		})
+		for _, evID := range retentionOut.EventIDs {
+			if err := workflow.ExecuteActivity(reclaimCtx, "DestroyEvent",
+				videoactivity.DestroyEventInput{
+					EventID: evID,
+					Reason:  string(video.RemovalPolicy),
+				}).Get(reclaimCtx, nil); err != nil {
+				logger.Warn("retention reclaim failed", "event_id", evID.String(), "error", err)
+				out.Errors = append(out.Errors, "DestroyEvent(retention): "+err.Error())
+				continue
 			}
-			logger.Info("reclaimed clip bytes",
-				"events", out.ReclaimedEvents, "candidates", len(pruneOut.ReclaimEventIDs))
+			out.ReclaimedEvents++
 		}
+		logger.Info("reclaimed clip bytes",
+			"events", out.ReclaimedEvents,
+			"candidates", len(retentionOut.EventIDs),
+			"public_cutoff", retentionOut.Cutoff)
 	}
 
 	logger.Info("IngestWorkflow complete", "output", out)

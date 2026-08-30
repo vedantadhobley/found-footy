@@ -72,11 +72,9 @@ type Activities struct {
 	// startup. See internal/config/workflows.go.
 	ActivationWindow time.Duration
 
-	// RetentionDays — completed fixtures older than this get pruned
-	// by PruneOldFixtures. Sourced from config.Workflows at worker
-	// startup. Scheduled invocation uses this; manual triggers can
-	// override via input.
-	RetentionDays int
+	// CompletedFixtureDates is the public-history window shared with the API.
+	// The retention planner reclaims only media older than this window.
+	CompletedFixtureDates int
 
 	// Now is injectable so tests can drive time deterministically.
 	// Defaults to time.Now if unset.
@@ -111,10 +109,9 @@ type GetIngestConfigOutput struct {
 	// ActivePollWorkflow uses for its ActivateUpcoming lookahead.
 	ActivationWindow time.Duration
 
-	// RetentionDays — completed fixtures older than this get pruned.
-	// Sourced from config.Workflows.RetentionDays. Zero here means the
-	// scheduled invocation is expected to explicitly override.
-	RetentionDays int
+	// CompletedFixtureDates is the minimum number of completed UTC kickoff
+	// dates kept public and in object storage.
+	CompletedFixtureDates int
 }
 
 // GetIngestConfig — trivial config accessor for the workflow.
@@ -122,8 +119,8 @@ func (a *Activities) GetIngestConfig(
 	_ context.Context, _ GetIngestConfigInput,
 ) (GetIngestConfigOutput, error) {
 	return GetIngestConfigOutput{
-		MaxLookaheadDays: a.FetchWindowFutureDays,
-		ActivationWindow: a.ActivationWindow,
-		RetentionDays:    a.RetentionDays,
+		MaxLookaheadDays:      a.FetchWindowFutureDays,
+		ActivationWindow:      a.ActivationWindow,
+		CompletedFixtureDates: a.CompletedFixtureDates,
 	}, nil
 }
