@@ -162,7 +162,7 @@ the current branch.
 
 ### FF-078 — repeated-source evidence prunes public singleton clips
 
-- **Status:** `implemented`
+- **Status:** `validating`
 - **Severity:** P3
 - **Product rule:** A timestamp-verified active clip with popularity at least
   three suppresses all popularity-one clips for its event. An unverified clip
@@ -173,9 +173,17 @@ the current branch.
   remain durable, active, and directly resolvable. The behavior is reversible
   if a threshold clip leaves the live set. No schema, workflow, or frontend
   implementation changes are required.
-- **Completion condition:** Release the API and verify that a natural
-  popularity bump emits `event.video`, returns contiguous ranks, and preserves
-  a verified singleton against an unverified threshold clip.
+- **Production checkpoint (2026-08-30):** Release `1da93e1` deployed with both
+  workers, API, and Twitter exposing its exact identity. A read-only scan found
+  304 suppressed singletons across 166 events while all 942 live durable shares
+  remained stored. Targeted REST reads returned one contiguous rank-1 verified
+  clip for both currently affected 2026-08-30 events: T. Muller at 40′
+  (`popularity: 7`) and A. Pellegrino at 70′ (`popularity: 3`). Each event's
+  unverified popularity-one alternative remained durable but absent from the
+  projection.
+- **Completion condition:** Verify that the next natural threshold-crossing
+  popularity bump emits `event.video` and causes an already-open consumer to
+  replace the event with the newly pruned, contiguous list.
 
 ### FF-003 — candidate can pass without exact-event semantic evidence
 
