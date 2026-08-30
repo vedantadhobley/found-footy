@@ -217,10 +217,9 @@ BFF and React. The consumer change must:
 5. retain a full fixture snapshot on initial load and every browser or NATS
    reconnect because Core NATS and SSE do not replay missed hints.
 
-The current BFF discards `fixture.update.fixture_ids` and turns both update and
-video subjects into a generic full-window refresh. That is consumer drift, not
-the producer contract. The shared schema owner under
-`~/workspace/nats/schemas/` must replace the fixture-clock schema, example, and
-README entry with `fixture.status` before the coordinated production
-rollout. Found Footy's committed golden is
+The deployed BFF preserves targeted fixture and event identity instead of
+turning either signal into a generic full-window refresh. Shared schema commit
+`fb04fee` replaced the fixture-clock schema, example, and README entry with
+`fixture.status`; Vedanta Systems commit `81db099` landed the matching consumer
+in the coordinated 2026-08-30 rollout. Found Footy's committed golden is
 `internal/infra/event/testdata/found-footy.fixture.status.json`.

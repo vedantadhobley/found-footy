@@ -49,11 +49,12 @@ snapshot because Core NATS is transient.
   fixture indicator without a REST read or reorder.
 - `NS -> 1H`, `2H -> FT`, `P -> PEN`, and `PST -> NS` refetch and rebucket the
   fixture. First terminal observation still owns finished-fixture recency.
-- The REST shape and NATS subject are breaking consumer changes. The shared
-  schema and Vedanta Systems consumer must land before this producer deploys.
-  No permanent dual-subject compatibility path is retained.
-- Vedanta Systems should preserve and coalesce `fixture.update.fixture_ids`
-  instead of converting every invalidation into a full-window refresh.
+- The REST shape and NATS subject were coordinated breaking consumer changes.
+  Found Footy `e26966a`, shared schema `fb04fee`, and Vedanta Systems `81db099`
+  deployed together on 2026-08-30. No permanent dual-subject compatibility
+  path is retained.
+- Vedanta Systems preserves and coalesces `fixture.update.fixture_ids` instead
+  of converting every invalidation into a full-window refresh.
 
 ## Superseded contract
 
