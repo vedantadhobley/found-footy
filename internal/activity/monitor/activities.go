@@ -5,9 +5,9 @@
 //  1. ActivateUpcoming — DB-only check; promotes staging fixtures
 //     whose stored kickoff is within the activation window.
 //  2. ListActiveFixtureIDs — cheap ID pull.
-//  3. FetchLiveFixtures — one batched /fixtures?ids= call.
-//  4. ReconcileFixture — per fixture, refresh row + diff events +
-//     vote presence/absence for each event. Concurrent via
+//  3. FetchLiveFixtures — one contract-validated batched /fixtures?ids= call.
+//  4. ReconcileFixture — per fixture, calculate the FF-075 shadow verdict,
+//     refresh state, diff events, and vote presence/absence. Concurrent via
 //     workflow.Go in the coordinator.
 //
 // StagingPollWorkflow (fires per cron schedule, default 15 min) uses:
@@ -44,7 +44,7 @@ import (
 // from the apifootball adapter — same idiom as ingest's fetcher. The
 // (fixtures, failedIDs, err) return shape carries partial-failure info
 // per apifootball.ListFixturesByIDs — err is set only on catastrophic
-// failure, failedIDs lists the IDs that didn't come back.
+// transport/contract failure; failedIDs lists IDs whose chunk did not validate.
 type fixtureFetcher interface {
 	ListFixturesByIDs(ctx context.Context, ids []int64) (
 		fixtures []apifootball.APIFixture, failedIDs []int64, err error,

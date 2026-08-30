@@ -14,6 +14,9 @@ its historical heading anchors valid.
 
 New decisions after the frozen archive:
 
+- [Provider fixture responses require a contract and shadow trust assessment](./2026-08-29-provider-fixtures-require-contract-and-shadow-trust.md)
+  — FF-075 rejects malformed/incomplete fixture payloads and records
+  non-enforcing semantic trust verdicts before durable circuit enforcement.
 - [Fixture writers own columns and observation order](./2026-08-28-fixture-writers-own-columns.md) — FF-040 replaces generic full-row upserts with state-guarded, monotonic provider writes and narrow lifecycle transitions.
 - [Relational identity is one key](./2026-08-28-relational-identity-is-one-key.md) — FF-071 replaces independent existence checks with correlated aggregate keys plus durable value/state bounds.
 - [Ordered migrations own durable schema evolution](./2026-08-28-ordered-migrations-own-durable-schema-evolution.md) — FF-013 replaces manual hash restamps with an explicit transactional migration command and read-only application gate.

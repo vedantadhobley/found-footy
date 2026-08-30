@@ -10,6 +10,7 @@ package apifootball
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/url"
 	"strconv"
@@ -37,6 +38,11 @@ type APIFixture struct {
 	Goals   APIFixtureGoals   `json:"goals"`
 	Score   APIFixtureScore   `json:"score"`
 	Events  []APIFixtureEvent `json:"events,omitempty"` // present only on GetFixture, not List
+
+	// eventsState is populated only while decoding the provider wire payload.
+	// It lets the by-ID contract reject missing/null events while accepting an
+	// explicit empty array; it is intentionally absent from downstream JSON.
+	eventsState fixtureEventsState
 }
 
 // APIFixtureFixture is the "fixture" sub-object — identity + status +
@@ -169,14 +175,16 @@ func (c *Client) ListFixtures(ctx context.Context, params FixtureListParams) ([]
 	if err != nil {
 		return nil, err
 	}
-	var envelope struct {
-		Response []APIFixture `json:"response"`
-		Errors   any          `json:"errors"`
-	}
+	var envelope fixtureEnvelope
 	if err := c.getJSON(ctx, "fixtures", "/fixtures", query, &envelope); err != nil {
 		return nil, err
 	}
-	return envelope.Response, nil
+	fixtures, err := decodeFixtureEnvelope(envelope, nil, false)
+	if err != nil {
+		c.recordFixtureContractFailure(ctx, err)
+		return nil, err
+	}
+	return fixtures, nil
 }
 
 // buildFixtureListQuery composes the URL query params from
@@ -217,12 +225,13 @@ func buildFixtureListQuery(p FixtureListParams) (url.Values, error) {
 // firing per-chunk HTTP calls in PARALLEL via an errgroup. The vendor
 // caps at 20 IDs per request (docs/api-football/fixtures-endpoint.md).
 //
-// PARTIAL-FAILURE SEMANTICS. When one chunk's HTTP call fails while
-// others succeed, we still return the fixtures that came back and
-// list the IDs that didn't in failedIDs. Callers decide whether to
+// PARTIAL-FAILURE SEMANTICS. When one chunk's HTTP call or fixture-contract
+// validation fails while others succeed, we still return the fixtures that
+// came back and list the IDs that did not in failedIDs. Callers decide whether to
 // retry (Ingest loops with backoff on failedIDs; Monitor logs and
 // lets the next poll cycle recover). err is set only on catastrophic
-// failure: ctx cancelled, or every chunk failed. When err is nil,
+// failure: ctx cancelled, or every chunk failed transport/validation. When
+// err is nil,
 // failedIDs may still be non-empty — check it explicitly.
 //
 // Zero-length input short-circuits with no round trip.
@@ -238,6 +247,7 @@ func (c *Client) ListFixturesByIDs(ctx context.Context, ids []int64) (
 	chunks := chunkIDs(ids, IDsBatchLimit)
 	results := make([][]APIFixture, len(chunks))
 	failedChunks := make([]bool, len(chunks))
+	chunkErrors := make([]error, len(chunks))
 
 	var mu sync.Mutex
 	g, gctx := errgroup.WithContext(ctx)
@@ -251,6 +261,7 @@ func (c *Client) ListFixturesByIDs(ctx context.Context, ids []int64) (
 				// Record + swallow — siblings continue. The caller
 				// gets the partial + explicit failedIDs list.
 				failedChunks[i] = true
+				chunkErrors[i] = err
 				return nil
 			}
 			results[i] = got
@@ -285,8 +296,14 @@ func (c *Client) ListFixturesByIDs(ctx context.Context, ids []int64) (
 	// Catastrophic: every chunk failed. Return error so caller can
 	// distinguish "API is down" from "some IDs didn't resolve."
 	if successCount == 0 {
+		var causes []error
+		for _, chunkErr := range chunkErrors {
+			if chunkErr != nil {
+				causes = append(causes, chunkErr)
+			}
+		}
 		return nil, failedIDs, fmt.Errorf(
-			"apifootball.ListFixturesByIDs: all %d chunks failed", len(chunks))
+			"apifootball.ListFixturesByIDs: all %d chunks failed: %w", len(chunks), errors.Join(causes...))
 	}
 
 	return fixtures, failedIDs, nil
@@ -306,14 +323,16 @@ func (c *Client) fetchFixturesByIDsChunk(ctx context.Context, ids []int64) ([]AP
 	}
 	q := url.Values{"ids": {string(b)}}
 
-	var envelope struct {
-		Response []APIFixture `json:"response"`
-		Errors   any          `json:"errors"`
-	}
+	var envelope fixtureEnvelope
 	if err := c.getJSON(ctx, "fixtures", "/fixtures", q, &envelope); err != nil {
 		return nil, err
 	}
-	return envelope.Response, nil
+	fixtures, err := decodeFixtureEnvelope(envelope, ids, true)
+	if err != nil {
+		c.recordFixtureContractFailure(ctx, err)
+		return nil, err
+	}
+	return fixtures, nil
 }
 
 // chunkIDs splits ids into batches of at most n. Preserves ordering;

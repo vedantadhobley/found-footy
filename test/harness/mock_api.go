@@ -112,6 +112,7 @@ func (m *MockAPI) handleFixtures(w http.ResponseWriter, r *http.Request) {
 		"response": scenarioFixturesToAPI(src.Fixtures),
 		"errors":   []any{},
 		"results":  len(src.Fixtures),
+		"paging":   map[string]any{"current": 1, "total": 1},
 	}
 	_ = json.NewEncoder(w).Encode(body)
 }

@@ -32,6 +32,30 @@ and league fields. An active metadata correction is `Structural`, so it emits
 `fixture.update`. See the
 [decision](../decisions/2026-08-28-fixture-writers-own-columns.md).
 
+**Provider-integrity shadow phase (FF-075).** API-Football fixture responses now
+pass a typed wire contract before Monitor receives them. Every envelope must
+have empty `errors`, matching `results`, complete single-page paging, a valid
+response array, unique fixture/team identity, nonnegative scores, and event
+teams belonging to the fixture. A by-ID chunk must return every requested ID
+exactly once and must send `events` as an array; missing and `null` are rejected
+while explicit `[]` is valid. One rejected chunk follows the existing
+`FailedIDs` next-poll retry path; an all-chunk rejection fails the fetch.
+
+After a successful active refresh, `ReconcileFixture` translates its stored
+pre-write snapshot, confirmed event history, and fresh observation into the
+provider-independent `providerintegrity` facts. The pure evaluator returns an
+advisory fixture policy and bounded reasons. `ActivePollWorkflow` aggregates
+the verdicts, recommends a global `positive_only` policy after two regressed
+fixtures or three missing confirmed events, logs anomalies, and retains the
+batch verdict in its result. A coherent recent one-goal correction remains
+trusted only when score decrement and complete event inventory agree.
+
+This phase does **not** enforce its recommendation: fixture refresh, event
+votes, completion, and cleanup still follow the existing path. Durable circuit
+state, fixture quarantine, and positive-only reconciliation remain FF-075 work
+after the shadow corpus is reviewed. See the
+[wire-and-shadow decision](../decisions/2026-08-29-provider-fixtures-require-contract-and-shadow-trust.md).
+
 **Live-feed classification (N4, decisions.md 2026-08-14).** `ReconcileFixture`
 snapshots the fixture's API-mutable fields before the `Update*` calls and diffs
 after, so `ReconcileFixtureOutput` carries `Minute`/`Extra` + two disjoint

@@ -1,9 +1,11 @@
 # API-Football provider-integrity circuit breaker
 
-**Status:** Proposed design for
+**Status:** Partially implemented for
 [`FF-075`](../../todo.md#ff-075--successful-provider-responses-can-destructively-regress-live-state).
-No contract in this document has shipped. Current behavior remains authoritative
-in the [fixture-monitoring ledger](../../orchestration/monitor.md).
+The wire contract and non-enforcing semantic evaluator have shipped; durable
+circuit/quarantine state and mutation enforcement remain proposed. Current
+behavior is authoritative in the
+[fixture-monitoring ledger](../../orchestration/monitor.md).
 
 ## Problem
 
@@ -223,9 +225,9 @@ State transitions and operator actions require durable reason evidence.
 
 ## Rollout
 
-1. Harden the API envelope and requested-ID coverage contract.
-2. Add the pure evaluator in metrics-only mode. Record verdicts but preserve
-   current mutations.
+1. **Shipped:** harden the API envelope and requested-ID coverage contract.
+2. **Shipped:** add the pure evaluator in shadow mode. Record typed workflow
+   verdicts and adapter contract metrics while preserving current mutations.
 3. Run the regression corpus and at least one live match window; classify every
    false trip before enforcement.
 4. Apply the additive provider-state/quarantine migration.

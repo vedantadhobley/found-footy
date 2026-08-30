@@ -9,7 +9,9 @@ import (
 	"time"
 
 	"github.com/vedantadhobley/found-footy/internal/contract/auditlog"
+	"github.com/vedantadhobley/found-footy/internal/domain/event"
 	"github.com/vedantadhobley/found-footy/internal/domain/fixture"
+	"github.com/vedantadhobley/found-footy/internal/domain/providerintegrity"
 	"github.com/vedantadhobley/found-footy/internal/infra/apifootball"
 )
 
@@ -43,6 +45,67 @@ func TestReconcileFixture_NewGoalInserted_CountIs1(t *testing.T) {
 	}
 }
 
+func TestReconcileFixture_ProviderIntegrityIsShadowOnly(t *testing.T) {
+	kickoff := time.Date(2026, 8, 29, 15, 0, 0, 0, time.UTC)
+	now := kickoff.Add(61 * time.Minute)
+	fRepo := newFakeFixtureRepo()
+	stored := mkActiveN4Fixture(999, kickoff, 60, 1, 0)
+	stored.APIStatus = fixture.APIStatus{Short: apifootball.StatusSecondHalf, Long: "Second Half"}
+	_ = fRepo.Upsert(context.Background(), stored)
+
+	eRepo := newFakeEventRepo()
+	goal := event.New(
+		999,
+		event.Team{ID: 40, Name: "Liverpool"},
+		event.Player{ID: pi(111), Name: stringp("Scorer")},
+		event.TypeGoal,
+		apifootball.DetailNormalGoal,
+		30,
+		nil,
+		1,
+		kickoff.Add(30*time.Minute),
+	)
+	goal.DebounceCount = 3
+	goal.DownstreamTriggered = true
+	eRepo.events[goal.ID] = goal
+	eRepo.byKey[fkey(goal.FixtureID, goal.NaturalKey)] = goal.ID
+
+	apiFix := apifootball.APIFixture{
+		Fixture: apifootball.APIFixtureFixture{
+			ID: 999,
+			Status: apifootball.APIFixtureStatus{
+				Short: apifootball.StatusSecondHalf, Long: "Second Half", Elapsed: pi(61),
+			},
+		},
+		League: apifootball.APIFixtureLeague{ID: 39, Name: "Premier League", Season: 2026},
+		Teams: apifootball.APIFixtureTeams{
+			Home: apifootball.APIFixtureTeam{ID: 40, Name: "Liverpool"},
+			Away: apifootball.APIFixtureTeam{ID: 42, Name: "Arsenal"},
+		},
+		Goals:  apifootball.APIFixtureGoals{Home: pi(0), Away: pi(0)},
+		Events: []apifootball.APIFixtureEvent{},
+	}
+
+	acts := newActs(&fakeFetcher{}, fRepo, eRepo, now)
+	out, err := acts.ReconcileFixture(context.Background(), ReconcileFixtureInput{
+		APIFixture: apiFix, WorkflowID: "shadow-regression",
+	})
+	if err != nil {
+		t.Fatalf("ReconcileFixture: %v", err)
+	}
+	if out.ProviderIntegrity.Policy != providerintegrity.PolicyPositiveOnly ||
+		out.ProviderIntegrity.MissingConfirmedEvents != 1 {
+		t.Fatalf("ProviderIntegrity = %+v, want one positive-only disappearance", out.ProviderIntegrity)
+	}
+	refreshed, err := fRepo.Get(context.Background(), 999)
+	if err != nil {
+		t.Fatalf("get refreshed fixture: %v", err)
+	}
+	if refreshed.HomeScore == nil || *refreshed.HomeScore != 0 {
+		t.Fatalf("HomeScore = %v, want 0 while assessment remains non-enforcing", refreshed.HomeScore)
+	}
+}
+
 // ── N4 classification signals ──────────────────────────────────
 //
 // mkActiveN4Fixture seeds an active fixture with a known prior clock/score so
@@ -57,6 +120,8 @@ func mkActiveN4Fixture(id int64, kickoff time.Time, elapsed, home, away int) *fi
 }
 
 func pi(n int) *int { return &n }
+
+func stringp(value string) *string { return &value }
 
 // TestReconcileFixture_ClockAdvance_ClockOnly — the minute advances and nothing
 // else: ClockChanged, NOT Structural. This is the fixture.clock tick case.

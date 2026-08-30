@@ -200,6 +200,15 @@ Instrument bundles currently ship for `pg`, `nats`, `s3`, `llm`, `temporal`,
 `instruments.go` files are the metric-name and label authority; this ledger
 does not duplicate the full mutable catalog.
 
+FF-075 adds
+`found_footy_apifootball_fixture_contract_failures_total{reason}`. Its bounded
+reason label distinguishes envelope, paging, response, identity, score, event
+presence, and exact requested-ID coverage failures. A corresponding
+`apifootball_failed` warning carries the same reason without retaining the raw
+provider body. Semantic fixture/batch verdicts remain shadow-only in the
+ActivePoll workflow result and warning log; durable circuit-state metrics begin
+with the enforcement phase.
+
 The shared bootstrap binds each binary's metrics/health socket synchronously
 before application work starts (FF-026). A bind error is a startup failure,
 not a degraded mode. If the listener fails after startup, bootstrap cancels

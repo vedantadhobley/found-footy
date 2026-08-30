@@ -76,10 +76,17 @@ the current branch.
   observations close the global circuit, while unresolved causal fixtures stay
   quarantined. Timer expiry and HTTP 200 alone are not recovery evidence.
 - **Implementation order:** Validate the transport envelope and exact ID/event
-  coverage; ship a pure semantic evaluator in metrics-only mode; review the
+  coverage; ship a pure semantic evaluator in shadow mode; review the
   regression corpus; then add the Postgres migration, enforcement, telemetry,
   and audited operator controls. Do not wrap the fetch in an in-memory breaker
   that suppresses calls.
+- **Implemented locally (2026-08-29):** The typed fixture wire contract now
+  rejects invalid envelopes, paging, identity, scores, event presence, and
+  exact by-ID coverage before reconciliation. A pure provider-independent
+  evaluator compares the stored pre-write snapshot with each validated
+  observation; ActivePoll aggregates and logs typed shadow verdicts. The
+  evaluator does not alter mutations, and no circuit/quarantine state exists
+  yet. Review live shadow evidence before the migration and enforcement slice.
 - **Design:** [API-Football provider-integrity circuit breaker](./design/proposals/provider-integrity-circuit-breaker.md).
 
 ### FF-076 — scorer name without provider ID is treated as anonymous

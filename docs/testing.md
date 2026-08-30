@@ -99,6 +99,16 @@ active provider snapshot, a newer ingest can refresh provider fields without
 changing lifecycle timestamps, and delayed staging/active writers become clean
 no-ops after state or observation-version advancement.
 
+FF-075 adapter tables reject nonempty/missing errors, missing or mismatched
+results, incomplete paging, invalid/null responses, missing/duplicate/
+unrequested IDs, missing/null by-ID event collections, invalid identity,
+negative scores, and foreign event teams while preserving explicit empty event
+arrays and partial-chunk retry semantics. Pure domain tests classify normal
+progress, clock-corrected event identity, coherent recent goal cancellation,
+stale or unsupported regression, one-fixture quarantine, and the multi-fixture
+2026-08-29 outage signature. Monitor and WorkflowTestSuite regressions prove
+the verdict is observable and aggregated but does not yet enforce mutations.
+
 FF-028 API tests require the default five-minute presign to produce a
 four-minute redirect cache, longer presigns to retain the five-minute cap, and
 short or unset lifetimes to disable redirect caching. The handler-level test

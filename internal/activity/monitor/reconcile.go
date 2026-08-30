@@ -10,6 +10,7 @@ import (
 
 	"github.com/vedantadhobley/found-footy/internal/domain/event"
 	"github.com/vedantadhobley/found-footy/internal/domain/fixture"
+	"github.com/vedantadhobley/found-footy/internal/domain/providerintegrity"
 	"github.com/vedantadhobley/found-footy/internal/infra/apifootball"
 )
 
@@ -39,8 +40,8 @@ type FetchLiveFixturesInput struct {
 	IDs []int64
 }
 
-// FetchLiveFixturesOutput carries the API response array plus any IDs
-// that didn't come back (partial failure). The workflow decides what
+// FetchLiveFixturesOutput carries the validated API response array plus any IDs
+// whose transport call or response contract failed. The workflow decides what
 // to do with FailedIDs — Monitor logs and lets the next 30s cycle
 // naturally re-request them; other callers might loop with backoff.
 type FetchLiveFixturesOutput struct {
@@ -99,6 +100,9 @@ type ReconcileFixtureOutput struct {
 	// from active → completed. See docs/design/proposals/completion-contract.md.
 	Completed bool
 	Errors    []string
+	// ProviderIntegrity is a shadow-only verdict calculated from the stored
+	// pre-write snapshot. It is observable but does not yet alter reconciliation.
+	ProviderIntegrity providerintegrity.FixtureVerdict
 
 	// ── N4 live-feed classification signals (decisions.md 2026-08-14) ──
 	// Populated every cycle; the poll workflow partitions each fixture into
@@ -117,7 +121,8 @@ type ReconcileFixtureOutput struct {
 }
 
 // ReconcileFixture is the per-fixture per-cycle work:
-//  1. Refresh the fixture row (API-mutable fields + LastPolledAt).
+//  1. Snapshot stored facts, refresh the fixture row, and calculate the FF-075
+//     shadow verdict against the stored event history.
 //  2. Diff API events against pg events (including removed sequence history).
 //  3. For each API event that doesn't match an active pg event: Insert a fresh
 //     generation (seeds debounce_count=1 + records this workflow's presence
@@ -145,6 +150,7 @@ func (a *Activities) ReconcileFixture(ctx context.Context, in ReconcileFixtureIn
 	if err != nil {
 		return out, fmt.Errorf("monitor.ReconcileFixture: get fixture: %w", err)
 	}
+	storedFixture := *f
 	// N4: snapshot the API-mutable fields before the Update* calls so we can
 	// classify this cycle as clock-only vs structural once they mutate f.
 	prevStatus := f.APIStatus.Short
@@ -212,7 +218,6 @@ func (a *Activities) ReconcileFixture(ctx context.Context, in ReconcileFixtureIn
 	if err != nil {
 		return out, fmt.Errorf("monitor.ReconcileFixture: list fixture event history: %w", err)
 	}
-
 	pgByKey := make(map[string]*event.Event, len(allEvents))
 	for _, stored := range allEvents {
 		if !stored.Removed {
@@ -227,6 +232,9 @@ func (a *Activities) ReconcileFixture(ctx context.Context, in ReconcileFixtureIn
 	if err != nil {
 		return out, fmt.Errorf("monitor.ReconcileFixture: assign event identities: %w", err)
 	}
+	out.ProviderIntegrity = providerintegrity.AssessFixture(
+		providerFixtureComparison(&storedFixture, allEvents, in.APIFixture, eventSequences),
+	)
 
 	// Build a set of API event natural_keys we've seen this cycle,
 	// so absence votes for pg events NOT in the set are correct.

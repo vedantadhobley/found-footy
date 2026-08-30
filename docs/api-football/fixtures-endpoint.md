@@ -63,11 +63,16 @@ Every response wraps the array in:
 
 - `errors` — array (or object; see the "soft errors" note in
   [rate-limits.md](./rate-limits.md)). Non-empty errors can coexist
-  with HTTP 200 + a valid `response` array. Our adapter currently
-  doesn't inspect this field.
-- `results` — count of items in `response`. Sanity check.
-- `paging` — for paginated queries. Fixtures endpoints typically
-  fit in one page.
+  with HTTP 200 + a valid `response` array. The adapter rejects any
+  nonempty value before returning fixture data.
+- `results` — must be present and equal the decoded `response` length.
+- `paging` — must be present and exactly `{current:1,total:1}`; the adapter
+  rejects silent partial pages. Fixtures endpoints typically fit in one page.
+
+For `ids=` queries, the adapter also requires every requested fixture exactly
+once and requires each fixture's `events` field to be an array. Missing and
+`null` events are contract failures; explicit `[]` means a valid empty event
+inventory. See [`FF-075`](../todo.md#ff-075--successful-provider-responses-can-destructively-regress-live-state).
 
 ## Documented response codes (page 61)
 
