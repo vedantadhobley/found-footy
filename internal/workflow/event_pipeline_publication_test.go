@@ -35,6 +35,7 @@ func TestEventWorkflow_RecurringSupersededMD5CreditsLiveCanonicalAsset(t *testin
 		true,
 		true,
 		true,
+		true,
 		discoveryactivity.GetDiscoveryConfigOutput{
 			MaxAttempts: 1, AttemptSpacing: time.Minute,
 			MaxAgeMinutes: 3, QueryTimeout: 2 * time.Minute,
@@ -65,7 +66,7 @@ func TestEventWorkflow_RecurringSupersededMD5CreditsLiveCanonicalAsset(t *testin
 
 	env.ExecuteWorkflow(workflow.EventWorkflow, stdDiscoveryInput())
 	requireDone(t, env)
-	if committed.NewWinner || committed.WinnerAssetID != assetID || len(committed.Candidates) != 1 {
+	if !committed.CaptureVariant || committed.NewWinner || committed.WinnerAssetID != assetID || len(committed.Candidates) != 1 {
 		t.Fatalf("atomic placement = %+v, want one candidate on existing winner", committed)
 	}
 	if committed.Candidates[0].Evidence.TweetURL != tweetURL ||
@@ -91,6 +92,7 @@ func TestEventWorkflow_RemovedPlacementDoesNotPublish(t *testing.T) {
 			FrameHashes: []uint64{1, 2, 3}, Width: 1280, Height: 720,
 			DurationMS: 7000, FileSizeBytes: 900_000, Popularity: 1, Verified: true,
 		}}},
+		true,
 		true,
 		true,
 		true,
@@ -244,6 +246,7 @@ func TestEventWorkflow_EmitsCriticalPathMeasurements(t *testing.T) {
 		videoactivity.LoadEventAssetsOutput{},
 		true,
 		true,
+		false,
 		false,
 		false,
 		discoveryactivity.GetDiscoveryConfigOutput{

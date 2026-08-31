@@ -40,6 +40,7 @@ const (
 	ff065ExactFollowerIDForTest      = "ff-065-exact-follower-outcome"
 	ff080CanonicalAliasIDForTest     = "ff-080-canonical-exact-alias"
 	ff082CadenceMetadataIDForTest    = "ff-082-cadence-metadata"
+	ff083VariantEvidenceIDForTest    = "ff-083-accepted-variant-evidence"
 	discoveryPGRetryAttemptsForTest  = 5
 )
 
@@ -103,7 +104,7 @@ func baseEventEnvWithRecovery(
 	assets videoactivity.LoadEventAssetsOutput,
 	discoveryConfig ...discoveryactivity.GetDiscoveryConfigOutput,
 ) *testsuite.TestWorkflowEnvironment {
-	return baseEventEnvWithOptions(s, recovery, assets, false, false, false, false, discoveryConfig...)
+	return baseEventEnvWithOptions(s, recovery, assets, false, false, false, false, false, discoveryConfig...)
 }
 
 // preHashEventEnv activates FF-022 for tests that exercise parent-owned
@@ -115,6 +116,7 @@ func preHashEventEnv(s *testsuite.WorkflowTestSuite) *testsuite.TestWorkflowEnvi
 		videoactivity.LoadEventAssetsOutput{},
 		true,
 		true,
+		false,
 		false,
 		false,
 	)
@@ -131,6 +133,7 @@ func preFF065PreHashEventEnv(s *testsuite.WorkflowTestSuite) *testsuite.TestWork
 		false,
 		false,
 		false,
+		false,
 	)
 }
 
@@ -142,6 +145,7 @@ func baseEventEnvWithOptions(
 	deferExactFollowerOutcomes bool,
 	atomicPlacement bool,
 	canonicalExactAliases bool,
+	variantEvidence bool,
 	discoveryConfig ...discoveryactivity.GetDiscoveryConfigOutput,
 ) *testsuite.TestWorkflowEnvironment {
 	env := s.NewTestWorkflowEnvironment()
@@ -178,6 +182,12 @@ func baseEventEnvWithOptions(
 		Return(canonicalAliasVersion).Maybe()
 	env.OnGetVersion(ff082CadenceMetadataIDForTest, sdkworkflow.DefaultVersion, sdkworkflow.Version(1)).
 		Return(sdkworkflow.DefaultVersion).Maybe()
+	variantEvidenceVersion := sdkworkflow.DefaultVersion
+	if variantEvidence {
+		variantEvidenceVersion = sdkworkflow.Version(1)
+	}
+	env.OnGetVersion(ff083VariantEvidenceIDForTest, sdkworkflow.DefaultVersion, sdkworkflow.Version(1)).
+		Return(variantEvidenceVersion).Maybe()
 	// Default GetDiscoveryConfig stub. MaxAttempts=10 matches the
 	// pre-#162 hardcoded value that existing tests were written
 	// against (`want 10` assertions in AttemptsRun tests). Tests that need a

@@ -25,6 +25,7 @@ var requiredIndexes = []string{
 	"video_shares_event_rank_active", "video_shares_event_asset", "video_shares_event",
 	"video_shares_asset", "event_search_candidates_event", "event_search_candidates_fixture",
 	"event_search_candidates_discovered_at", "event_search_candidates_credited_asset",
+	"event_search_candidates_observed_asset",
 	"team_aliases_needs_refresh", "tracked_teams_cache_league_season",
 	"tracked_teams_cache_refreshed_at", "event_log_created", "event_log_event",
 	"webhook_deliveries_created",
@@ -46,6 +47,7 @@ var requiredConstraints = []string{
 	"video_assets_frame_rate_positive", "video_assets_reclaimed_after_seen",
 	"video_shares_asset_event_fkey", "video_shares_removed_state",
 	"event_search_candidates_event_fixture_fkey", "event_search_candidates_credited_identity_fkey",
+	"event_search_candidates_observed_identity_fkey",
 	"event_search_candidates_duration_nonnegative", "event_search_candidates_age_nonnegative",
 }
 
@@ -105,6 +107,7 @@ func verifyCurrentSchema(ctx context.Context, tx pgx.Tx) error {
 		{"video_assets", "hash_version"},
 		{"fixtures", "terminal_observed_at"},
 		{"event_search_candidates", "credited_asset_id"},
+		{"event_search_candidates", "observed_asset_id"},
 		{"video_assets", "object_reclaimed_at"},
 		{"video_assets", "frame_rate"},
 	} {

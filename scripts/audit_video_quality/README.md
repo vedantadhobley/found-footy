@@ -4,6 +4,18 @@ This command reconstructs the retained perceptual-match and supersession graph,
 replays arrival orders, and compares diagnostic keeper policies. It consumes
 CSV on standard input. It has no database client, credentials, or write path.
 
+FF-083 exports every retained accepted MD5, including a losing variant that
+never received a public share. Such a row uses `share_state=observed` and an
+empty `share_id`; its timestamp-verification category is inherited from the
+live root reached by committed supersession edges. `superseded_by` remains a
+direct decision edge. The command may analyze graph topology but must not treat
+connected components as transitive duplicate identity.
+
+`popularity` remains the aggregate credit stored on an asset while it acts as
+a root. `observed_popularity`/`*_exact_observations` is the distinct-MD5 source
+count derived from candidate `observed_asset_id`; this is the evidence for
+comparing how often each encoding occurred.
+
 `query.sql` is a read-only Postgres transaction. Export its result once, then
 run every policy experiment against that offline file:
 
@@ -43,10 +55,11 @@ evidence columns. Never infer the quality winner from one of them alone. A
 60 fps clip may spend fewer bits on each frame than a 30 fps clip and still be
 the better presentation because it retains twice the motion cadence.
 
-The source tweet URL is the original promoted candidate when durable outcome
-detail retains that mapping. A superseded share resolves to its current winner,
-so reviewers must use the source URL to inspect retired bytes when the tweet
-still exists.
+The source tweet URL is selected from immutable `observed_asset_id` when the
+FF-083 attribution exists, with old outcome detail as a historical fallback. A
+superseded share resolves to its current winner, and a never-public variant has
+no share, so reviewers use the source URL to inspect retained evidence when the
+tweet still exists.
 
 ## Reviewed regression corpus
 

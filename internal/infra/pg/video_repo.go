@@ -95,6 +95,33 @@ func (r *AssetRepo) Get(ctx context.Context, id uuid.UUID) (*video.Asset, error)
 		"SELECT "+assetColumns+" FROM video_assets WHERE id = $1", id))
 }
 
+// ListByEvent returns the complete accepted-variant lineage in stable first-
+// observation order. It includes live, superseded, and reclaimed assets.
+func (r *AssetRepo) ListByEvent(ctx context.Context, eventID uuid.UUID) ([]*video.Asset, error) {
+	rows, err := r.pool.Query(ctx, `
+		SELECT `+assetColumns+`
+		FROM video_assets
+		WHERE event_id = $1
+		ORDER BY first_seen_at, id
+	`, eventID)
+	if err != nil {
+		return nil, fmt.Errorf("pg.AssetRepo.ListByEvent: %w", err)
+	}
+	defer rows.Close()
+	var out []*video.Asset
+	for rows.Next() {
+		asset, err := scanAsset(rows)
+		if err != nil {
+			return nil, fmt.Errorf("pg.AssetRepo.ListByEvent: %w", err)
+		}
+		out = append(out, asset)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("pg.AssetRepo.ListByEvent: rows: %w", err)
+	}
+	return out, nil
+}
+
 // InsertAsset writes a pre-judged-unique clip. ON CONFLICT (event_id, md5)
 // DO NOTHING makes it idempotent on the exact layer — a retry or a
 // byte-identical dupe that slipped the in-memory check never doubles a row.

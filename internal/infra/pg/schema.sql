@@ -260,7 +260,10 @@ CREATE INDEX event_downstream_workflows_pending
     ON event_downstream_workflows (event_id)
     WHERE completed_at IS NULL;
 
--- 7a. video_assets — canonical byte-store, one row per unique CLIP per EVENT.
+-- 7a. video_assets — accepted byte-variant store, one row per distinct MD5 per EVENT.
+--    Active rows with superseded_by=NULL are the canonical public roots. Retired rows
+--    preserve the exact source variant and one direct placement decision; graph
+--    connectivity is never treated as proof of transitive perceptual identity.
 --    Dedup is scoped to the event and NEVER across events. Cross-event / per-fixture
 --    dedup is dead: tried in Python, rejected — it collapsed genuinely-distinct goals
 --    (visually-similar broadcast clips: same stadium, camera, celebration) into one and
@@ -302,10 +305,14 @@ CREATE TABLE video_assets (
     frame_rate DOUBLE PRECISION,
     aspect_ratio REAL GENERATED ALWAYS AS (width::REAL / height::REAL) STORED,
 
-    -- Popularity (within-event vote count — how many of this event's candidates deduped onto this asset)
+    -- Aggregate source votes credited while this asset is a live root. The
+    -- count transfers once on supersession; exact per-MD5 observations derive
+    -- from event_search_candidates.observed_asset_id.
     popularity INT NOT NULL DEFAULT 1,
 
-    -- Supersession (dedup-merge / re-encode / higher-quality replacement — within one event)
+    -- Direct supersession decision (dedup merge / re-encode / quality replacement,
+    -- within one event). Following edges resolves a public root; it does not make
+    -- dHash matching transitive.
     superseded_by UUID,
 
     first_seen_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
@@ -442,9 +449,15 @@ CREATE TABLE event_search_candidates (
     outcome_detail JSONB,                                   -- specifics: {aspect} / {soccer_votes, screen_votes, frame_count} / {asset_id, verified}
     outcome_at TIMESTAMPTZ,                                 -- when the terminal outcome was recorded; NULL while pending
 
-    -- Canonical asset credited for this source sighting. New FF-066 placement
-    -- histories set it in the same transaction that changes popularity. NULL
-    -- remains valid for rejected/failed and pre-migration audit rows.
+    -- Accepted byte variant actually observed for this source sighting. FF-083
+    -- keeps this stable when its canonical winner changes. NULL remains valid
+    -- for rejected/failed and pre-migration audit rows.
+    observed_asset_id UUID,
+
+    -- Canonical live asset credited for this source sighting. New FF-066
+    -- placement histories set it in the same transaction that changes
+    -- popularity. Supersession rewrites this pointer but never the observation.
+    -- NULL remains valid for rejected/failed and pre-migration audit rows.
     credited_asset_id UUID,
 
     UNIQUE (event_id, tweet_url),                           -- same tweet can't re-insert across attempts
@@ -453,6 +466,9 @@ CREATE TABLE event_search_candidates (
         REFERENCES events (id, fixture_id) ON DELETE CASCADE,
     CONSTRAINT event_search_candidates_credited_identity_fkey
         FOREIGN KEY (credited_asset_id, event_id, fixture_id)
+        REFERENCES video_assets (id, event_id, fixture_id) ON DELETE RESTRICT,
+    CONSTRAINT event_search_candidates_observed_identity_fkey
+        FOREIGN KEY (observed_asset_id, event_id, fixture_id)
         REFERENCES video_assets (id, event_id, fixture_id) ON DELETE RESTRICT,
     CONSTRAINT event_search_candidates_duration_nonnegative CHECK (duration_seconds >= 0),
     CONSTRAINT event_search_candidates_age_nonnegative CHECK (
@@ -469,6 +485,9 @@ CREATE INDEX event_search_candidates_discovered_at
 CREATE INDEX event_search_candidates_credited_asset
     ON event_search_candidates (credited_asset_id)
     WHERE credited_asset_id IS NOT NULL;
+CREATE INDEX event_search_candidates_observed_asset
+    ON event_search_candidates (observed_asset_id)
+    WHERE observed_asset_id IS NOT NULL;
 
 -- 9. team_aliases — deterministic Wikidata alias cache.
 --

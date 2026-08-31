@@ -252,10 +252,16 @@ dense hashing, then two dedup stages straddle vision (#171 shipped 2026-08-09):
   supersession commit under one event-locked Postgres transaction. A unique or
   better cluster winner uses a deterministic asset UUID and S3 key; the
   activity copies staging before the transaction. An existing winner receives
-  only previously uncredited source votes. Supersession moves all loser
-  candidate credits to the winner, merges loser popularity exactly once,
-  retires loser shares, and returns loser objects for best-effort reclaim.
-  Staging deletion remains the required idempotent activity tail. A durable
+  only previously uncredited source votes. FF-083 histories also retain the
+  accepted candidate's exact MD5 as a deterministic asset when it loses that
+  comparison. The observed node points directly to the selected root;
+  `observed_asset_id` remains stable while `credited_asset_id` follows later
+  supersession. Supersession moves all loser candidate credits to the winner,
+  merges loser popularity exactly once, and retires loser shares. It does not
+  reclaim accepted asset bytes during placement. FF-079 reclaims every event
+  asset after the fixture leaves the public media window, preserving the SQL
+  lineage and candidate attribution. Staging deletion remains the required
+  idempotent activity tail. A durable
   deterministic asset row proves the destination copy preceded it, so a retry
   skips an impossible second source copy. FF-067 also reads the event's removed
   state under this same row lock before any public mutation. A placement that
@@ -272,6 +278,9 @@ dense hashing, then two dedup stages straddle vision (#171 shipped 2026-08-09):
   retired-variant restoration and redirect commands.
   `ff-082-cadence-metadata` separately controls the added frame-rate activity
   field, so it does not change older command payloads during replay.
+  `ff-083-accepted-variant-evidence` separately enables the observed-variant
+  payload and persistence; pre-FF-083 histories retain the former first-loss
+  behavior.
 - **Visibility and rank:** The API derives both from current evidence on every
   read. A verified clip at popularity three suppresses all popularity-one
   clips; an unverified clip at three suppresses only unverified
@@ -297,7 +306,7 @@ These are separate policies over different sets. Do not merge their criteria:
 
 | Policy | Set being ordered | Comparator | Effect |
 |---|---|---|---|
-| Dedup keeper selection | Perceptually matching clips in the same verified or unverified pool | [`IsUpgrade`](../../internal/domain/video/quality.go): meaningfully longer capped duration, then spatial bitrate density (`bitrate / (width × height)`) with an anti-churn margin, then resolution; incumbent wins ties. Frame rate is retained separately for new FF-082 histories but does not yet alter this policy. FF-081 records that the thresholded pairwise relation is not a total cluster order. | Chooses which bytes and asset identity survive a duplicate cluster. It never uses popularity. |
+| Dedup keeper selection | Perceptually matching clips in the same verified or unverified pool | [`IsUpgrade`](../../internal/domain/video/quality.go): meaningfully longer capped duration, then spatial bitrate density (`bitrate / (width × height)`) with an anti-churn margin, then resolution; incumbent wins ties. Frame rate is retained separately for new FF-082 histories but does not yet alter this policy. FF-081 records that the thresholded pairwise relation is not a total cluster order. | Chooses the public root and direct supersession edges. FF-083 retains losing evidence; the policy never uses popularity. |
 | Public visibility | Distinct active shares for one event after dedup | Verified popularity ≥3 suppresses every popularity-one share; unverified popularity ≥3 suppresses only unverified popularity-one shares | Omits low-evidence alternatives from the event projection without changing durable state or direct URLs. |
 | Public ranking | Shares that survive public visibility | [`CompareShares`](../../internal/domain/video/rank.go): verified, popularity, file size, older creation time, then share ID | Assigns contiguous frontend order. It does not supersede assets or decide whether two clips are duplicates. |
 
@@ -309,6 +318,12 @@ keep inferior duplicate bytes. Candidate attribution makes the vote transfer
 and direct duplicate credit retry-idempotent (FF-011/FF-066). FF-078 visibility
 is recalculated rather than latched, so a singleton becomes public again if
 the threshold clip leaves the active set.
+
+FF-083 separates evidence identity from public credit. Every accepted MD5 is a
+node, each committed supersession is a directed edge, and only graph roots are
+eligible for public shares. Exact-byte frequency is the count of candidate
+observations for a node; root popularity remains aggregate public credit.
+Neither recovery nor the audit treats a connected dHash graph as one identity.
 
 On completion—and only after every workflow-owned candidate is durably
 terminal—`finalizeEvent` marks the `event_downstream_workflows` row

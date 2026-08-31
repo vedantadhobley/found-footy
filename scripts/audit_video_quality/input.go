@@ -15,30 +15,31 @@ import (
 // asset is one retained video asset plus the event/share facts needed to
 // reproduce category-scoped matching and explain an audit finding.
 type asset struct {
-	eventID        string
-	id             string
-	firstSeenAt    string
-	md5            string
-	hashVersion    dvideo.FrameHashVersion
-	frameHashes    []uint64
-	width          int
-	height         int
-	durationMS     int
-	fileSizeBytes  int64
-	bitrate        int
-	frameRate      float64
-	popularity     int
-	supersededBy   string
-	verified       bool
-	shareState     string
-	shareID        string
-	fixtureID      int64
-	playerName     string
-	minute         int
-	extra          string
-	homeTeam       string
-	awayTeam       string
-	sourceTweetURL string
+	eventID            string
+	id                 string
+	firstSeenAt        string
+	md5                string
+	hashVersion        dvideo.FrameHashVersion
+	frameHashes        []uint64
+	width              int
+	height             int
+	durationMS         int
+	fileSizeBytes      int64
+	bitrate            int
+	frameRate          float64
+	popularity         int
+	observedPopularity int
+	supersededBy       string
+	verified           bool
+	shareState         string
+	shareID            string
+	fixtureID          int64
+	playerName         string
+	minute             int
+	extra              string
+	homeTeam           string
+	awayTeam           string
+	sourceTweetURL     string
 }
 
 // quality projects retained metadata through the production keeper policy.
@@ -174,6 +175,13 @@ func parseAsset(record []string, columns map[string]int) (asset, error) {
 	if err != nil {
 		return asset{}, err
 	}
+	observedPopularity := 0
+	if raw := optionalValue("observed_popularity"); raw != "" {
+		observedPopularity, err = strconv.Atoi(raw)
+		if err != nil {
+			return asset{}, fmt.Errorf("parse observed_popularity: %w", err)
+		}
+	}
 	verified, err := strconv.ParseBool(value("timestamp_verified"))
 	if err != nil {
 		return asset{}, fmt.Errorf("parse timestamp_verified: %w", err)
@@ -197,7 +205,8 @@ func parseAsset(record []string, columns map[string]int) (asset, error) {
 		hashVersion: dvideo.NormalizeFrameHashVersion(dvideo.FrameHashVersion(value("hash_version"))),
 		frameHashes: hashes, width: width, height: height, durationMS: durationMS,
 		fileSizeBytes: fileSizeBytes, bitrate: bitrate, frameRate: frameRate, popularity: popularity,
-		supersededBy: value("superseded_by"), verified: verified,
+		observedPopularity: observedPopularity,
+		supersededBy:       value("superseded_by"), verified: verified,
 		shareState: value("share_state"), shareID: value("share_id"),
 		fixtureID: fixtureID, playerName: value("player_name"), minute: minute,
 		extra: value("extra"), homeTeam: value("home_team_name"),

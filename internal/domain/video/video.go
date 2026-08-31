@@ -66,7 +66,9 @@ func (r RemovalReason) Valid() bool {
 	return false
 }
 
-// Asset is the canonical byte-store row (video_assets table).
+// Asset is one accepted byte variant in the video_assets lineage. Active
+// unsuperseded rows are canonical public roots; superseded rows preserve exact
+// source evidence and a direct placement decision.
 //
 // Dedup model (2026-08-03, #166): the ONLY storage-enforced dedup is
 //
@@ -102,9 +104,13 @@ type Asset struct {
 	FrameRate     *float64
 	AspectRatio   float32 // schema-generated column; carried in domain for read-only use
 
-	Popularity int // accepted source votes attributed to this live asset
+	// Popularity is aggregate source credit while this asset is a live root.
+	// Exact per-MD5 observations derive from candidate observed_asset_id.
+	Popularity int
 
-	SupersededBy *uuid.UUID // set when this asset is replaced by a higher-quality re-encode
+	// SupersededBy is one direct placement edge. Following it resolves the
+	// current root; graph connectivity does not make dHash identity transitive.
+	SupersededBy *uuid.UUID
 
 	FirstSeenAt time.Time
 }

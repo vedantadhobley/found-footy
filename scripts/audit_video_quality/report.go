@@ -112,10 +112,10 @@ func printFinding(w io.Writer, number int, finding componentFinding) {
 			target = "->" + shortID(item.supersededBy)
 		}
 		fmt.Fprintf(w,
-			"asset=%s asset_id=%s %s duration=%.3fs density=%.4f resolution=%dx%d size=%.2fMiB popularity=%d share=%s share_id=%s first=%s\n",
+			"asset=%s asset_id=%s %s duration=%.3fs density=%.4f resolution=%dx%d size=%.2fMiB popularity=%d exact_observations=%d share=%s share_id=%s first=%s\n",
 			shortID(item.id), item.id, target, float64(item.durationMS)/1000, item.spatialBitrateDensity(),
 			item.width, item.height, float64(item.fileSizeBytes)/(1024*1024),
-			item.popularity, item.shareState, item.shareID, item.firstSeenAt)
+			item.popularity, item.observedPopularity, item.shareState, item.shareID, item.firstSeenAt)
 	}
 }
 

@@ -258,8 +258,10 @@ transaction.
 prove that a compatibility rank failure after share insertion is repaired on
 retry, an uncertain staging-delete response does not require a second source
 copy, and old-path retries retain exactly one asset and share. FF-066 adds an
-activity-tail test that commits the complete placement, deletes staging and
-loser objects, then retries after the source disappeared without recopying. A
+activity-tail test that commits the complete placement, deletes staging, and
+then retries after the source disappeared without recopying. FF-083 adds a
+losing-variant case that requires a deterministic retained copy and direct
+supersession edge while forbidding immediate object reclamation. A
 pre-existing deterministic asset with mismatched immutable storage identity
 still fails closed.
 
@@ -267,7 +269,8 @@ The FF-080 EventWorkflow test rediscovers the MD5 of a superseded asset and
 requires one `CommitClipPlacement` against its restored live root, one
 `event.video`, and zero hash, vision, popularity-bump, or separate
 terminal-outcome calls. Activity tests require recovery to retain both live and
-retired MD5 aliases and reject a three-node supersession cycle explicitly. A
+retired MD5 aliases, including accepted variants with no public share, and
+reject a three-node supersession cycle explicitly. A
 production-derived domain regression preserves FF-081's non-transitive
 pairwise quality evidence until a total cluster order is designed. The default
 versions used by the existing suite continue to prove replay of the old
@@ -292,6 +295,12 @@ and returns the same share on retry. Migration integration also requires first
 adoption, idempotent retry, read-only application verification,
 missing-baseline refusal, checksum drift refusal, and full rollback after a
 deliberately failing DDL sequence.
+
+FF-083 placement integration retains a losing observed node without minting a
+share, records candidates against both immutable observation and live credit,
+keeps aggregate root popularity retry-idempotent, and proves an exact
+recurrence adds one observed candidate and one root credit. Public reads
+continue to expose only the active root.
 
 Enablement mechanics:
 - `--network=host` on the `test` make target — testcontainers-go

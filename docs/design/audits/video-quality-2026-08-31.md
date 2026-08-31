@@ -119,8 +119,9 @@ accepted component and threshold judgments now live in a compact non-media
 regression set containing full derived dHash sequences, metadata, human labels,
 and snapshots of current behavior. The test keeps accepted product judgments
 independent from matcher and comparator output, including the J. King policy
-disagreement and Havertz uncertainty. New post-FF-082 matches must supply
-retained cadence and be reviewed before supersession reclaims the losing bytes.
+disagreement and Havertz uncertainty. New post-FF-082/FF-083 matches must
+supply retained cadence and be reviewed inside the ordinary public media
+window before retention reclaims their bytes.
 
 ## Conclusion
 
@@ -135,8 +136,10 @@ prevents a retired asset from becoming a new placement winner, so the observed
 cycle is legacy data rather than a currently reproducible persistence path.
 
 The next valid quality-policy experiment can evaluate against the reviewed
-regression fixture, but still needs new post-FF-082 cadence and presentation
-evidence before changing production policy. The legacy Danso cycle can be
+regression fixture, but still needs natural post-FF-082 cadence and FF-083
+first-loss presentation evidence before changing production policy. FF-083
+retains every newly accepted MD5 and its direct committed edge without making
+connected dHash graphs transitive identity. The legacy Danso cycle can be
 repaired separately by pointing its three retired assets at the clear active
 winner, after explicit production-data approval.
 
