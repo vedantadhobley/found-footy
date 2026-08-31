@@ -27,3 +27,6 @@ code before work begins.
 - [`provider-integrity-shadow-2026-08-31.md`](./provider-integrity-shadow-2026-08-31.md)
   — FF-075 production shadow corpus, false-trip classification, and enforcement
   gate.
+- [`video-quality-2026-08-31.md`](./video-quality-2026-08-31.md) — FF-081
+  retained dHash graph reconstruction, arrival replay, total-order comparison,
+  and visual bridge review.

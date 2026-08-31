@@ -332,12 +332,43 @@ the current branch.
   another persisted cycle. It does not make keeper quality order-independent.
   FF-080 prevents recurring exact variants from exercising a retired winner;
   it deliberately does not change public keeper policy.
-- **Next work:** Build a production-derived cluster corpus, including all
-  multi-match bridges and arrival permutations. Define one deterministic total
-  cluster order that preserves the intended completeness and encoding-quality
-  tradeoff, then validate which bytes would change before altering
-  `IsUpgrade`. Repair the known cycle only after the new invariant is released
-  and the exact production mutation is separately approved.
+- **Research checkpoint (2026-08-31):** The read-only retained corpus contains
+  1,815 assets and 376 reconstructed match/supersession components. Only the
+  legacy Danso component has a quality cycle. Fifty-four components contain a
+  dHash bridge and twelve remain arrival-sensitive under exhaustive or 100,000
+  deterministic replay orders. Component-anchored bands do not remove that
+  topology sensitivity. Strict ordering misses 38 current terminal sets;
+  fixed logarithmic bands disagree with 17 anchored winners. Even the best
+  bounded log-linear fit reverses 11 acyclic historical supersessions and
+  chooses five non-terminal component winners.
+- **Rejected direction:** Do not persist a transitive perceptual cluster or
+  collapse full dHash connected components. Visual review found both true
+  subset duplicates and distinct broadcasts/edits in the same connected
+  graphs, plus FF-003 false-semantic clips connected through shared broadcast
+  segments. Transitive closure would trade extra videos for false data loss.
+- **Next work:** Keep the current production comparator while building a
+  human-reviewed direct-pair quality corpus with cadence and presentation
+  evidence. Any replacement must be a documented product policy, not fitted
+  metadata weights. Separately repair the three legacy Danso edges onto the
+  clear 62.159 s active winner after explicit production-data approval. See
+  the [focused audit](./design/audits/video-quality-2026-08-31.md).
+
+### FF-082 — keeper quality discards cadence metadata
+
+- **Status:** `confirmed`
+- **Severity:** P3
+- **Observed:** `DownloadAndStage` probes and returns frame rate, but `clip`,
+  `video.Asset`, and `video_assets` do not retain it. FF-081 therefore cannot
+  distinguish a 30 fps encode from a 60 fps encode except indirectly through
+  bitrate. The current `bitsPerPixel` helper is actually bitrate divided by
+  spatial pixels—bits per pixel per second—not per-frame density.
+- **Boundary:** Presentation defects such as screen capture, editorial chrome,
+  crop, and wrong-event footage remain FF-003/FF-004. Cadence is a narrower
+  missing input and must not be treated as a proxy for those semantics.
+- **Next work:** Define a durable frame-rate representation, rename the density
+  signal to its real unit, and add reviewed 30/60 fps pairs before including
+  cadence in keeper selection. Do not silently normalize bitrate by frame rate:
+  smoother cadence is itself a quality attribute.
 
 ### FF-003 — candidate can pass without exact-event semantic evidence
 
