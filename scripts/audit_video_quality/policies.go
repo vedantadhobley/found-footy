@@ -22,7 +22,7 @@ func strictBetter(left, right asset) bool {
 	if leftDuration != rightDuration {
 		return leftDuration > rightDuration
 	}
-	leftDensity, rightDensity := left.bitsPerPixel(), right.bitsPerPixel()
+	leftDensity, rightDensity := left.spatialBitrateDensity(), right.spatialBitrateDensity()
 	if leftDensity != rightDensity {
 		return leftDensity > rightDensity
 	}
@@ -57,7 +57,7 @@ func bucketBetter(left, right asset) bool {
 	if leftDurationTier != rightDurationTier {
 		return leftDurationTier > rightDurationTier
 	}
-	leftDensity, rightDensity := left.bitsPerPixel(), right.bitsPerPixel()
+	leftDensity, rightDensity := left.spatialBitrateDensity(), right.spatialBitrateDensity()
 	leftDensityTier := logarithmicTier(leftDensity, 1.10)
 	rightDensityTier := logarithmicTier(rightDensity, 1.10)
 	if leftDensityTier != rightDensityTier {
@@ -98,13 +98,13 @@ func anchoredBandWinner(assets []asset) asset {
 	}
 	maxDensity := 0.0
 	for _, item := range durationEligible {
-		if density := item.bitsPerPixel(); density > maxDensity {
+		if density := item.spatialBitrateDensity(); density > maxDensity {
 			maxDensity = density
 		}
 	}
 	densityEligible := make([]asset, 0, len(durationEligible))
 	for _, item := range durationEligible {
-		density := item.bitsPerPixel()
+		density := item.spatialBitrateDensity()
 		if maxDensity == 0 || (density > 0 && density*1.10 > maxDensity) {
 			densityEligible = append(densityEligible, item)
 		}

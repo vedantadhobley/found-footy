@@ -39,6 +39,7 @@ const (
 	ff061AvailabilityChangeIDForTest = "ff-061-search-availability"
 	ff065ExactFollowerIDForTest      = "ff-065-exact-follower-outcome"
 	ff080CanonicalAliasIDForTest     = "ff-080-canonical-exact-alias"
+	ff082CadenceMetadataIDForTest    = "ff-082-cadence-metadata"
 	discoveryPGRetryAttemptsForTest  = 5
 )
 
@@ -175,6 +176,8 @@ func baseEventEnvWithOptions(
 	}
 	env.OnGetVersion(ff080CanonicalAliasIDForTest, sdkworkflow.DefaultVersion, sdkworkflow.Version(1)).
 		Return(canonicalAliasVersion).Maybe()
+	env.OnGetVersion(ff082CadenceMetadataIDForTest, sdkworkflow.DefaultVersion, sdkworkflow.Version(1)).
+		Return(sdkworkflow.DefaultVersion).Maybe()
 	// Default GetDiscoveryConfig stub. MaxAttempts=10 matches the
 	// pre-#162 hardcoded value that existing tests were written
 	// against (`want 10` assertions in AttemptsRun tests). Tests that need a

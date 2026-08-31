@@ -60,7 +60,7 @@ const assetColumns = `
 	id, event_id, fixture_id,
 	s3_bucket, s3_key, object_reclaimed_at,
 	md5, hash_version, frame_hashes,
-	width, height, duration_ms, file_size_bytes, bitrate,
+	width, height, duration_ms, file_size_bytes, bitrate, frame_rate,
 	aspect_ratio, popularity, superseded_by, first_seen_at
 `
 
@@ -74,7 +74,7 @@ func scanAsset(row rowScanner) (*video.Asset, error) {
 		&a.ID, &a.EventID, &a.FixtureID,
 		&a.S3Bucket, &a.S3Key, &a.ObjectReclaimedAt,
 		&a.MD5, &hashVersion, &frameBytes,
-		&a.Width, &a.Height, &a.DurationMS, &a.FileSizeBytes, &bitrate,
+		&a.Width, &a.Height, &a.DurationMS, &a.FileSizeBytes, &bitrate, &a.FrameRate,
 		&a.AspectRatio, &a.Popularity, &supersededBy, &a.FirstSeenAt,
 	); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
@@ -106,13 +106,13 @@ func (r *AssetRepo) InsertAsset(ctx context.Context, a *video.Asset) (bool, erro
 		INSERT INTO video_assets (
 			id, event_id, fixture_id, s3_bucket, s3_key,
 			md5, hash_version, frame_hashes,
-			width, height, duration_ms, file_size_bytes, bitrate,
+			width, height, duration_ms, file_size_bytes, bitrate, frame_rate,
 			popularity, superseded_by, first_seen_at
-		) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)
+		) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17)
 		ON CONFLICT (event_id, md5) DO NOTHING
 	`, a.ID, a.EventID, a.FixtureID, a.S3Bucket, a.S3Key,
 		a.MD5, video.NormalizeFrameHashVersion(a.FrameHashVersion), encodeFrameHashes(a.FrameHashes),
-		a.Width, a.Height, a.DurationMS, a.FileSizeBytes, a.Bitrate,
+		a.Width, a.Height, a.DurationMS, a.FileSizeBytes, a.Bitrate, a.FrameRate,
 		a.Popularity, a.SupersededBy, a.FirstSeenAt)
 	if err != nil {
 		return false, fmt.Errorf("pg.AssetRepo.InsertAsset: %w", err)

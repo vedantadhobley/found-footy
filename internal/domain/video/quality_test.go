@@ -1,5 +1,5 @@
 // quality_test.go — dedup winner-selection scoring: capped-relative duration
-// (Python's 15% band, flattened past 60s) → bits-per-pixel → resolution.
+// (Python's 15% band, flattened past 60s) → spatial bitrate density → resolution.
 package video
 
 import "testing"
@@ -59,15 +59,15 @@ func TestIsUpgrade(t *testing.T) {
 			// Python's blind spot: same length, upscaled 1080p (low density)
 			// loses to a denser 720p despite more pixels.
 			name:       "same length → upscaled hi-res low-density loses to denser lower-res",
-			challenger: ClipQuality{DurationMS: 20000, Bitrate: bp(1_500_000), Width: 1920, Height: 1080}, // ~0.72 bpp
-			incumbent:  ClipQuality{DurationMS: 20000, Bitrate: bp(3_000_000), Width: 1280, Height: 720},  // ~3.26 bpp
+			challenger: ClipQuality{DurationMS: 20000, Bitrate: bp(1_500_000), Width: 1920, Height: 1080}, // ~0.72 bit/(px·s)
+			incumbent:  ClipQuality{DurationMS: 20000, Bitrate: bp(3_000_000), Width: 1280, Height: 720},  // ~3.26 bit/(px·s)
 			want:       false,
 		},
 		{
 			// Same length, same density band → resolution breaks the tie.
 			name:       "same length + density → more pixels wins",
-			challenger: ClipQuality{DurationMS: 20000, Bitrate: bp(4_000_000), Width: 1920, Height: 1080}, // ~1.93 bpp
-			incumbent:  ClipQuality{DurationMS: 20000, Bitrate: bp(1_780_000), Width: 1280, Height: 720},  // ~1.93 bpp
+			challenger: ClipQuality{DurationMS: 20000, Bitrate: bp(4_000_000), Width: 1920, Height: 1080}, // ~1.93 bit/(px·s)
+			incumbent:  ClipQuality{DurationMS: 20000, Bitrate: bp(1_780_000), Width: 1280, Height: 720},  // ~1.93 bit/(px·s)
 			want:       true,
 		},
 		{

@@ -27,7 +27,7 @@ func printReport(w io.Writer, result auditResult, detailLimit int) {
 	fmt.Fprintf(w, "policy_differences strict_vs_band=%d bucket_vs_band=%d strict_not_terminal=%d band_not_terminal=%d\n",
 		result.strictDiffersFromBandCount, result.bucketDiffersFromBandCount,
 		result.strictDiffersFromTerminalCount, result.bandDiffersFromTerminalCount)
-	fmt.Fprintln(w, "limitation=frame_rate is not retained; current density is bitrate/(width*height), not bits-per-pixel-per-frame")
+	fmt.Fprintln(w, "limitation=historical frame_rate is unknown; current keeper density is bitrate/(width*height), not per-frame quality")
 	fmt.Fprintln(w, "limitation=clips discarded before asset creation are absent; the corpus covers every retained active/superseded asset")
 	for _, policy := range result.policyComparisons {
 		fmt.Fprintf(w,
@@ -113,7 +113,7 @@ func printFinding(w io.Writer, number int, finding componentFinding) {
 		}
 		fmt.Fprintf(w,
 			"asset=%s asset_id=%s %s duration=%.3fs density=%.4f resolution=%dx%d size=%.2fMiB popularity=%d share=%s share_id=%s first=%s\n",
-			shortID(item.id), item.id, target, float64(item.durationMS)/1000, item.bitsPerPixel(),
+			shortID(item.id), item.id, target, float64(item.durationMS)/1000, item.spatialBitrateDensity(),
 			item.width, item.height, float64(item.fileSizeBytes)/(1024*1024),
 			item.popularity, item.shareState, item.shareID, item.firstSeenAt)
 	}

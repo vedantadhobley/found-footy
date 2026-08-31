@@ -115,7 +115,8 @@ func (p *pipeline) commitClipPlacement(
 			HashVersion: c.hashVersion, FrameHashes: c.frameHashes,
 			Width: c.width, Height: c.height, DurationMS: c.durationMS,
 			FileSizeBytes: c.fileSizeBytes, Bitrate: c.bitrate,
-			Verified: c.verified, ExtractedMinute: vout.MatchedMinute,
+			FrameRate: p.persistedFrameRate(c),
+			Verified:  c.verified, ExtractedMinute: vout.MatchedMinute,
 		}).Get(p.persistCtx, &out)
 	if err != nil {
 		p.logCandidatePhase(c.tweetURL, "placement", "failed", startedAt)
@@ -153,6 +154,16 @@ func (p *pipeline) commitClipPlacement(
 		p.publishEventVideo(c.tweetURL, "placement")
 	}
 	return out, true
+}
+
+// persistedFrameRate keeps changed activity payloads behind a Temporal
+// version marker. Existing histories retain their original command sequence;
+// new histories durably carry the already-probed cadence metadata.
+func (p *pipeline) persistedFrameRate(c clip) *float64 {
+	if !p.cadenceMetadata {
+		return nil
+	}
+	return c.frameRate
 }
 
 func (p *pipeline) placementCandidates(c clip, newWinner bool, winnerID uuid.UUID) ([]videoactivity.PlacementCandidateInput, bool) {

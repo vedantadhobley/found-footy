@@ -1,4 +1,4 @@
-// event_pipeline_alias_test.go — FF-080 canonical exact-variant state tests.
+// event_pipeline_alias_test.go — Versioned canonical-alias and cadence state tests.
 package workflow
 
 import (
@@ -29,5 +29,20 @@ func TestPipelineRedirectExactRootsMovesEveryLoserVariant(t *testing.T) {
 	idx, isAsset, matched := p.matchMD5(clip{md5: "a-retired"})
 	if !matched || !isAsset || idx != 0 {
 		t.Fatalf("matchMD5 = (%d, %v, %v), want live winner index", idx, isAsset, matched)
+	}
+}
+
+func TestPipelinePersistedFrameRateIsVersionGated(t *testing.T) {
+	fps := 59.94
+	candidate := clip{frameRate: &fps}
+
+	legacy := pipeline{}
+	if got := legacy.persistedFrameRate(candidate); got != nil {
+		t.Fatalf("legacy frame rate = %v, want nil", *got)
+	}
+
+	current := pipeline{cadenceMetadata: true}
+	if got := current.persistedFrameRate(candidate); got == nil || *got != fps {
+		t.Fatalf("current frame rate = %v, want %v", got, fps)
 	}
 }

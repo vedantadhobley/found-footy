@@ -99,6 +99,7 @@ type Asset struct {
 	DurationMS    int
 	FileSizeBytes int64
 	Bitrate       *int
+	FrameRate     *float64
 	AspectRatio   float32 // schema-generated column; carried in domain for read-only use
 
 	Popularity int // accepted source votes attributed to this live asset
@@ -183,6 +184,9 @@ func (a *Asset) ValidateInvariants() error {
 	}
 	if a.Bitrate != nil && *a.Bitrate <= 0 {
 		return fmt.Errorf("video.Asset.ValidateInvariants: bitrate must be positive when present")
+	}
+	if a.FrameRate != nil && *a.FrameRate <= 0 {
+		return fmt.Errorf("video.Asset.ValidateInvariants: frame rate must be positive when present")
 	}
 	if a.Popularity < 1 {
 		return fmt.Errorf("video.Asset.ValidateInvariants: popularity=%d, must be >= 1", a.Popularity)

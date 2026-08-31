@@ -70,15 +70,15 @@ func (r *PlacementRepo) CommitClipPlacement(ctx context.Context, in video.ClipPl
 			INSERT INTO video_assets (
 				id, event_id, fixture_id, s3_bucket, s3_key,
 				md5, hash_version, frame_hashes,
-				width, height, duration_ms, file_size_bytes, bitrate,
+				width, height, duration_ms, file_size_bytes, bitrate, frame_rate,
 				popularity, superseded_by, first_seen_at
-			) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,1,NULL,$14)
+			) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,1,NULL,$15)
 			ON CONFLICT (event_id, md5) DO NOTHING
 		`, in.Winner.ID, in.Winner.EventID, in.Winner.FixtureID,
 			in.Winner.S3Bucket, in.Winner.S3Key, in.Winner.MD5,
 			video.NormalizeFrameHashVersion(in.Winner.FrameHashVersion), encodeFrameHashes(in.Winner.FrameHashes),
 			in.Winner.Width, in.Winner.Height, in.Winner.DurationMS,
-			in.Winner.FileSizeBytes, in.Winner.Bitrate, in.Winner.FirstSeenAt)
+			in.Winner.FileSizeBytes, in.Winner.Bitrate, in.Winner.FrameRate, in.Winner.FirstSeenAt)
 		if err != nil {
 			return out, fmt.Errorf("pg.PlacementRepo.CommitClipPlacement: insert winner: %w", err)
 		}
@@ -262,7 +262,16 @@ func samePlacementAsset(got, want *video.Asset) bool {
 		got.FrameHashVersion == video.NormalizeFrameHashVersion(want.FrameHashVersion) &&
 		bytes.Equal(encodeFrameHashes(got.FrameHashes), encodeFrameHashes(want.FrameHashes)) &&
 		got.Width == want.Width && got.Height == want.Height && got.DurationMS == want.DurationMS &&
-		got.FileSizeBytes == want.FileSizeBytes
+		got.FileSizeBytes == want.FileSizeBytes && equalOptionalInt(got.Bitrate, want.Bitrate) &&
+		equalOptionalFloat(got.FrameRate, want.FrameRate)
+}
+
+func equalOptionalInt(left, right *int) bool {
+	return left == nil && right == nil || left != nil && right != nil && *left == *right
+}
+
+func equalOptionalFloat(left, right *float64) bool {
+	return left == nil && right == nil || left != nil && right != nil && *left == *right
 }
 
 func ensurePlacementShare(ctx context.Context, tx pgx.Tx, in video.ClipPlacement, winnerID uuid.UUID) (string, error) {

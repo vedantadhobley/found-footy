@@ -45,6 +45,7 @@ type clip struct {
 	durationMS      int
 	fileSizeBytes   int64
 	bitrate         *int
+	frameRate       *float64
 	popularity      int       // accumulated sightings: own (1) + md5-dups collapsed while pending (#180)
 	exactFollowers  []string  // byte-identical candidate URLs awaiting the representative's terminal result
 	verified        bool      // vision verdict; set at promote — the dedup category (verified↔verified only)
@@ -81,6 +82,7 @@ type pipeline struct {
 	deferExactFollowerOutcomes              bool
 	atomicPlacement                         bool
 	canonicalExactAliases                   bool
+	cadenceMetadata                         bool
 
 	// activity option ctxs
 	downloadCtx workflow.Context
@@ -121,6 +123,7 @@ func newPipeline(ctx workflow.Context, in EventWorkflowInput, cfg pipelineConfig
 		deferExactFollowerOutcomes: cfg.deferExactFollowerOutcomes,
 		atomicPlacement:            cfg.atomicPlacement,
 		canonicalExactAliases:      cfg.canonicalExactAliases,
+		cadenceMetadata:            cfg.cadenceMetadata,
 		downloadCtx:                videoDownloadActivityContext(ctx),
 		hashCtx:                    videoHashActivityContext(ctx),
 		visionCtx: workflow.WithActivityOptions(ctx, workflow.ActivityOptions{
@@ -149,6 +152,7 @@ type pipelineConfig struct {
 	deferExactFollowerOutcomes              bool
 	atomicPlacement                         bool
 	canonicalExactAliases                   bool
+	cadenceMetadata                         bool
 	startedAt                               time.Time
 }
 
@@ -186,7 +190,7 @@ func (p *pipeline) restoreAssets(
 			md5: asset.MD5, hashVersion: dvideo.NormalizeFrameHashVersion(asset.HashVersion),
 			frameHashes: asset.FrameHashes,
 			width:       asset.Width, height: asset.Height, durationMS: asset.DurationMS,
-			fileSizeBytes: asset.FileSizeBytes, bitrate: asset.Bitrate,
+			fileSizeBytes: asset.FileSizeBytes, bitrate: asset.Bitrate, frameRate: asset.FrameRate,
 			popularity: popularity, verified: asset.Verified, assetID: asset.AssetID,
 		})
 		p.rememberExactRoot(asset.MD5, asset.AssetID)

@@ -33,6 +33,7 @@ func (p *pipeline) promote(c clip, vout visionactivity.ValidateClipOutput) (uuid
 			HashVersion: c.hashVersion, FrameHashes: c.frameHashes,
 			Width: c.width, Height: c.height, DurationMS: c.durationMS,
 			FileSizeBytes: c.fileSizeBytes, Bitrate: c.bitrate,
+			FrameRate:  p.persistedFrameRate(c),
 			Popularity: c.popularity,
 			Verified:   c.verified, ExtractedMinute: vout.MatchedMinute,
 		}).Get(p.persistCtx, &pout)

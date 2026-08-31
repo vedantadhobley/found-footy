@@ -15,7 +15,7 @@
 //     cap, extra length is padding, not completeness, so it earns no edge (a
 //     long clip is never DROPPED here — that's the hard filter's 90s max; it
 //     just stops benefiting from length).
-//  2. Bits-per-pixel — encoding density. This is the deliberate improvement
+//  2. Spatial bitrate density — bitrate / (width × height). This is the deliberate improvement
 //     over the Python system, which ranked on raw file_size: a blurry
 //     source upscaled to 1080p has a high pixel count and a big file but few
 //     bits describing each pixel. Density catches that; raw size/resolution
@@ -41,10 +41,10 @@ const (
 	// Beyond it, the longer clip is meaningfully more complete. Python's 0.15.
 	durationBand = 0.15
 
-	// bppMargin: a challenger must beat the incumbent's bits-per-pixel by this
+	// densityMargin: a challenger must beat the incumbent's spatial bitrate density by this
 	// ratio to win the density tier — anti-churn on near-equal re-encodes of
 	// the same shot (each supersede is real S3 + pg work).
-	bppMargin = 1.10
+	densityMargin = 1.10
 )
 
 // ClipQuality is the metadata dedup ranks a cluster member on. Bitrate is a
@@ -55,11 +55,11 @@ type ClipQuality struct {
 	Width, Height int
 }
 
-// bitsPerPixel is encoding DENSITY: bitrate / (width·height). It separates a
-// genuine HD encode from an upscaled/over-compressed one — same resolution, far
-// fewer bits describing each pixel. Returns 0 when bitrate or dimensions are
-// unknown, so an unknown never falsely wins the tier.
-func (q ClipQuality) bitsPerPixel() float64 {
+// spatialBitrateDensity is bitrate / (width × height): bits per spatial pixel
+// per second. It separates a genuine HD encode from an upscaled or compressed
+// one, but deliberately says nothing about how those bits are divided across
+// frames. Returns zero when bitrate or dimensions are unknown.
+func (q ClipQuality) spatialBitrateDensity() float64 {
 	if q.Bitrate == nil || *q.Bitrate <= 0 || q.Width <= 0 || q.Height <= 0 {
 		return 0
 	}
@@ -88,13 +88,13 @@ func IsUpgrade(challenger, incumbent ClipQuality) bool {
 	if hi := math.Max(cd, id); hi > 0 && math.Abs(cd-id)/hi > durationBand {
 		return cd > id
 	}
-	// 2. Same length → bits-per-pixel, with the anti-churn margin.
-	cBPP, iBPP := challenger.bitsPerPixel(), incumbent.bitsPerPixel()
-	if cBPP > 0 && iBPP > 0 {
-		if cBPP >= iBPP*bppMargin {
+	// 2. Same length → spatial bitrate density, with the anti-churn margin.
+	cDensity, iDensity := challenger.spatialBitrateDensity(), incumbent.spatialBitrateDensity()
+	if cDensity > 0 && iDensity > 0 {
+		if cDensity >= iDensity*densityMargin {
 			return true
 		}
-		if iBPP >= cBPP*bppMargin {
+		if iDensity >= cDensity*densityMargin {
 			return false
 		}
 		// within margin → indistinguishable on density, fall through

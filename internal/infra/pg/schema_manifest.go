@@ -43,7 +43,7 @@ var requiredConstraints = []string{
 	"video_assets_identity_event_unique", "video_assets_identity_event_fixture_unique",
 	"video_assets_event_fixture_fkey", "video_assets_superseded_identity_fkey",
 	"video_assets_media_shape", "video_assets_popularity_positive", "video_assets_supersession_not_self",
-	"video_assets_reclaimed_after_seen",
+	"video_assets_frame_rate_positive", "video_assets_reclaimed_after_seen",
 	"video_shares_asset_event_fkey", "video_shares_removed_state",
 	"event_search_candidates_event_fixture_fkey", "event_search_candidates_credited_identity_fkey",
 	"event_search_candidates_duration_nonnegative", "event_search_candidates_age_nonnegative",
@@ -106,6 +106,7 @@ func verifyCurrentSchema(ctx context.Context, tx pgx.Tx) error {
 		{"fixtures", "terminal_observed_at"},
 		{"event_search_candidates", "credited_asset_id"},
 		{"video_assets", "object_reclaimed_at"},
+		{"video_assets", "frame_rate"},
 	} {
 		var exists bool
 		if err := tx.QueryRow(ctx, `

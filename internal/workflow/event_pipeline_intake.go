@@ -306,6 +306,10 @@ func clipFromDownload(tweetURL string, out videoactivity.DownloadAndStageOutput)
 		b := out.Bitrate
 		c.bitrate = &b
 	}
+	if out.FrameRate > 0 {
+		fps := out.FrameRate
+		c.frameRate = &fps
+	}
 	return c
 }
 

@@ -14,6 +14,10 @@ its historical heading anchors valid.
 
 New decisions after the frozen archive:
 
+- [Video cadence is independent quality evidence](./2026-08-31-video-cadence-is-independent-quality-evidence.md)
+  — FF-082 persists nullable frame rate for new assets, names spatial bitrate
+  density accurately, and keeps cadence separate until FF-081 has reviewed
+  pair labels.
 - [Exact variants follow the live canonical asset](./2026-08-31-exact-variants-follow-live-canonical-asset.md)
   — FF-080 preserves retired MD5s as aliases of their live supersession root,
   rejects corrupt cycles during recovery, and keeps exact recurrence on the

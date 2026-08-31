@@ -346,29 +346,48 @@ the current branch.
   subset duplicates and distinct broadcasts/edits in the same connected
   graphs, plus FF-003 false-semantic clips connected through shared broadcast
   segments. Transitive closure would trade extra videos for false data loss.
-- **Next work:** Keep the current production comparator while building a
-  human-reviewed direct-pair quality corpus with cadence and presentation
-  evidence. Any replacement must be a documented product policy, not fitted
-  metadata weights. Separately repair the three legacy Danso edges onto the
-  clear 62.159 s active winner after explicit production-data approval. See
-  the [focused audit](./design/audits/video-quality-2026-08-31.md).
+- **Current work:** Keep the current production comparator. The read-only
+  audit command now emits one stable row per direct dHash match with separate
+  `dedup_decision` and `quality_winner` labels plus cadence, compression,
+  completeness, resolution, source, and topology evidence. FF-082 retains
+  frame rate for new assets; old corpus rows remain unknown.
+- **Next work:** Review the prioritized direct-pair manifest and convert the
+  accepted labels into regression fixtures. Any replacement must be a
+  documented product policy, not fitted metadata weights. Separately repair
+  the three legacy Danso edges onto the clear 62.159 s active winner after
+  explicit production-data approval. See the
+  [focused audit](./design/audits/video-quality-2026-08-31.md).
 
-### FF-082 — keeper quality discards cadence metadata
+### FF-082 — retain cadence as independent keeper-quality evidence
 
-- **Status:** `confirmed`
+- **Status:** `implemented`
 - **Severity:** P3
-- **Observed:** `DownloadAndStage` probes and returns frame rate, but `clip`,
-  `video.Asset`, and `video_assets` do not retain it. FF-081 therefore cannot
+- **Observed:** Before FF-082, `DownloadAndStage` probed and returned frame
+  rate, but `clip`, `video.Asset`, and `video_assets` did not retain it. The
+  retained FF-081 corpus therefore cannot
   distinguish a 30 fps encode from a 60 fps encode except indirectly through
-  bitrate. The current `bitsPerPixel` helper is actually bitrate divided by
+  bitrate. The former `bitsPerPixel` helper name described bitrate divided by
   spatial pixels—bits per pixel per second—not per-frame density.
 - **Boundary:** Presentation defects such as screen capture, editorial chrome,
   crop, and wrong-event footage remain FF-003/FF-004. Cadence is a narrower
   missing input and must not be treated as a proxy for those semantics.
-- **Next work:** Define a durable frame-rate representation, rename the density
-  signal to its real unit, and add reviewed 30/60 fps pairs before including
-  cadence in keeper selection. Do not silently normalize bitrate by frame rate:
-  smoother cadence is itself a quality attribute.
+- **Implementation:** Migration `20260831_01_add_video_frame_rate.sql` adds a
+  nullable positive `DOUBLE PRECISION` column without rewriting old rows. New
+  histories carry the existing ffprobe value through the
+  `ff-082-cadence-metadata` marker, atomic placement, recovery projection, and
+  asset domain. The old density helper is now named spatial bitrate density;
+  its calculation and keeper threshold are unchanged.
+- **Review contract:** The FF-081 direct-pair manifest exposes frame rate,
+  spatial bitrate density, and derived bits per pixel per frame independently.
+  Human labels decide both collapse and quality. No single field is treated as
+  the answer.
+- **Regressions:** Domain, activity, workflow-version, migration, Postgres
+  asset/placement, and manifest tests cover nullable old rows and positive new
+  cadence.
+- **Completion condition:** Apply the migration before the worker release,
+  verify a natural new 30/50/60 fps asset retains its probed value, then add
+  reviewed cadence pairs before changing `IsUpgrade`.
+- **Decision:** [Video cadence is independent quality evidence](./decisions/2026-08-31-video-cadence-is-independent-quality-evidence.md).
 
 ### FF-003 — candidate can pass without exact-event semantic evidence
 

@@ -167,6 +167,8 @@ func TestPlacementRepo_PromotionSupersedesAtomicallyAndRetries(t *testing.T) {
 
 	winner := newAsset(eventID, fixtureID, "placement-md5-winner", []uint64{4, 5, 6}, 2_000_000)
 	winner.S3Key = "9200/winner.mp4"
+	frameRate := 59.94
+	winner.FrameRate = &frameRate
 	winner.Popularity = 99 // PlacementRepo deliberately derives this from candidate votes.
 	candidate := video.PlacementCandidate{
 		Evidence: placementEvidence(eventID, fixtureID, "2004"),
@@ -203,6 +205,9 @@ func TestPlacementRepo_PromotionSupersedesAtomicallyAndRetries(t *testing.T) {
 	}
 	if gotWinner.Popularity != 4 {
 		t.Errorf("winner popularity = %d, want 4 (one new vote + three merged once)", gotWinner.Popularity)
+	}
+	if gotWinner.FrameRate == nil || *gotWinner.FrameRate != frameRate {
+		t.Errorf("winner frame rate = %v, want %v", gotWinner.FrameRate, frameRate)
 	}
 	gotLoser, err := assets.Get(t.Context(), loser.ID)
 	if err != nil {

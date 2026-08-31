@@ -231,7 +231,7 @@ func stdPromoteInput(eventID uuid.UUID) PromoteAndPersistInput {
 		MD5:         hex.EncodeToString([]byte("md5md5md5md5md5m")),
 		HashVersion: dvideo.CurrentFrameHashVersion(0.1),
 		FrameHashes: []uint64{1, 2, 4, 8}, Width: 1280, Height: 720,
-		DurationMS: 6677, FileSizeBytes: 1_000_000,
+		DurationMS: 6677, FileSizeBytes: 1_000_000, FrameRate: floatp(59.94),
 		Verified: true, ExtractedMinute: intp(91),
 	}
 }
@@ -248,7 +248,7 @@ func stdPlacementInput(eventID uuid.UUID) CommitClipPlacementInput {
 		MD5:         hex.EncodeToString([]byte("md5md5md5md5md5m")),
 		HashVersion: dvideo.CurrentFrameHashVersion(0.1),
 		FrameHashes: []uint64{1, 2, 4, 8}, Width: 1280, Height: 720,
-		DurationMS: 6677, FileSizeBytes: 1_000_000, Verified: true,
+		DurationMS: 6677, FileSizeBytes: 1_000_000, FrameRate: floatp(59.94), Verified: true,
 		Candidates: []PlacementCandidateInput{{
 			Evidence: evidence, Outcome: discoverycontract.OutcomePromoted,
 		}},
@@ -256,6 +256,8 @@ func stdPlacementInput(eventID uuid.UUID) CommitClipPlacementInput {
 }
 
 func intp(i int) *int { return &i }
+
+func floatp(value float64) *float64 { return &value }
 
 func TestCommitClipPlacement_CompletesRetrySafeDurableTail(t *testing.T) {
 	a, s3, assets, _ := newPersist()
@@ -305,6 +307,9 @@ func TestCommitClipPlacement_CompletesRetrySafeDurableTail(t *testing.T) {
 	}
 	if len(placements.inputs) != 2 {
 		t.Errorf("placement transaction calls = %d, want 2", len(placements.inputs))
+	}
+	if got := placements.inputs[0].Winner.FrameRate; got == nil || *got != 59.94 {
+		t.Errorf("placement winner frame rate = %v, want 59.94", got)
 	}
 }
 
@@ -356,6 +361,9 @@ func TestPromoteAndPersist_HappyPath(t *testing.T) {
 	if len(assets.byID) != 1 {
 		t.Errorf("assets stored = %d, want 1", len(assets.byID))
 	}
+	if got := assets.byID[out.AssetID].FrameRate; got == nil || *got != 59.94 {
+		t.Errorf("stored frame rate = %v, want 59.94", got)
+	}
 	if len(shares.shares) != 1 || out.ShareID == "" {
 		t.Errorf("shares = %d, shareID = %q; want 1 share + non-empty id", len(shares.shares), out.ShareID)
 	}
@@ -375,11 +383,12 @@ func TestLoadEventAssets_RestoresLiveAssetsAndRetiredAliases(t *testing.T) {
 	eventID := uuid.New()
 	liveID, supersededID, removedID := uuid.New(), uuid.New(), uuid.New()
 	bitrate := 4_000_000
+	frameRate := 59.94
 	assets.byID[liveID] = &dvideo.Asset{
 		ID: liveID, EventID: eventID, MD5: []byte("0123456789abcdef"),
 		FrameHashVersion: dvideo.CurrentFrameHashVersion(0.1),
 		FrameHashes:      []uint64{1, 2, 3}, Width: 1280, Height: 720,
-		DurationMS: 8_000, FileSizeBytes: 900_000, Bitrate: &bitrate, Popularity: 4,
+		DurationMS: 8_000, FileSizeBytes: 900_000, Bitrate: &bitrate, FrameRate: &frameRate, Popularity: 4,
 	}
 	assets.byID[supersededID] = &dvideo.Asset{
 		ID: supersededID, EventID: eventID, MD5: []byte("fedcba9876543210"), SupersededBy: &liveID,
@@ -403,7 +412,8 @@ func TestLoadEventAssets_RestoresLiveAssetsAndRetiredAliases(t *testing.T) {
 	got := out.Assets[0]
 	if got.AssetID != liveID || got.MD5 != hex.EncodeToString([]byte("0123456789abcdef")) ||
 		got.HashVersion != dvideo.CurrentFrameHashVersion(0.1) || !got.Verified ||
-		got.Popularity != 4 || got.Bitrate == nil || *got.Bitrate != bitrate {
+		got.Popularity != 4 || got.Bitrate == nil || *got.Bitrate != bitrate ||
+		got.FrameRate == nil || *got.FrameRate != frameRate {
 		t.Errorf("restored asset = %+v, want live verified asset", got)
 	}
 	wantAliases := map[string]uuid.UUID{
