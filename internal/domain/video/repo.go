@@ -24,6 +24,10 @@ var ErrNotFound = errors.New("video: not found")
 // the dedup engine — are gone.
 type AssetRepo interface {
 	Get(ctx context.Context, id uuid.UUID) (*Asset, error)
+	// ListByEvent returns every accepted byte variant for one event, including
+	// superseded nodes. Recovery uses the complete lineage for exact-byte
+	// aliases; public reads remain share/root based.
+	ListByEvent(ctx context.Context, eventID uuid.UUID) ([]*Asset, error)
 
 	// InsertAsset writes a clip the workflow has already judged unique.
 	// Idempotent on the exact layer: a retry (or a genuine byte-identical

@@ -16,10 +16,10 @@ var reviewHeader = []string{
 	"primary_window", "long_window",
 	"left_asset_id", "left_share_id", "left_share_state", "left_source_tweet_url", "left_terminal",
 	"left_duration_ms", "left_width", "left_height", "left_bitrate", "left_frame_rate",
-	"left_spatial_bitrate_density", "left_bits_per_pixel_frame", "left_popularity",
+	"left_spatial_bitrate_density", "left_bits_per_pixel_frame", "left_popularity", "left_exact_observations",
 	"right_asset_id", "right_share_id", "right_share_state", "right_source_tweet_url", "right_terminal",
 	"right_duration_ms", "right_width", "right_height", "right_bitrate", "right_frame_rate",
-	"right_spatial_bitrate_density", "right_bits_per_pixel_frame", "right_popularity",
+	"right_spatial_bitrate_density", "right_bits_per_pixel_frame", "right_popularity", "right_exact_observations",
 	"current_preference", "dedup_decision", "quality_winner", "quality_reasons", "notes",
 }
 
@@ -64,11 +64,11 @@ func reviewRow(finding componentFinding, edge matchEdge, left, right asset) []st
 		left.id, left.shareID, left.shareState, left.sourceTweetURL, strconv.FormatBool(left.supersededBy == ""),
 		strconv.Itoa(left.durationMS), strconv.Itoa(left.width), strconv.Itoa(left.height), strconv.Itoa(left.bitrate),
 		formatFloat(left.frameRate), formatFloat(left.spatialBitrateDensity()), formatFloat(left.bitsPerPixelFrame()),
-		strconv.Itoa(left.popularity),
+		strconv.Itoa(left.popularity), strconv.Itoa(left.observedPopularity),
 		right.id, right.shareID, right.shareState, right.sourceTweetURL, strconv.FormatBool(right.supersededBy == ""),
 		strconv.Itoa(right.durationMS), strconv.Itoa(right.width), strconv.Itoa(right.height), strconv.Itoa(right.bitrate),
 		formatFloat(right.frameRate), formatFloat(right.spatialBitrateDensity()), formatFloat(right.bitsPerPixelFrame()),
-		strconv.Itoa(right.popularity),
+		strconv.Itoa(right.popularity), strconv.Itoa(right.observedPopularity),
 		currentPreference(left, right), "", "", "", "",
 	}
 }

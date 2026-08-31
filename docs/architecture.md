@@ -284,11 +284,24 @@ supersession in one transaction. `video_shares.rank` remains a replay-only
 compatibility column; `ShareRepo.ListLiveForEvents` derives public order for a
 request-wide event batch from current evidence.
 
+FF-083 makes that boundary retain every accepted distinct MD5, including a
+variant that loses its first keeper comparison. `video_assets.superseded_by`
+is one direct placement edge, not a transitive perceptual-cluster claim.
+Candidate `observed_asset_id` identifies immutable source bytes while
+`credited_asset_id` follows the current live root. Superseded nodes retain
+their evidence; exact-MD5 frequency derives from candidate observations and
+roots retain aggregate credited popularity. `AssetRepo` loads the complete
+event lineage for exact-alias recovery, while public reads
+still require active shares on unsuperseded roots. Hidden variants do not mint
+public share IDs.
+
 FF-079 gives `Asset` an `ObjectReclaimedAt` lifecycle fact. `AssetRepo` lists
 unreclaimed objects independently of share state, records only successful
 idempotent Garage deletes, and plans outside-window event work from completed
 fixture kickoff dates. Public clip reads exclude reclaimed assets. Fixture,
 event, candidate, asset, and share rows remain durable.
+FF-083 uses this same media boundary for accepted losing variants; placement
+does not reclaim superseded objects immediately.
 
 FF-071 makes the same ownership model a database invariant. Composite foreign
 keys require an asset and candidate to carry their event's fixture, a share to

@@ -188,8 +188,8 @@ func TestPlacementRepo_PromotionSupersedesAtomicallyAndRetries(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CommitClipPlacement: %v", err)
 	}
-	if !firstResult.WinnerCreated || len(firstResult.LoserObjects) != 1 {
-		t.Fatalf("first result = %+v, want new winner and one loser object", firstResult)
+	if !firstResult.WinnerCreated || !firstResult.ObservedAssetCreated {
+		t.Fatalf("first result = %+v, want new winner and retained observation", firstResult)
 	}
 	retryResult, err := placements.CommitClipPlacement(t.Context(), in)
 	if err != nil {
@@ -241,6 +241,111 @@ func TestPlacementRepo_PromotionSupersedesAtomicallyAndRetries(t *testing.T) {
 	}
 	if winnerCredits != 4 || superseded != 1 {
 		t.Errorf("winner credits/superseded = %d/%d, want 4/1", winnerCredits, superseded)
+	}
+}
+
+func TestPlacementRepo_RetainsObservedVariantAndCreditsItsLiveRoot(t *testing.T) {
+	pool, placements, assets, shares, fixtureID, eventID := setupPlacementRepo(t)
+	winner := insertPlacementAsset(t, assets, eventID, fixtureID, "variant-root", 2)
+	winnerShare := insertPlacementShare(t, shares, winner, 1)
+
+	variant := newAsset(eventID, fixtureID, "placement-md5-observed", []uint64{9, 10, 11}, 1_500_000)
+	variant.S3Key = "9200/observed.mp4"
+	variant.SupersededBySet(winner.ID)
+	firstCandidates := []video.PlacementCandidate{
+		{Evidence: placementEvidence(eventID, fixtureID, "4001"), Outcome: discoverycontract.OutcomeDuplicate},
+		{Evidence: placementEvidence(eventID, fixtureID, "4002"), Outcome: discoverycontract.OutcomeDuplicate},
+	}
+	first := video.ClipPlacement{
+		EventID:         eventID,
+		FixtureID:       fixtureID,
+		ObservedAssetID: variant.ID,
+		WinnerAssetID:   winner.ID,
+		Variant:         variant,
+		Verified:        true,
+		Candidates:      firstCandidates,
+		CommittedAt:     time.Date(2026, 8, 28, 12, 30, 0, 0, time.UTC),
+	}
+	result, err := placements.CommitClipPlacement(t.Context(), first)
+	if err != nil {
+		t.Fatalf("CommitClipPlacement: %v", err)
+	}
+	if result.WinnerCreated || !result.ObservedAssetCreated || result.WinnerAssetID != winner.ID {
+		t.Fatalf("placement result = %+v, want new observation under existing root", result)
+	}
+	if _, err := placements.CommitClipPlacement(t.Context(), first); err != nil {
+		t.Fatalf("CommitClipPlacement retry: %v", err)
+	}
+
+	gotVariant, err := assets.Get(t.Context(), variant.ID)
+	if err != nil {
+		t.Fatalf("get observed variant: %v", err)
+	}
+	if gotVariant.Popularity != 1 || gotVariant.SupersededBy == nil || *gotVariant.SupersededBy != winner.ID {
+		t.Fatalf("observed variant = %+v, want non-public seed popularity and root %s", gotVariant, winner.ID)
+	}
+	gotWinner, err := assets.Get(t.Context(), winner.ID)
+	if err != nil {
+		t.Fatalf("get root: %v", err)
+	}
+	if gotWinner.Popularity != 4 {
+		t.Fatalf("root popularity = %d, want 4", gotWinner.Popularity)
+	}
+	live, err := shares.ListLiveForEvent(t.Context(), eventID)
+	if err != nil {
+		t.Fatalf("list live: %v", err)
+	}
+	if len(live) != 1 || live[0].ShareID != winnerShare.ID {
+		t.Fatalf("live clips = %+v, want only graph root", live)
+	}
+	var sharesForEvent int
+	if err := pool.QueryRow(t.Context(), `SELECT count(*) FROM video_shares WHERE event_id = $1`, eventID).Scan(&sharesForEvent); err != nil {
+		t.Fatalf("count shares: %v", err)
+	}
+	if sharesForEvent != 1 {
+		t.Fatalf("shares = %d, want no public identity for hidden variant", sharesForEvent)
+	}
+	var observedVotes, creditedVotes int
+	if err := pool.QueryRow(t.Context(), `
+		SELECT count(*) FILTER (WHERE observed_asset_id = $2),
+		       count(*) FILTER (WHERE credited_asset_id = $3)
+		FROM event_search_candidates WHERE event_id = $1
+	`, eventID, variant.ID, winner.ID).Scan(&observedVotes, &creditedVotes); err != nil {
+		t.Fatalf("read candidate attribution: %v", err)
+	}
+	if observedVotes != 2 || creditedVotes != 2 {
+		t.Fatalf("observed/credited votes = %d/%d, want 2/2", observedVotes, creditedVotes)
+	}
+
+	// An exact-byte recurrence records another local observation and another
+	// aggregate root vote without inserting the variant again.
+	recurrence := video.ClipPlacement{
+		EventID:         eventID,
+		FixtureID:       fixtureID,
+		ObservedAssetID: variant.ID,
+		WinnerAssetID:   winner.ID,
+		Verified:        true,
+		Candidates: []video.PlacementCandidate{{
+			Evidence: placementEvidence(eventID, fixtureID, "4003"),
+			Outcome:  discoverycontract.OutcomeDuplicate,
+		}},
+		CommittedAt: time.Date(2026, 8, 28, 12, 35, 0, 0, time.UTC),
+	}
+	if _, err := placements.CommitClipPlacement(t.Context(), recurrence); err != nil {
+		t.Fatalf("exact recurrence: %v", err)
+	}
+	gotWinner, _ = assets.Get(t.Context(), winner.ID)
+	if gotWinner.Popularity != 5 {
+		t.Fatalf("post-recurrence root popularity = %d, want 5", gotWinner.Popularity)
+	}
+	if err := pool.QueryRow(t.Context(), `
+		SELECT count(*) FROM event_search_candidates
+		WHERE event_id = $1 AND observed_asset_id = $2
+	`, eventID, variant.ID).Scan(&observedVotes); err != nil {
+		t.Fatalf("read exact observations: %v", err)
+	}
+	if observedVotes != 3 {
+		t.Fatalf("exact observed votes = %d, want 3", observedVotes)
 	}
 }
 

@@ -66,16 +66,18 @@ type PlacementCandidateInput struct {
 	Detail   json.RawMessage
 }
 
-// CommitClipPlacementInput is one complete post-dedup placement. NewWinner
-// selects deterministic staging→asset promotion; otherwise WinnerAssetID is an
-// existing live asset. Losers consolidate within the same transaction.
+// CommitClipPlacementInput is one complete post-dedup placement. CaptureVariant
+// retains the accepted distinct MD5 even when it loses to WinnerAssetID.
+// NewWinner selects that observed variant as the public root. Losers consolidate
+// within the same transaction.
 type CommitClipPlacementInput struct {
-	EventID       uuid.UUID
-	FixtureID     int64
-	NewWinner     bool
-	WinnerAssetID uuid.UUID
-	LoserAssetIDs []uuid.UUID
-	Candidates    []PlacementCandidateInput
+	EventID        uuid.UUID
+	FixtureID      int64
+	CaptureVariant bool
+	NewWinner      bool
+	WinnerAssetID  uuid.UUID
+	LoserAssetIDs  []uuid.UUID
+	Candidates     []PlacementCandidateInput
 
 	StagingKey      string
 	MD5             string
@@ -95,17 +97,19 @@ type CommitClipPlacementInput struct {
 // including a retry whose workflow still owes the dirty signal; EventRemoved
 // is terminal and never announceable.
 type CommitClipPlacementOutput struct {
-	WinnerAssetID uuid.UUID
-	ShareID       string
-	WinnerCreated bool
-	Announce      bool
-	EventRemoved  bool
+	WinnerAssetID        uuid.UUID
+	ShareID              string
+	WinnerCreated        bool
+	ObservedAssetCreated bool
+	Announce             bool
+	EventRemoved         bool
 }
 
-// CommitClipPlacement copies a new winner when needed, commits the complete
-// accepted-candidate database mutation atomically, and then performs
-// idempotent staging/loser-object cleanup. New workflow histories use this
-// instead of the independent promote/bump/supersede/outcome calls.
+// CommitClipPlacement copies a new accepted variant when needed, commits the
+// complete candidate/lineage mutation atomically, and then removes staging.
+// Superseded bytes remain until ordinary fixture-window retention so their
+// quality evidence can be reviewed. New workflow histories use this instead
+// of the independent promote/bump/supersede/outcome calls.
 func (a *PersistActivities) CommitClipPlacement(ctx context.Context, in CommitClipPlacementInput) (CommitClipPlacementOutput, error) {
 	var out CommitClipPlacementOutput
 	if a.Placements == nil {
@@ -129,42 +133,49 @@ func (a *PersistActivities) CommitClipPlacement(ctx context.Context, in CommitCl
 	}
 
 	var destinationKey string
-	if in.NewWinner {
+	if in.NewWinner || in.CaptureVariant {
 		md5Bytes, err := hex.DecodeString(in.MD5)
 		if err != nil {
 			return out, fmt.Errorf("video.CommitClipPlacement: bad md5 %q: %w", in.MD5, err)
 		}
 		assetID := uuid.NewSHA1(uuid.NameSpaceOID, []byte(in.EventID.String()+":"+in.MD5))
+		if in.CaptureVariant {
+			placement.ObservedAssetID = assetID
+		}
 		dstKey := path.Join(a.AssetsPrefix, fmt.Sprint(in.FixtureID), in.EventID.String(), assetID.String()+".mp4")
-		destinationKey = dstKey
 		existing, err := a.Assets.Get(ctx, assetID)
 		switch {
 		case err == nil:
-			compat := PromoteAndPersistInput{
-				EventID: in.EventID, FixtureID: in.FixtureID, StagingKey: in.StagingKey,
-				MD5: in.MD5, HashVersion: in.HashVersion, FrameHashes: in.FrameHashes,
-				Width: in.Width, Height: in.Height, DurationMS: in.DurationMS,
-				FileSizeBytes: in.FileSizeBytes, Bitrate: in.Bitrate, FrameRate: in.FrameRate,
-			}
-			if err := validatePromotionAsset(existing, compat, md5Bytes, a.Bucket, dstKey); err != nil {
+			if err := validateObservedAsset(existing, in, md5Bytes, a.Bucket, dstKey); err != nil {
 				return out, fmt.Errorf("video.CommitClipPlacement: %w", err)
 			}
 		case errors.Is(err, dvideo.ErrNotFound):
+			if len(in.FrameHashes) == 0 {
+				return out, fmt.Errorf("video.CommitClipPlacement: observed variant %s has no retained hash evidence", assetID)
+			}
 			if err := a.S3.Copy(ctx, in.StagingKey, dstKey); err != nil {
 				return out, fmt.Errorf("video.CommitClipPlacement: copy: %w", err)
 			}
+			destinationKey = dstKey
 		default:
-			return out, fmt.Errorf("video.CommitClipPlacement: get winner: %w", err)
+			return out, fmt.Errorf("video.CommitClipPlacement: get observed variant: %w", err)
 		}
 
-		asset := dvideo.NewAsset(in.EventID, in.FixtureID, a.Bucket, dstKey,
-			md5Bytes, in.HashVersion, in.FrameHashes,
-			in.Width, in.Height, in.DurationMS, in.FileSizeBytes, placement.CommittedAt)
-		asset.ID = assetID
-		asset.Bitrate = in.Bitrate
-		asset.FrameRate = in.FrameRate
-		placement.Winner = asset
-		placement.WinnerAssetID = uuid.Nil
+		if len(in.FrameHashes) > 0 {
+			asset := dvideo.NewAsset(in.EventID, in.FixtureID, a.Bucket, dstKey,
+				md5Bytes, in.HashVersion, in.FrameHashes,
+				in.Width, in.Height, in.DurationMS, in.FileSizeBytes, placement.CommittedAt)
+			asset.ID = assetID
+			asset.Bitrate = in.Bitrate
+			asset.FrameRate = in.FrameRate
+			if in.NewWinner {
+				placement.Winner = asset
+				placement.WinnerAssetID = uuid.Nil
+			} else {
+				asset.SupersededBySet(in.WinnerAssetID)
+				placement.Variant = asset
+			}
+		}
 	} else if in.WinnerAssetID == uuid.Nil {
 		return out, fmt.Errorf("video.CommitClipPlacement: existing winner id is required")
 	}
@@ -191,26 +202,40 @@ func (a *PersistActivities) CommitClipPlacement(ctx context.Context, in CommitCl
 	if err := a.S3.Delete(ctx, in.StagingKey); err != nil {
 		return out, fmt.Errorf("video.CommitClipPlacement: delete staging: %w", err)
 	}
-	for _, object := range result.LoserObjects {
-		if object.Key == "" {
-			continue
-		}
-		if err := a.S3.Delete(ctx, object.Key); err != nil {
-			activity.GetLogger(ctx).Warn("placement: loser byte reclaim failed",
-				"key", object.Key, "err", err)
-			continue
-		}
-		if err := a.Assets.MarkObjectReclaimed(ctx, object.AssetID); err != nil {
-			activity.GetLogger(ctx).Warn("placement: record loser reclaim failed",
-				"asset_id", object.AssetID.String(), "err", err)
-		}
-	}
 	return CommitClipPlacementOutput{
-		WinnerAssetID: result.WinnerAssetID,
-		ShareID:       result.ShareID,
-		WinnerCreated: result.WinnerCreated,
-		Announce:      true,
+		WinnerAssetID:        result.WinnerAssetID,
+		ShareID:              result.ShareID,
+		WinnerCreated:        result.WinnerCreated,
+		ObservedAssetCreated: result.ObservedAssetCreated,
+		Announce:             true,
 	}, nil
+}
+
+// validateObservedAsset checks a deterministic accepted-variant retry. Exact
+// recurrences can arrive before dense hashing, so they validate only stable
+// byte identity; full post-vision variants validate every retained field.
+func validateObservedAsset(
+	existing *dvideo.Asset,
+	in CommitClipPlacementInput,
+	md5Bytes []byte,
+	bucket, key string,
+) error {
+	wantID := uuid.NewSHA1(uuid.NameSpaceOID, []byte(in.EventID.String()+":"+in.MD5))
+	if existing == nil || existing.ID != wantID || existing.EventID != in.EventID ||
+		existing.FixtureID != in.FixtureID || existing.S3Bucket != bucket ||
+		existing.S3Key != key || !bytes.Equal(existing.MD5, md5Bytes) {
+		return fmt.Errorf("observed variant identity mismatch")
+	}
+	if len(in.FrameHashes) == 0 {
+		return nil
+	}
+	compat := PromoteAndPersistInput{
+		EventID: in.EventID, FixtureID: in.FixtureID, StagingKey: in.StagingKey,
+		MD5: in.MD5, HashVersion: in.HashVersion, FrameHashes: in.FrameHashes,
+		Width: in.Width, Height: in.Height, DurationMS: in.DurationMS,
+		FileSizeBytes: in.FileSizeBytes, Bitrate: in.Bitrate, FrameRate: in.FrameRate,
+	}
+	return validatePromotionAsset(existing, compat, md5Bytes, bucket, key)
 }
 
 // PromoteAndPersistInput is one verified unique clip ready to surface.
@@ -275,17 +300,29 @@ type LoadEventAssetsOutput struct {
 }
 
 // LoadEventAssets restores the durable portion of EventWorkflow's in-memory
-// state. Shares arrive in current-evidence order. Only active, unsuperseded
-// assets re-enter the perceptual matcher; every share asset whose supersession
-// chain terminates at one of those live assets contributes an exact-byte alias.
-// A corrupt supersession cycle fails closed instead of hanging recovery.
+// state. Shares arrive in current-evidence order; assets include every accepted
+// MD5 variant. Only active, unsuperseded assets re-enter the perceptual matcher;
+// every accepted asset whose supersession chain terminates at one of those live
+// assets contributes an exact-byte alias. A corrupt supersession cycle fails
+// closed instead of hanging recovery.
 func (a *PersistActivities) LoadEventAssets(ctx context.Context, in LoadEventAssetsInput) (LoadEventAssetsOutput, error) {
 	var out LoadEventAssetsOutput
 	shares, err := a.Shares.GetByEvent(ctx, in.EventID)
 	if err != nil {
 		return out, fmt.Errorf("video.LoadEventAssets: get shares: %w", err)
 	}
-	assets := make(map[uuid.UUID]*dvideo.Asset, len(shares))
+	eventAssets, err := a.Assets.ListByEvent(ctx, in.EventID)
+	if err != nil {
+		return out, fmt.Errorf("video.LoadEventAssets: get assets: %w", err)
+	}
+	assets := make(map[uuid.UUID]*dvideo.Asset, len(eventAssets))
+	for _, asset := range eventAssets {
+		if asset.EventID != in.EventID {
+			return out, fmt.Errorf("video.LoadEventAssets: asset %s belongs to event %s, want %s",
+				asset.ID, asset.EventID, in.EventID)
+		}
+		assets[asset.ID] = asset
+	}
 	loadAsset := func(id uuid.UUID) (*dvideo.Asset, error) {
 		if asset, ok := assets[id]; ok {
 			return asset, nil
@@ -301,8 +338,7 @@ func (a *PersistActivities) LoadEventAssets(ctx context.Context, in LoadEventAss
 		return asset, nil
 	}
 
-	// Load every share asset once so the alias pass can follow chains even
-	// when the terminal winner's share appears later in evidence order.
+	// Every share must still resolve to an event-owned asset.
 	for _, share := range shares {
 		if _, err := loadAsset(share.AssetID); err != nil {
 			return out, fmt.Errorf("video.LoadEventAssets: %w", err)
@@ -328,9 +364,8 @@ func (a *PersistActivities) LoadEventAssets(ctx context.Context, in LoadEventAss
 		})
 	}
 
-	seenMD5 := make(map[string]struct{}, len(shares))
-	for _, share := range shares {
-		asset := assets[share.AssetID]
+	seenMD5 := make(map[string]struct{}, len(eventAssets))
+	for _, asset := range eventAssets {
 		md5Hex := hex.EncodeToString(asset.MD5)
 		if _, seen := seenMD5[md5Hex]; seen {
 			continue

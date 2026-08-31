@@ -14,6 +14,10 @@ its historical heading anchors valid.
 
 New decisions after the frozen archive:
 
+- [Accepted variants form direct lineage, not perceptual clusters](./2026-08-31-accepted-variants-form-direct-lineage.md)
+  — FF-083 retains every accepted MD5, separates immutable observation from
+  movable root credit, and defers losing-byte reclamation to FF-079 without
+  treating dHash connectivity as identity.
 - [Video cadence is independent quality evidence](./2026-08-31-video-cadence-is-independent-quality-evidence.md)
   — FF-082 persists nullable frame rate for new assets, names spatial bitrate
   density accurately, and keeps cadence separate until FF-081 has reviewed

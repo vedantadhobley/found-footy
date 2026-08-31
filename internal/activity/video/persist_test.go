@@ -54,6 +54,15 @@ func (f *fakeAssetStore) Get(_ context.Context, id uuid.UUID) (*dvideo.Asset, er
 	}
 	return nil, dvideo.ErrNotFound
 }
+func (f *fakeAssetStore) ListByEvent(_ context.Context, eventID uuid.UUID) ([]*dvideo.Asset, error) {
+	var out []*dvideo.Asset
+	for _, asset := range f.byID {
+		if asset.EventID == eventID {
+			out = append(out, asset)
+		}
+	}
+	return out, nil
+}
 func (f *fakeAssetStore) InsertAsset(_ context.Context, a *dvideo.Asset) (bool, error) {
 	key := a.EventID.String() + ":" + hex.EncodeToString(a.MD5)
 	if _, exists := f.byEventMD5[key]; exists {
@@ -125,7 +134,6 @@ type fakePlacementStore struct {
 	assets       *fakeAssetStore
 	inputs       []dvideo.ClipPlacement
 	share        string
-	losers       []dvideo.ObjectRef
 	eventRemoved bool
 }
 
@@ -134,7 +142,8 @@ func (f *fakePlacementStore) CommitClipPlacement(_ context.Context, in dvideo.Cl
 	if f.eventRemoved {
 		return dvideo.ClipPlacementResult{EventRemoved: true}, nil
 	}
-	created := false
+	winnerCreated := false
+	observedCreated := false
 	winnerID := in.WinnerAssetID
 	if in.Winner != nil {
 		winnerID = in.Winner.ID
@@ -142,17 +151,25 @@ func (f *fakePlacementStore) CommitClipPlacement(_ context.Context, in dvideo.Cl
 			cp := *in.Winner
 			f.assets.byID[winnerID] = &cp
 			f.assets.byEventMD5[in.EventID.String()+":"+hex.EncodeToString(in.Winner.MD5)] = winnerID
-			created = true
+			winnerCreated = true
+		}
+	}
+	if in.Variant != nil {
+		if _, exists := f.assets.byID[in.Variant.ID]; !exists {
+			cp := *in.Variant
+			f.assets.byID[in.Variant.ID] = &cp
+			f.assets.byEventMD5[in.EventID.String()+":"+hex.EncodeToString(in.Variant.MD5)] = in.Variant.ID
+			observedCreated = true
 		}
 	}
 	if f.share == "" {
 		f.share = "s_atomic00001"
 	}
 	return dvideo.ClipPlacementResult{
-		WinnerAssetID: winnerID,
-		ShareID:       f.share,
-		WinnerCreated: created,
-		LoserObjects:  f.losers,
+		WinnerAssetID:        winnerID,
+		ShareID:              f.share,
+		WinnerCreated:        winnerCreated,
+		ObservedAssetCreated: winnerCreated || observedCreated,
 	}, nil
 }
 
@@ -243,7 +260,7 @@ func stdPlacementInput(eventID uuid.UUID) CommitClipPlacementInput {
 		VideoPageURL: "https://video.twimg.com/1001.m3u8", DurationSeconds: 7,
 	}
 	return CommitClipPlacementInput{
-		EventID: eventID, FixtureID: 1583467, NewWinner: true,
+		EventID: eventID, FixtureID: 1583467, CaptureVariant: true, NewWinner: true,
 		StagingKey:  "staging/1583467/e/t.mp4",
 		MD5:         hex.EncodeToString([]byte("md5md5md5md5md5m")),
 		HashVersion: dvideo.CurrentFrameHashVersion(0.1),
@@ -261,12 +278,7 @@ func floatp(value float64) *float64 { return &value }
 
 func TestCommitClipPlacement_CompletesRetrySafeDurableTail(t *testing.T) {
 	a, s3, assets, _ := newPersist()
-	loserID := uuid.New()
-	assets.byID[loserID] = &dvideo.Asset{ID: loserID, S3Key: "assets/old.mp4"}
-	placements := &fakePlacementStore{
-		assets: assets,
-		losers: []dvideo.ObjectRef{{AssetID: loserID, Bucket: "found-footy", Key: "assets/old.mp4"}},
-	}
+	placements := &fakePlacementStore{assets: assets}
 	a.Placements = placements
 	in := stdPlacementInput(uuid.New())
 
@@ -284,11 +296,8 @@ func TestCommitClipPlacement_CompletesRetrySafeDurableTail(t *testing.T) {
 	if len(s3.copies) != 1 {
 		t.Fatalf("copies = %v, want one", s3.copies)
 	}
-	if len(s3.deletes) != 2 || s3.deletes[0] != in.StagingKey || s3.deletes[1] != "assets/old.mp4" {
-		t.Fatalf("deletes = %v, want staging then loser cleanup", s3.deletes)
-	}
-	if assets.byID[loserID].ObjectReclaimedAt == nil {
-		t.Fatal("loser reclaim was not recorded")
+	if len(s3.deletes) != 1 || s3.deletes[0] != in.StagingKey {
+		t.Fatalf("deletes = %v, want staging cleanup only", s3.deletes)
 	}
 
 	// Model a retry after the first durable commit and staging cleanup. The
@@ -310,6 +319,52 @@ func TestCommitClipPlacement_CompletesRetrySafeDurableTail(t *testing.T) {
 	}
 	if got := placements.inputs[0].Winner.FrameRate; got == nil || *got != 59.94 {
 		t.Errorf("placement winner frame rate = %v, want 59.94", got)
+	}
+}
+
+func TestCommitClipPlacement_RetainsLosingVariantUntilOrdinaryRetention(t *testing.T) {
+	a, s3, assets, _ := newPersist()
+	eventID := uuid.New()
+	winnerID := uuid.New()
+	assets.byID[winnerID] = &dvideo.Asset{ID: winnerID, EventID: eventID, FixtureID: 1583467}
+	a.Placements = &fakePlacementStore{assets: assets}
+	in := stdPlacementInput(eventID)
+	in.NewWinner = false
+	in.WinnerAssetID = winnerID
+
+	first, err := a.CommitClipPlacement(context.Background(), in)
+	if err != nil {
+		t.Fatalf("first placement: %v", err)
+	}
+	observedID := uuid.NewSHA1(uuid.NameSpaceOID, []byte(eventID.String()+":"+in.MD5))
+	observed := assets.byID[observedID]
+	if !first.ObservedAssetCreated || observed == nil {
+		t.Fatalf("first output/asset = %+v/%+v, want retained observed variant", first, observed)
+	}
+	if observed.SupersededBy == nil || *observed.SupersededBy != winnerID {
+		t.Fatalf("observed successor = %v, want %s", observed.SupersededBy, winnerID)
+	}
+	wantKey := "assets/1583467/" + eventID.String() + "/" + observedID.String() + ".mp4"
+	if len(s3.copies) != 1 || s3.copies[0] != [2]string{in.StagingKey, wantKey} {
+		t.Fatalf("copies = %v, want retained variant copy", s3.copies)
+	}
+	if len(s3.deletes) != 1 || s3.deletes[0] != in.StagingKey {
+		t.Fatalf("deletes = %v, want staging only", s3.deletes)
+	}
+	if observed.ObjectReclaimedAt != nil {
+		t.Fatal("observed variant was reclaimed before the fixture retention cutoff")
+	}
+
+	s3.copyErr = errors.New("staging source is gone")
+	retry, err := a.CommitClipPlacement(context.Background(), in)
+	if err != nil {
+		t.Fatalf("retry placement: %v", err)
+	}
+	if retry.ObservedAssetCreated || retry.WinnerAssetID != winnerID {
+		t.Fatalf("retry output = %+v, want existing observation and winner", retry)
+	}
+	if len(s3.copies) != 1 {
+		t.Fatalf("retry copied staging again: %v", s3.copies)
 	}
 }
 

@@ -109,7 +109,8 @@ func (p *pipeline) commitClipPlacement(
 		(*videoactivity.PersistActivities).CommitClipPlacement,
 		videoactivity.CommitClipPlacementInput{
 			EventID: p.in.EventID, FixtureID: p.in.FixtureID,
-			NewWinner: newWinner, WinnerAssetID: winnerID,
+			CaptureVariant: p.variantEvidence,
+			NewWinner:      newWinner, WinnerAssetID: winnerID,
 			LoserAssetIDs: loserIDs, Candidates: candidates,
 			StagingKey: c.stagingKey, MD5: c.md5,
 			HashVersion: c.hashVersion, FrameHashes: c.frameHashes,

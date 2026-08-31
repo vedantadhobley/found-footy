@@ -21,13 +21,18 @@ type PlacementCandidate struct {
 }
 
 // ClipPlacement describes the complete database-side result of one accepted
-// candidate cluster. Winner is non-nil when this placement introduces a new
-// asset; otherwise WinnerAssetID identifies an existing durable winner.
+// candidate cluster. ObservedAssetID is the exact MD5 variant the sources
+// carried. Winner is non-nil when that variant becomes a new public root;
+// Variant is non-nil when it is retained as a new superseded node. Otherwise
+// WinnerAssetID identifies an existing durable winner and the observed node
+// already exists. Compatibility placements may omit observed identity.
 type ClipPlacement struct {
 	EventID         uuid.UUID
 	FixtureID       int64
+	ObservedAssetID uuid.UUID
 	WinnerAssetID   uuid.UUID
 	Winner          *Asset
+	Variant         *Asset
 	Verified        bool
 	ExtractedMinute *int
 	LoserAssetIDs   []uuid.UUID
@@ -35,15 +40,15 @@ type ClipPlacement struct {
 	CommittedAt     time.Time
 }
 
-// ClipPlacementResult reports either the canonical winner and cleanup work or
-// that event removal made the accepted cluster non-public. A committed retry
-// returns the same winner/share and remains announceable.
+// ClipPlacementResult reports either the canonical winner and retained
+// observation or that event removal made the accepted cluster non-public. A
+// committed retry returns the same winner/share and remains announceable.
 type ClipPlacementResult struct {
-	WinnerAssetID uuid.UUID
-	ShareID       string
-	WinnerCreated bool
-	LoserObjects  []ObjectRef
-	EventRemoved  bool
+	WinnerAssetID        uuid.UUID
+	ShareID              string
+	WinnerCreated        bool
+	ObservedAssetCreated bool
+	EventRemoved         bool
 }
 
 // PlacementRejectEventRemoved is the terminal candidate reason used when VAR
@@ -51,8 +56,9 @@ type ClipPlacementResult struct {
 const PlacementRejectEventRemoved = "event_removed"
 
 // PlacementRepo atomically owns every database mutation caused by an accepted
-// candidate: candidate terminal state, popularity credit, asset/share mint,
-// and optional loser supersession. S3 copy/cleanup remains activity-owned.
+// candidate: candidate terminal state, observed-variant attribution,
+// popularity credit, asset/share mint, and optional supersession. S3
+// copy/staging cleanup remains activity-owned.
 type PlacementRepo interface {
 	CommitClipPlacement(ctx context.Context, placement ClipPlacement) (ClipPlacementResult, error)
 }

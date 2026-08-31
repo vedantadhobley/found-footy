@@ -359,9 +359,10 @@ the current branch.
   form an executable non-media corpus with full derived dHash sequences,
   retained metadata, human labels, and snapshots of current behavior. Tests
   replay current behavior without redefining it as the desired result.
-- **Next work:** Review natural post-FF-082 pairs before supersession reclaims
-  their losing bytes, then evaluate any policy proposal against the accepted
-  corpus. Do not change `IsUpgrade` until reliable presentation evidence
+- **Next work:** After FF-083 release, review natural post-FF-082 pairs while
+  every accepted variant remains inside the ordinary public media window, then
+  evaluate any policy proposal against the accepted corpus. Do not change
+  `IsUpgrade` until reliable presentation evidence
   resolves the FF-052 screen-detection gap. Any replacement must be a
   documented product policy, not fitted metadata weights. Separately repair
   the three legacy Danso edges onto the clear 62.159 s active winner after
@@ -398,6 +399,46 @@ the current branch.
   verify a natural new 30/50/60 fps asset retains its probed value, then add
   reviewed cadence pairs before changing `IsUpgrade`.
 - **Decision:** [Video cadence is independent quality evidence](./decisions/2026-08-31-video-cadence-is-independent-quality-evidence.md).
+
+### FF-083 — accepted losing variants disappear before quality review
+
+- **Status:** `implemented`
+- **Severity:** P2
+- **Observed:** Before FF-083, a distinct MD5 that passed vision but lost its
+  first dHash/quality comparison never entered `video_assets`. Atomic placement
+  credited its candidates directly to the selected winner and deleted staging.
+  The retained FF-081 corpus therefore contained only former public winners,
+  not every presentation the comparator rejected.
+- **Impact:** Direct source-to-variant attribution, hashes, cadence, metadata,
+  and reviewable bytes were lost. The remaining graph could explain later
+  supersession between public roots but could not measure ordinary first-loss
+  decisions, which biases keeper-policy research toward clips that once won.
+- **Invariant:** Every vision-accepted distinct MD5 is one event-scoped asset
+  node. Its `superseded_by` edge records only the direct committed placement
+  decision. Candidate `observed_asset_id` stays on those exact bytes while
+  `credited_asset_id` follows the live root. Graph connectivity is never
+  transitive content identity.
+- **Implementation:** New histories use
+  `ff-083-accepted-variant-evidence`. The placement activity copies a missing
+  observed variant to its deterministic asset key even when an incumbent wins;
+  the event-locked transaction inserts the node and edge, records stable
+  observation plus retry-idempotent root credit, and leaves exact-MD5 frequency
+  derivable from candidate observations without overloading aggregate root
+  popularity. Hidden variants receive no public share.
+  Recovery reads every event asset for exact aliases. Immediate loser deletion
+  is gone; FF-079 reclaims all event bytes after the fixture leaves the public
+  window while SQL evidence remains.
+- **Regressions:** Activity coverage proves a losing variant copy survives
+  placement and retry without recopy. Postgres coverage proves node/edge,
+  observed-versus-credited attribution, aggregate root popularity,
+  public-root-only reads, and exact recurrence idempotency. Recovery includes shareless accepted
+  variants. Migration and schema gates require the nullable correlated FK and
+  partial lookup index.
+- **Completion condition:** Apply migration
+  `20260831_02_retain_accepted_video_variants.sql`, release the worker, then
+  export and review natural post-FF-082/FF-083 direct pairs before the ordinary
+  media cutoff. Historical first-loss variants cannot be backfilled.
+- **Decision:** [Accepted variants form direct lineage, not perceptual clusters](./decisions/2026-08-31-accepted-variants-form-direct-lineage.md).
 
 ### FF-003 — candidate can pass without exact-event semantic evidence
 

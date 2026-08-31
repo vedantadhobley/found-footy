@@ -66,23 +66,10 @@ func (r *PlacementRepo) CommitClipPlacement(ctx context.Context, in video.ClipPl
 	winnerCreated := false
 	if in.Winner != nil {
 		winnerID = in.Winner.ID
-		tag, err := tx.Exec(ctx, `
-			INSERT INTO video_assets (
-				id, event_id, fixture_id, s3_bucket, s3_key,
-				md5, hash_version, frame_hashes,
-				width, height, duration_ms, file_size_bytes, bitrate, frame_rate,
-				popularity, superseded_by, first_seen_at
-			) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,1,NULL,$15)
-			ON CONFLICT (event_id, md5) DO NOTHING
-		`, in.Winner.ID, in.Winner.EventID, in.Winner.FixtureID,
-			in.Winner.S3Bucket, in.Winner.S3Key, in.Winner.MD5,
-			video.NormalizeFrameHashVersion(in.Winner.FrameHashVersion), encodeFrameHashes(in.Winner.FrameHashes),
-			in.Winner.Width, in.Winner.Height, in.Winner.DurationMS,
-			in.Winner.FileSizeBytes, in.Winner.Bitrate, in.Winner.FrameRate, in.Winner.FirstSeenAt)
+		winnerCreated, err = insertPlacementAsset(ctx, tx, in.Winner)
 		if err != nil {
 			return out, fmt.Errorf("pg.PlacementRepo.CommitClipPlacement: insert winner: %w", err)
 		}
-		winnerCreated = tag.RowsAffected() == 1
 	}
 
 	winner, err := getAssetTx(ctx, tx, winnerID, true)
@@ -94,6 +81,26 @@ func (r *PlacementRepo) CommitClipPlacement(ctx context.Context, in video.ClipPl
 	}
 	if in.Winner != nil && !samePlacementAsset(winner, in.Winner) {
 		return out, fmt.Errorf("pg.PlacementRepo.CommitClipPlacement: deterministic winner identity mismatch")
+	}
+
+	observedCreated := false
+	if in.Variant != nil {
+		observedCreated, err = insertPlacementAsset(ctx, tx, in.Variant)
+		if err != nil {
+			return out, fmt.Errorf("pg.PlacementRepo.CommitClipPlacement: insert observed variant: %w", err)
+		}
+		observed, err := getAssetTx(ctx, tx, in.Variant.ID, true)
+		if err != nil {
+			return out, fmt.Errorf("pg.PlacementRepo.CommitClipPlacement: observed variant: %w", err)
+		}
+		if !samePlacementAsset(observed, in.Variant) {
+			return out, fmt.Errorf("pg.PlacementRepo.CommitClipPlacement: deterministic observed variant mismatch")
+		}
+	}
+	if in.ObservedAssetID != uuid.Nil {
+		if err := requireObservedRoot(ctx, tx, in.EventID, in.FixtureID, in.ObservedAssetID, winnerID); err != nil {
+			return out, fmt.Errorf("pg.PlacementRepo.CommitClipPlacement: %w", err)
+		}
 	}
 
 	shareID, err := ensurePlacementShare(ctx, tx, in, winnerID)
@@ -136,7 +143,6 @@ func (r *PlacementRepo) CommitClipPlacement(ctx context.Context, in video.ClipPl
 			return out, fmt.Errorf("pg.PlacementRepo.CommitClipPlacement: add popularity: %w", err)
 		}
 	}
-
 	seenLoser := make(map[uuid.UUID]struct{}, len(loserSet))
 	for _, loserID := range losers {
 		if _, ok := loserSet[loserID]; !ok {
@@ -146,11 +152,9 @@ func (r *PlacementRepo) CommitClipPlacement(ctx context.Context, in video.ClipPl
 			continue
 		}
 		seenLoser[loserID] = struct{}{}
-		object, err := supersedePlacementLoser(ctx, tx, in.EventID, loserID, winnerID)
-		if err != nil {
+		if err := supersedePlacementLoser(ctx, tx, in.EventID, loserID, winnerID); err != nil {
 			return out, err
 		}
-		out.LoserObjects = append(out.LoserObjects, object)
 	}
 
 	if err := tx.Commit(ctx); err != nil {
@@ -159,6 +163,7 @@ func (r *PlacementRepo) CommitClipPlacement(ctx context.Context, in video.ClipPl
 	out.WinnerAssetID = winnerID
 	out.ShareID = shareID
 	out.WinnerCreated = winnerCreated
+	out.ObservedAssetCreated = winnerCreated || observedCreated
 	return out, nil
 }
 
@@ -236,6 +241,21 @@ func validateClipPlacement(in video.ClipPlacement) error {
 			return fmt.Errorf("new winner: %w", err)
 		}
 	}
+	if in.Variant != nil {
+		if in.WinnerAssetID == uuid.Nil || in.Winner != nil || in.ObservedAssetID != in.Variant.ID ||
+			in.Variant.EventID != in.EventID || in.Variant.FixtureID != in.FixtureID {
+			return fmt.Errorf("observed variant identity does not match placement")
+		}
+		if err := in.Variant.ValidateInvariants(); err != nil {
+			return fmt.Errorf("observed variant: %w", err)
+		}
+		if in.Variant.SupersededBy == nil || *in.Variant.SupersededBy != in.WinnerAssetID {
+			return fmt.Errorf("observed variant does not point to the existing winner")
+		}
+	}
+	if in.Winner != nil && in.ObservedAssetID != uuid.Nil && in.ObservedAssetID != in.Winner.ID {
+		return fmt.Errorf("new winner differs from observed variant")
+	}
 	for _, c := range in.Candidates {
 		if c.Evidence.EventID != in.EventID || c.Evidence.FixtureID != in.FixtureID ||
 			c.Evidence.SearchAttempt <= 0 || c.Evidence.Query == "" || c.Evidence.TweetURL == "" {
@@ -256,6 +276,63 @@ func getAssetTx(ctx context.Context, tx pgx.Tx, id uuid.UUID, lock bool) (*video
 	return scanAsset(tx.QueryRow(ctx, query, id))
 }
 
+func insertPlacementAsset(ctx context.Context, tx pgx.Tx, item *video.Asset) (bool, error) {
+	tag, err := tx.Exec(ctx, `
+		INSERT INTO video_assets (
+			id, event_id, fixture_id, s3_bucket, s3_key,
+			md5, hash_version, frame_hashes,
+			width, height, duration_ms, file_size_bytes, bitrate, frame_rate,
+			popularity, superseded_by, first_seen_at
+		) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,1,$15,$16)
+		ON CONFLICT (event_id, md5) DO NOTHING
+	`, item.ID, item.EventID, item.FixtureID, item.S3Bucket, item.S3Key, item.MD5,
+		video.NormalizeFrameHashVersion(item.FrameHashVersion), encodeFrameHashes(item.FrameHashes),
+		item.Width, item.Height, item.DurationMS, item.FileSizeBytes, item.Bitrate, item.FrameRate,
+		item.SupersededBy, item.FirstSeenAt)
+	if err != nil {
+		return false, err
+	}
+	return tag.RowsAffected() == 1, nil
+}
+
+// requireObservedRoot proves that the exact accepted MD5 belongs to the
+// winner's direct lineage. It never infers identity from graph connectivity;
+// every traversed edge was an earlier committed supersession decision.
+func requireObservedRoot(
+	ctx context.Context,
+	tx pgx.Tx,
+	eventID uuid.UUID,
+	fixtureID int64,
+	observedID uuid.UUID,
+	winnerID uuid.UUID,
+) error {
+	current := observedID
+	visited := make(map[uuid.UUID]struct{})
+	for current != winnerID {
+		if _, duplicate := visited[current]; duplicate {
+			return fmt.Errorf("observed variant lineage cycles at %s", current)
+		}
+		visited[current] = struct{}{}
+		var gotEventID uuid.UUID
+		var gotFixtureID int64
+		var successor *uuid.UUID
+		if err := tx.QueryRow(ctx, `
+			SELECT event_id, fixture_id, superseded_by
+			FROM video_assets WHERE id = $1
+		`, current).Scan(&gotEventID, &gotFixtureID, &successor); err != nil {
+			return fmt.Errorf("read observed variant %s: %w", current, err)
+		}
+		if gotEventID != eventID || gotFixtureID != fixtureID {
+			return fmt.Errorf("observed variant %s belongs to another event or fixture", current)
+		}
+		if successor == nil {
+			return fmt.Errorf("observed variant %s does not resolve to winner %s", observedID, winnerID)
+		}
+		current = *successor
+	}
+	return nil
+}
+
 func samePlacementAsset(got, want *video.Asset) bool {
 	return got.ID == want.ID && got.EventID == want.EventID && got.FixtureID == want.FixtureID &&
 		got.S3Bucket == want.S3Bucket && got.S3Key == want.S3Key && bytes.Equal(got.MD5, want.MD5) &&
@@ -263,7 +340,7 @@ func samePlacementAsset(got, want *video.Asset) bool {
 		bytes.Equal(encodeFrameHashes(got.FrameHashes), encodeFrameHashes(want.FrameHashes)) &&
 		got.Width == want.Width && got.Height == want.Height && got.DurationMS == want.DurationMS &&
 		got.FileSizeBytes == want.FileSizeBytes && equalOptionalInt(got.Bitrate, want.Bitrate) &&
-		equalOptionalFloat(got.FrameRate, want.FrameRate)
+		equalOptionalFloat(got.FrameRate, want.FrameRate) && equalOptionalUUID(got.SupersededBy, want.SupersededBy)
 }
 
 func equalOptionalInt(left, right *int) bool {
@@ -271,6 +348,10 @@ func equalOptionalInt(left, right *int) bool {
 }
 
 func equalOptionalFloat(left, right *float64) bool {
+	return left == nil && right == nil || left != nil && right != nil && *left == *right
+}
+
+func equalOptionalUUID(left, right *uuid.UUID) bool {
 	return left == nil && right == nil || left != nil && right != nil && *left == *right
 }
 
@@ -331,13 +412,14 @@ func creditPlacementCandidate(
 	e := candidate.Evidence
 	var priorFixtureID int64
 	var priorOutcome string
+	var priorObserved *uuid.UUID
 	var priorCredit *uuid.UUID
 	err := tx.QueryRow(ctx, `
-		SELECT fixture_id, outcome_class, credited_asset_id
+		SELECT fixture_id, outcome_class, observed_asset_id, credited_asset_id
 		FROM event_search_candidates
 		WHERE event_id = $1 AND tweet_url = $2
 		FOR UPDATE
-	`, in.EventID, e.TweetURL).Scan(&priorFixtureID, &priorOutcome, &priorCredit)
+	`, in.EventID, e.TweetURL).Scan(&priorFixtureID, &priorOutcome, &priorObserved, &priorCredit)
 
 	var age *float64
 	if e.AgeMinutesAtDiscovery > 0 {
@@ -355,11 +437,11 @@ func creditPlacementCandidate(
 				tweet_url, tweet_text, video_page_url, duration_seconds,
 				username, age_minutes_at_discovery,
 				outcome_class, reject_reason, outcome_detail, outcome_at,
-				credited_asset_id
-			) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,NULL,$12,NOW(),$13)
+				observed_asset_id, credited_asset_id
+			) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,NULL,$12,NOW(),$13,$14)
 		`, e.EventID, e.FixtureID, e.SearchAttempt, e.Query, e.TweetURL,
 			e.TweetText, e.VideoPageURL, e.DurationSeconds, e.Username, age,
-			string(candidate.Outcome), detail, winnerID); err != nil {
+			string(candidate.Outcome), detail, nullableUUID(in.ObservedAssetID), winnerID); err != nil {
 			return false, fmt.Errorf("pg.PlacementRepo.CommitClipPlacement: insert candidate %s: %w", e.TweetURL, err)
 		}
 		return true, nil
@@ -369,6 +451,9 @@ func creditPlacementCandidate(
 	}
 	if priorFixtureID != in.FixtureID {
 		return false, fmt.Errorf("pg.PlacementRepo.CommitClipPlacement: candidate fixture mismatch for %s", e.TweetURL)
+	}
+	if priorObserved != nil && in.ObservedAssetID != uuid.Nil && *priorObserved != in.ObservedAssetID {
+		return false, fmt.Errorf("pg.PlacementRepo.CommitClipPlacement: candidate %s already observed asset %s", e.TweetURL, *priorObserved)
 	}
 
 	added := false
@@ -395,9 +480,11 @@ func creditPlacementCandidate(
 		        THEN COALESCE(outcome_at, NOW())
 		        ELSE NOW()
 		    END,
-		    credited_asset_id = $5
+		    credited_asset_id = $5,
+		    observed_asset_id = COALESCE(observed_asset_id, $6)
 		WHERE event_id = $1 AND tweet_url = $2
-	`, in.EventID, e.TweetURL, string(candidate.Outcome), detail, winnerID); err != nil {
+	`, in.EventID, e.TweetURL, string(candidate.Outcome), detail, winnerID,
+		nullableUUID(in.ObservedAssetID)); err != nil {
 		return false, fmt.Errorf("pg.PlacementRepo.CommitClipPlacement: update candidate %s: %w", e.TweetURL, err)
 	}
 	return added, nil
@@ -407,40 +494,39 @@ func supersedePlacementLoser(
 	ctx context.Context,
 	tx pgx.Tx,
 	eventID, loserID, winnerID uuid.UUID,
-) (video.ObjectRef, error) {
-	object := video.ObjectRef{AssetID: loserID}
+) error {
 	var loserEventID uuid.UUID
 	var popularity int
 	var supersededBy *uuid.UUID
 	if err := tx.QueryRow(ctx, `
-		SELECT event_id, s3_bucket, s3_key, popularity, superseded_by
+		SELECT event_id, popularity, superseded_by
 		FROM video_assets WHERE id = $1 FOR UPDATE
-	`, loserID).Scan(&loserEventID, &object.Bucket, &object.Key, &popularity, &supersededBy); err != nil {
-		return object, fmt.Errorf("pg.PlacementRepo.CommitClipPlacement: lock loser %s: %w", loserID, err)
+	`, loserID).Scan(&loserEventID, &popularity, &supersededBy); err != nil {
+		return fmt.Errorf("pg.PlacementRepo.CommitClipPlacement: lock loser %s: %w", loserID, err)
 	}
 	if loserEventID != eventID {
-		return object, fmt.Errorf("pg.PlacementRepo.CommitClipPlacement: loser %s belongs to another event", loserID)
+		return fmt.Errorf("pg.PlacementRepo.CommitClipPlacement: loser %s belongs to another event", loserID)
 	}
 	if supersededBy != nil && *supersededBy != winnerID {
-		return object, fmt.Errorf("pg.PlacementRepo.CommitClipPlacement: loser %s already points to %s", loserID, *supersededBy)
+		return fmt.Errorf("pg.PlacementRepo.CommitClipPlacement: loser %s already points to %s", loserID, *supersededBy)
 	}
 	if supersededBy == nil {
 		if _, err := tx.Exec(ctx, `
 			UPDATE video_assets SET popularity = popularity + $2 WHERE id = $1
 		`, winnerID, popularity); err != nil {
-			return object, fmt.Errorf("pg.PlacementRepo.CommitClipPlacement: merge loser %s: %w", loserID, err)
+			return fmt.Errorf("pg.PlacementRepo.CommitClipPlacement: merge loser %s: %w", loserID, err)
 		}
 		if _, err := tx.Exec(ctx, `
 			UPDATE video_assets SET superseded_by = $2 WHERE id = $1
 		`, loserID, winnerID); err != nil {
-			return object, fmt.Errorf("pg.PlacementRepo.CommitClipPlacement: retire loser %s: %w", loserID, err)
+			return fmt.Errorf("pg.PlacementRepo.CommitClipPlacement: retire loser %s: %w", loserID, err)
 		}
 	}
 	if _, err := tx.Exec(ctx, `
 		UPDATE video_shares SET state = 'superseded'
 		WHERE asset_id = $1 AND state = 'active'
 	`, loserID); err != nil {
-		return object, fmt.Errorf("pg.PlacementRepo.CommitClipPlacement: retire loser share %s: %w", loserID, err)
+		return fmt.Errorf("pg.PlacementRepo.CommitClipPlacement: retire loser share %s: %w", loserID, err)
 	}
 	winnerDetail, _ := json.Marshal(map[string]string{"winner_asset_id": winnerID.String()})
 	if _, err := tx.Exec(ctx, `
@@ -455,9 +541,16 @@ func supersedePlacementLoser(
 		    outcome_at = CASE WHEN outcome_class = 'promoted' THEN NOW() ELSE outcome_at END
 		WHERE credited_asset_id = $1
 	`, loserID, winnerID, winnerDetail); err != nil {
-		return object, fmt.Errorf("pg.PlacementRepo.CommitClipPlacement: move loser credits %s: %w", loserID, err)
+		return fmt.Errorf("pg.PlacementRepo.CommitClipPlacement: move loser credits %s: %w", loserID, err)
 	}
-	return object, nil
+	return nil
+}
+
+func nullableUUID(id uuid.UUID) any {
+	if id == uuid.Nil {
+		return nil
+	}
+	return id
 }
 
 // placementNow supplies a non-zero UTC timestamp to callers that construct a
