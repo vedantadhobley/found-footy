@@ -114,10 +114,13 @@ total order cannot solve screen capture, editorial chrome, or presentation
 quality. Those signals require reliable validation/presentation evidence; the
 existing FF-052 screen-detection gap prevents using them as a keeper tier yet.
 
-This pass therefore does not justify a production `IsUpgrade` change. It does
-justify a compact non-media regression set containing frame hashes, metadata,
-and the accepted human labels. New post-FF-082 matches must supply retained
-cadence and be reviewed before supersession reclaims the losing bytes.
+This pass therefore does not justify a production `IsUpgrade` change. Its ten
+accepted component and threshold judgments now live in a compact non-media
+regression set containing full derived dHash sequences, metadata, human labels,
+and snapshots of current behavior. The test keeps accepted product judgments
+independent from matcher and comparator output, including the J. King policy
+disagreement and Havertz uncertainty. New post-FF-082 matches must supply
+retained cadence and be reviewed before supersession reclaims the losing bytes.
 
 ## Conclusion
 
@@ -131,10 +134,11 @@ the corpus has no human quality labels for retired bytes. FF-066 already
 prevents a retired asset from becoming a new placement winner, so the observed
 cycle is legacy data rather than a currently reproducible persistence path.
 
-The next valid quality-policy experiment needs the reviewed labels encoded as
-regression fixtures plus new post-FF-082 cadence/presentation evidence. The
-legacy Danso cycle can be repaired separately by pointing its three retired
-assets at the clear active winner, after explicit production-data approval.
+The next valid quality-policy experiment can evaluate against the reviewed
+regression fixture, but still needs new post-FF-082 cadence and presentation
+evidence before changing production policy. The legacy Danso cycle can be
+repaired separately by pointing its three retired assets at the clear active
+winner, after explicit production-data approval.
 
 The follow-up FF-082 implementation retains nullable cadence for new assets and
 adds a direct-pair review-manifest mode to the audit command. It deliberately
