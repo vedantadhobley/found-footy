@@ -99,6 +99,11 @@ the current branch.
   passes. Deploy the repair and run one more live shadow window before the
   durable enforcement migration. See the
   [focused audit](./design/audits/provider-integrity-shadow-2026-08-31.md).
+- **Shadow-repair rollout (2026-08-31):** Release `424ce66` deployed after its
+  full engineering gate passed. Both workers, API, and Twitter exposed the
+  exact release identity; API and workers verified schema hash `d4691198111b`.
+  Enforcement remains absent while the repaired evaluator collects one more
+  natural match window.
 - **Design:** [API-Football provider-integrity circuit breaker](./design/proposals/provider-integrity-circuit-breaker.md).
 
 ### FF-076 — scorer name without provider ID is treated as anonymous
@@ -195,7 +200,7 @@ the current branch.
 
 ### FF-079 — shareless fixture retention destroys failure evidence
 
-- **Status:** `implemented`
+- **Status:** `validating`
 - **Severity:** P1
 - **Observed before FF-079:** The daily IngestWorkflow ran retention at 00:05 UTC with a
   hardcoded 14-day cutoff. `PruneCompleted` hard-deletes every completed
@@ -256,11 +261,15 @@ the current branch.
   failure leaves only failed assets eligible for retry; and the unfiltered API
   window is bounded without affecting targeted retained-row lookup or direct
   share resolution.
-- **Completion condition:** Land the schema migration, asset-based idempotent
-  reclaim, removal of fixture hard deletion, FF-036 public-window query, tests,
-  and updated as-built ledgers. Deploy the migration and application through
-  their separately approved production actions, then verify a natural expiry
-  preserves SQL history while reclaiming only media outside the public window.
+- **Production checkpoint (2026-08-31):** Migration
+  `20260830_01_separate_retention_lifecycles.sql` and release `424ce66`
+  deployed successfully. The migration added only the nullable reclamation
+  marker, its temporal check, and three partial lookup indexes; it deleted or
+  rewrote no application rows. The migration runner and every database-backed
+  application process verified schema hash `d4691198111b` before serving.
+- **Completion condition:** Verify that a natural expiry preserves SQL history
+  while reclaiming only media outside the public window, including a durable
+  retry after any partial Garage failure.
 
 ### FF-003 — candidate can pass without exact-event semantic evidence
 
