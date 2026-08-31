@@ -15,28 +15,30 @@ import (
 // asset is one retained video asset plus the event/share facts needed to
 // reproduce category-scoped matching and explain an audit finding.
 type asset struct {
-	eventID       string
-	id            string
-	firstSeenAt   string
-	md5           string
-	hashVersion   dvideo.FrameHashVersion
-	frameHashes   []uint64
-	width         int
-	height        int
-	durationMS    int
-	fileSizeBytes int64
-	bitrate       int
-	popularity    int
-	supersededBy  string
-	verified      bool
-	shareState    string
-	shareID       string
-	fixtureID     int64
-	playerName    string
-	minute        int
-	extra         string
-	homeTeam      string
-	awayTeam      string
+	eventID        string
+	id             string
+	firstSeenAt    string
+	md5            string
+	hashVersion    dvideo.FrameHashVersion
+	frameHashes    []uint64
+	width          int
+	height         int
+	durationMS     int
+	fileSizeBytes  int64
+	bitrate        int
+	frameRate      float64
+	popularity     int
+	supersededBy   string
+	verified       bool
+	shareState     string
+	shareID        string
+	fixtureID      int64
+	playerName     string
+	minute         int
+	extra          string
+	homeTeam       string
+	awayTeam       string
+	sourceTweetURL string
 }
 
 // quality projects retained metadata through the production keeper policy.
@@ -54,14 +56,23 @@ func (a asset) quality() dvideo.ClipQuality {
 	}
 }
 
-// bitsPerPixel reproduces the current metadata density signal for reports and
-// candidate-policy simulations. It is bitrate per second per spatial pixel;
-// frame rate is not retained on video_assets.
-func (a asset) bitsPerPixel() float64 {
+// spatialBitrateDensity reproduces the current keeper signal for reports and
+// policy simulations. Its unit is bits per spatial pixel per second.
+func (a asset) spatialBitrateDensity() float64 {
 	if a.bitrate <= 0 || a.width <= 0 || a.height <= 0 {
 		return 0
 	}
 	return float64(a.bitrate) / float64(a.width*a.height)
+}
+
+// bitsPerPixelFrame reports the compression budget per spatial pixel per
+// encoded frame. It is evidence beside frame rate, not a complete quality
+// score: higher cadence can remain preferable at a lower per-frame budget.
+func (a asset) bitsPerPixelFrame() float64 {
+	if a.frameRate <= 0 {
+		return 0
+	}
+	return a.spatialBitrateDensity() / a.frameRate
 }
 
 // readAssets decodes query.sql's header-addressed CSV stream.
@@ -110,6 +121,13 @@ func readAssets(r io.Reader) ([]asset, error) {
 // parseAsset validates and converts one corpus row.
 func parseAsset(record []string, columns map[string]int) (asset, error) {
 	value := func(name string) string { return record[columns[name]] }
+	optionalValue := func(name string) string {
+		index, found := columns[name]
+		if !found || index >= len(record) {
+			return ""
+		}
+		return record[index]
+	}
 	parseInt := func(name string) (int, error) {
 		parsed, err := strconv.Atoi(value(name))
 		if err != nil {
@@ -145,6 +163,13 @@ func parseAsset(record []string, columns map[string]int) (asset, error) {
 	if err != nil {
 		return asset{}, err
 	}
+	frameRate := 0.0
+	if raw := optionalValue("frame_rate"); raw != "" {
+		frameRate, err = strconv.ParseFloat(raw, 64)
+		if err != nil {
+			return asset{}, fmt.Errorf("parse frame_rate: %w", err)
+		}
+	}
 	popularity, err := parseInt("popularity")
 	if err != nil {
 		return asset{}, err
@@ -171,12 +196,12 @@ func parseAsset(record []string, columns map[string]int) (asset, error) {
 		firstSeenAt: value("first_seen_at"), md5: value("md5_hex"),
 		hashVersion: dvideo.NormalizeFrameHashVersion(dvideo.FrameHashVersion(value("hash_version"))),
 		frameHashes: hashes, width: width, height: height, durationMS: durationMS,
-		fileSizeBytes: fileSizeBytes, bitrate: bitrate, popularity: popularity,
+		fileSizeBytes: fileSizeBytes, bitrate: bitrate, frameRate: frameRate, popularity: popularity,
 		supersededBy: value("superseded_by"), verified: verified,
 		shareState: value("share_state"), shareID: value("share_id"),
 		fixtureID: fixtureID, playerName: value("player_name"), minute: minute,
 		extra: value("extra"), homeTeam: value("home_team_name"),
-		awayTeam: value("away_team_name"),
+		awayTeam: value("away_team_name"), sourceTweetURL: optionalValue("source_tweet_url"),
 	}, nil
 }
 

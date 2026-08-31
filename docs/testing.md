@@ -140,6 +140,15 @@ prove the sustained route admits a synthetic 50-frame pair rejected by the
 local threshold and that an old recorded config with zero sustained fields
 keeps the historical single-route behavior.
 
+FF-081 adds a read-only retained-asset audit command that reconstructs current
+match and historical supersession graphs, detects bridges and quality cycles,
+replays bounded arrival orders, and emits a direct-pair CSV whose label columns
+remain human-owned. Its tests pin the Danso cycle, topology-sensitive replay,
+historical matcher drift, score comparisons, and the review-manifest contract.
+FF-082 tests positive nullable frame-rate persistence across workflow version
+gating, activity recovery projections, domain invariants, and Postgres asset
+and atomic-placement round trips. Keeper behavior remains unchanged.
+
 ## Tier 1.5 — workflow tests
 
 `internal/workflow/ingest_test.go` uses

@@ -299,6 +299,7 @@ CREATE TABLE video_assets (
     duration_ms INT NOT NULL,
     file_size_bytes BIGINT NOT NULL,
     bitrate INT,
+    frame_rate DOUBLE PRECISION,
     aspect_ratio REAL GENERATED ALWAYS AS (width::REAL / height::REAL) STORED,
 
     -- Popularity (within-event vote count — how many of this event's candidates deduped onto this asset)
@@ -328,6 +329,7 @@ CREATE TABLE video_assets (
         (bitrate IS NULL OR bitrate > 0)
     ),
     CONSTRAINT video_assets_popularity_positive CHECK (popularity >= 1),
+    CONSTRAINT video_assets_frame_rate_positive CHECK (frame_rate IS NULL OR frame_rate > 0),
     CONSTRAINT video_assets_supersession_not_self CHECK (superseded_by IS NULL OR superseded_by <> id),
     CONSTRAINT video_assets_reclaimed_after_seen
         CHECK (object_reclaimed_at IS NULL OR object_reclaimed_at >= first_seen_at)

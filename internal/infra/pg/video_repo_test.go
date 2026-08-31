@@ -68,6 +68,8 @@ func TestAssetRepo_InsertIdempotentAndBump(t *testing.T) {
 	ctx, assets, _, fixtureID, eventID := setupVideoRepos(t)
 
 	a := newAsset(eventID, fixtureID, "md5aaaaaaaaaaaaa1", []uint64{1, 2, 4, 8, 0xdeadbeefcafef00d}, 1_000_000)
+	frameRate := 59.94
+	a.FrameRate = &frameRate
 
 	inserted, err := assets.InsertAsset(ctx, a)
 	if err != nil {
@@ -96,6 +98,9 @@ func TestAssetRepo_InsertIdempotentAndBump(t *testing.T) {
 	}
 	if got.FrameHashVersion != a.FrameHashVersion {
 		t.Errorf("FrameHashVersion round-trip = %q, want %q", got.FrameHashVersion, a.FrameHashVersion)
+	}
+	if got.FrameRate == nil || *got.FrameRate != frameRate {
+		t.Errorf("FrameRate round-trip = %v, want %v", got.FrameRate, frameRate)
 	}
 	if got.Popularity != 1 {
 		t.Errorf("Popularity = %d, want 1", got.Popularity)

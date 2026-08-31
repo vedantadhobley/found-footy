@@ -85,6 +85,7 @@ type CommitClipPlacementInput struct {
 	DurationMS      int
 	FileSizeBytes   int64
 	Bitrate         *int
+	FrameRate       *float64
 	Verified        bool
 	ExtractedMinute *int
 }
@@ -143,7 +144,7 @@ func (a *PersistActivities) CommitClipPlacement(ctx context.Context, in CommitCl
 				EventID: in.EventID, FixtureID: in.FixtureID, StagingKey: in.StagingKey,
 				MD5: in.MD5, HashVersion: in.HashVersion, FrameHashes: in.FrameHashes,
 				Width: in.Width, Height: in.Height, DurationMS: in.DurationMS,
-				FileSizeBytes: in.FileSizeBytes, Bitrate: in.Bitrate,
+				FileSizeBytes: in.FileSizeBytes, Bitrate: in.Bitrate, FrameRate: in.FrameRate,
 			}
 			if err := validatePromotionAsset(existing, compat, md5Bytes, a.Bucket, dstKey); err != nil {
 				return out, fmt.Errorf("video.CommitClipPlacement: %w", err)
@@ -161,6 +162,7 @@ func (a *PersistActivities) CommitClipPlacement(ctx context.Context, in CommitCl
 			in.Width, in.Height, in.DurationMS, in.FileSizeBytes, placement.CommittedAt)
 		asset.ID = assetID
 		asset.Bitrate = in.Bitrate
+		asset.FrameRate = in.FrameRate
 		placement.Winner = asset
 		placement.WinnerAssetID = uuid.Nil
 	} else if in.WinnerAssetID == uuid.Nil {
@@ -223,6 +225,7 @@ type PromoteAndPersistInput struct {
 	DurationMS    int
 	FileSizeBytes int64
 	Bitrate       *int
+	FrameRate     *float64
 
 	// Popularity the new asset starts at — its own sighting plus any gate
 	// md5-dups that collapsed onto it while it was pending (#180). 0/1 → 1.
@@ -251,6 +254,7 @@ type RestoredEventAsset struct {
 	DurationMS    int
 	FileSizeBytes int64
 	Bitrate       *int
+	FrameRate     *float64
 	Popularity    int
 	Verified      bool
 }
@@ -319,7 +323,7 @@ func (a *PersistActivities) LoadEventAssets(ctx context.Context, in LoadEventAss
 			AssetID: asset.ID, MD5: hex.EncodeToString(asset.MD5),
 			HashVersion: asset.FrameHashVersion, FrameHashes: asset.FrameHashes,
 			Width: asset.Width, Height: asset.Height, DurationMS: asset.DurationMS,
-			FileSizeBytes: asset.FileSizeBytes, Bitrate: asset.Bitrate,
+			FileSizeBytes: asset.FileSizeBytes, Bitrate: asset.Bitrate, FrameRate: asset.FrameRate,
 			Popularity: asset.Popularity, Verified: share.TimestampVerified,
 		})
 	}
@@ -407,6 +411,7 @@ func (a *PersistActivities) PromoteAndPersist(ctx context.Context, in PromoteAnd
 			in.Width, in.Height, in.DurationMS, in.FileSizeBytes, time.Now().UTC())
 		asset.ID = assetID
 		asset.Bitrate = in.Bitrate
+		asset.FrameRate = in.FrameRate
 		if in.Popularity > 1 {
 			asset.Popularity = in.Popularity // NewAsset defaults to 1; carry accumulated votes
 		}

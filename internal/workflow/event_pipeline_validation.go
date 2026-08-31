@@ -75,6 +75,10 @@ func (p *pipeline) onVideoDone(fallbackTweetURL string) func(workflow.Future) {
 			b := out.Bitrate
 			c.bitrate = &b
 		}
+		if out.FrameRate > 0 {
+			fps := out.FrameRate
+			c.frameRate = &fps
+		}
 
 		// GATE DEDUP — md5-exact ONLY. Perceptual dedup is category-scoped and runs
 		// POST-vision (a clip's verified/unverified category is unknown until vision;

@@ -28,6 +28,8 @@ func run() error {
 	maxPermutations := flag.Int("max-permutations", 100_000,
 		"maximum exhaustive or deterministic sampled arrival orders per component")
 	detailLimit := flag.Int("details", 30, "maximum prioritized components to print; -1 prints all")
+	reviewCSV := flag.Bool("review-csv", false,
+		"emit a stable direct-pair human-review manifest instead of the diagnostic report")
 	flag.Parse()
 	if *maxPermutations < 1 {
 		return fmt.Errorf("max-permutations must be positive")
@@ -41,6 +43,9 @@ func run() error {
 		return fmt.Errorf("empty asset corpus")
 	}
 	result := analyze(assets, *maxPermutations)
+	if *reviewCSV {
+		return writeReviewCSV(os.Stdout, result)
+	}
 	printReport(os.Stdout, result, *detailLimit)
 	return nil
 }

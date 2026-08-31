@@ -103,6 +103,7 @@ func TestAsset_ValidateInvariants(t *testing.T) {
 		{"empty hashes", func(a *video.Asset) { a.FrameHashes = nil }},
 		{"zero width", func(a *video.Asset) { a.Width = 0 }},
 		{"zero duration", func(a *video.Asset) { a.DurationMS = 0 }},
+		{"zero frame rate", func(a *video.Asset) { zero := 0.0; a.FrameRate = &zero }},
 		{"zero popularity", func(a *video.Asset) { a.Popularity = 0 }},
 		{"self supersession", func(a *video.Asset) { a.SupersededBy = &a.ID }},
 	}

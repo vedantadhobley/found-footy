@@ -24,3 +24,26 @@ rules. The offline analysis does not.
 The total-order scores are comparisons, not accepted production policy. The
 focused [2026-08-31 audit](../../docs/design/audits/video-quality-2026-08-31.md)
 records the interpretation and rejected transitive-cluster direction.
+
+## Human review manifest
+
+Pass `-review-csv` to emit one stable row per direct perceptual match instead
+of the text report. The command fills evidence through `current_preference` and
+leaves four reviewer-owned columns blank:
+
+- `dedup_decision`: `collapse`, `keep_both`, or `uncertain`.
+- `quality_winner`: `left`, `right`, `tie`, `not_applicable`, or `uncertain`.
+- `quality_reasons`: semicolon-separated visible reasons such as `cadence`,
+  `compression`, `resolution`, `completeness`, `crop`, `screen_recording`,
+  `overlay`, or `presentation`.
+- `notes`: short evidence that the bounded labels do not express.
+
+Frame rate, spatial bitrate density, and bits per pixel per frame are separate
+evidence columns. Never infer the quality winner from one of them alone. A
+60 fps clip may spend fewer bits on each frame than a 30 fps clip and still be
+the better presentation because it retains twice the motion cadence.
+
+The source tweet URL is the original promoted candidate when durable outcome
+detail retains that mapping. A superseded share resolves to its current winner,
+so reviewers must use the source URL to inspect retired bytes when the tweet
+still exists.

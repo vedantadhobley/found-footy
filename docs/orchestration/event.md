@@ -30,7 +30,9 @@ candidate becomes workflow-owned as `CandidateEvidence`. The producer submits
 all new candidates to `DownloadAndStage` before awaiting their concurrent
 `StoreCandidate` observation inserts, so Postgres does not gate clip launch.
 The activity returns
-the exact MD5, staging key, and media metadata. The consumer claims that MD5
+the exact MD5, staging key, and media metadata. New FF-082 histories carry the
+already-probed frame rate through atomic placement into the asset row; older
+histories omit it through their Temporal version marker. The consumer claims that MD5
 before scheduling dense `HashVideo`; simultaneous byte-identical candidates
 wait behind one claimant instead of repeating ffmpeg work. After a successful
 hash, new histories retain those follower URLs until the shared validation path
@@ -268,6 +270,8 @@ dense hashing, then two dedup stages straddle vision (#171 shipped 2026-08-09):
   `RebalanceRanks` commands. The old activities stay registered until those
   histories age out. `ff-080-canonical-exact-alias` separately controls
   retired-variant restoration and redirect commands.
+  `ff-082-cadence-metadata` separately controls the added frame-rate activity
+  field, so it does not change older command payloads during replay.
 - **Visibility and rank:** The API derives both from current evidence on every
   read. A verified clip at popularity three suppresses all popularity-one
   clips; an unverified clip at three suppresses only unverified
@@ -293,7 +297,7 @@ These are separate policies over different sets. Do not merge their criteria:
 
 | Policy | Set being ordered | Comparator | Effect |
 |---|---|---|---|
-| Dedup keeper selection | Perceptually matching clips in the same verified or unverified pool | [`IsUpgrade`](../../internal/domain/video/quality.go): meaningfully longer capped duration, then bits per pixel with an anti-churn margin, then resolution; incumbent wins ties. FF-081 records that this thresholded pairwise relation is not a total cluster order. | Chooses which bytes and asset identity survive a duplicate cluster. It never uses popularity. |
+| Dedup keeper selection | Perceptually matching clips in the same verified or unverified pool | [`IsUpgrade`](../../internal/domain/video/quality.go): meaningfully longer capped duration, then spatial bitrate density (`bitrate / (width × height)`) with an anti-churn margin, then resolution; incumbent wins ties. Frame rate is retained separately for new FF-082 histories but does not yet alter this policy. FF-081 records that the thresholded pairwise relation is not a total cluster order. | Chooses which bytes and asset identity survive a duplicate cluster. It never uses popularity. |
 | Public visibility | Distinct active shares for one event after dedup | Verified popularity ≥3 suppresses every popularity-one share; unverified popularity ≥3 suppresses only unverified popularity-one shares | Omits low-evidence alternatives from the event projection without changing durable state or direct URLs. |
 | Public ranking | Shares that survive public visibility | [`CompareShares`](../../internal/domain/video/rank.go): verified, popularity, file size, older creation time, then share ID | Assigns contiguous frontend order. It does not supersede assets or decide whether two clips are duplicates. |
 

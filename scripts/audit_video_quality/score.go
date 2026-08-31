@@ -131,7 +131,7 @@ func weightedBetter(left, right asset, densityWeight, pixelWeight float64) bool 
 func weightedScore(item asset, densityWeight, pixelWeight float64) float64 {
 	score := math.Log(float64(cappedDuration(item)))
 	if densityWeight != 0 {
-		density := item.bitsPerPixel()
+		density := item.spatialBitrateDensity()
 		if density <= 0 {
 			return math.Inf(-1)
 		}

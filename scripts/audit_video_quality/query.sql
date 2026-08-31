@@ -14,6 +14,7 @@ COPY (
         a.duration_ms,
         a.file_size_bytes,
         COALESCE(a.bitrate, 0) AS bitrate,
+        COALESCE(a.frame_rate, 0) AS frame_rate,
         a.popularity,
         COALESCE(a.superseded_by::text, '') AS superseded_by,
         s.timestamp_verified,
@@ -24,11 +25,20 @@ COPY (
         e.minute,
         COALESCE(e.extra::text, '') AS extra,
         f.home_team_name,
-        f.away_team_name
+        f.away_team_name,
+        COALESCE(source.tweet_url, '') AS source_tweet_url
     FROM video_assets AS a
     JOIN video_shares AS s ON s.asset_id = a.id
     JOIN events AS e ON e.id = a.event_id
     JOIN fixtures AS f ON f.id = e.fixture_id
+    LEFT JOIN LATERAL (
+        SELECT c.tweet_url
+        FROM event_search_candidates AS c
+        WHERE c.event_id = a.event_id
+          AND c.outcome_detail ->> 'asset_id' = a.id::text
+        ORDER BY c.outcome_at NULLS LAST, c.discovered_at, c.tweet_url
+        LIMIT 1
+    ) AS source ON TRUE
     ORDER BY a.event_id, a.first_seen_at, a.id
 ) TO STDOUT WITH (FORMAT CSV, HEADER TRUE);
 

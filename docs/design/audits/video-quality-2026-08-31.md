@@ -16,8 +16,8 @@ Components up to eight members were exhaustive; larger components received
 
 The retained corpus contains 1,815 assets across 584 events and 772 comparison
 pools. Clips rejected before asset creation are not represented. Frame rate is
-also absent because `DownloadAndStage` returns it but workflow and asset
-persistence discard it.
+also absent because workflow and asset persistence discarded the value at the
+time of export.
 
 ## Results
 
@@ -79,3 +79,8 @@ The next valid quality-policy experiment needs reviewed pair labels and the
 missing cadence/presentation evidence. The legacy Danso cycle can be repaired
 separately by pointing its three retired assets at the clear active winner,
 after explicit production-data approval.
+
+The follow-up FF-082 implementation retains nullable cadence for new assets and
+adds a direct-pair review-manifest mode to the audit command. It deliberately
+does not alter `IsUpgrade`; historical rows from this checkpoint remain cadence
+unknown.

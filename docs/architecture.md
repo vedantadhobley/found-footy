@@ -270,6 +270,13 @@ the live-calibrated landscape aspect band is 1.73–1.82),
 and `rank.go` (`CompareShares` — verified, popularity, size, age, then share-ID
 total order for deterministic frontend ranks; FF-030).
 
+FF-082 retains ffprobe's positive average frame rate as nullable asset metadata
+for new versioned workflow histories. Existing rows remain unknown. Cadence is
+independent evidence beside spatial bitrate density and derived per-frame
+compression budget; it does not yet change `IsUpgrade`. The read-only
+`scripts/audit_video_quality` command reconstructs direct match graphs and can
+emit a stable human-review manifest for FF-081 policy work.
+
 FF-066 adds `ClipPlacement` and `PlacementRepo` as the accepted-candidate write
 boundary. The Postgres adapter locks the event and commits candidate
 attribution, retry-safe popularity, asset/share identity, and optional
@@ -288,6 +295,7 @@ keys require an asset and candidate to carry their event's fixture, a share to
 carry its asset's event, a credited candidate and superseded asset to stay in
 the same event/fixture, and every durable asset to have valid digest/hash
 encoding, media dimensions, file size, bitrate, and positive popularity.
+`frame_rate` is separately constrained positive when present.
 Removal reason and timestamp now move together for events and shares. Domain
 validation mirrors the value/state checks; Postgres remains authoritative for
 cross-row identity.

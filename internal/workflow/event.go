@@ -95,6 +95,8 @@ const (
 	ff066AtomicPlacementVersion       = workflow.Version(1)
 	ff080CanonicalExactAliasChangeID  = "ff-080-canonical-exact-alias"
 	ff080CanonicalExactAliasVersion   = workflow.Version(1)
+	ff082CadenceMetadataChangeID      = "ff-082-cadence-metadata"
+	ff082CadenceMetadataVersion       = workflow.Version(1)
 
 	// Pre-FF-061 histories retain FF-017's roughly 0/10/30/60 activity retry
 	// chain for replay compatibility. New histories use one activity attempt
@@ -270,6 +272,11 @@ func EventWorkflow(ctx workflow.Context, in EventWorkflowInput) (EventWorkflowOu
 		workflow.DefaultVersion,
 		ff080CanonicalExactAliasVersion,
 	) != workflow.DefaultVersion
+	cadenceMetadata := workflow.GetVersion(ctx,
+		ff082CadenceMetadataChangeID,
+		workflow.DefaultVersion,
+		ff082CadenceMetadataVersion,
+	) != workflow.DefaultVersion
 	p := newPipeline(ctx, in, pipelineConfig{
 		maxHamming: cfgOut.MaxHamming, minRun: cfgOut.MinRunFrames, maxGaps: cfgOut.MaxGapFrames,
 		longMaxHamming: cfgOut.LongMaxHamming, longMinRun: cfgOut.LongMinRunFrames, longMaxGaps: cfgOut.LongMaxGapFrames,
@@ -280,6 +287,7 @@ func EventWorkflow(ctx workflow.Context, in EventWorkflowInput) (EventWorkflowOu
 		deferExactFollowerOutcomes: deferExactFollowerOutcomes,
 		atomicPlacement:            atomicPlacement,
 		canonicalExactAliases:      canonicalExactAliases,
+		cadenceMetadata:            cadenceMetadata,
 		startedAt:                  startedAt,
 	}, log)
 
