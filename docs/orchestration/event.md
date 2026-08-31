@@ -103,6 +103,16 @@ and promotion retry unit. The `ff-065-exact-follower-outcome` marker preserves
 the former immediate-duplicate command sequence for histories already in
 flight.
 
+**Canonical exact-variant contract (FF-080).** Superseding an asset changes its
+public representative without erasing the retired MD5's accepted-content
+evidence. New histories map every persisted exact variant through its
+`superseded_by` chain to a live asset in the same event. A recurrence credits
+that root through atomic placement and skips repeated hash/vision. Every
+successful supersession redirects the in-memory aliases. Recovery fails closed
+on a cycle, cross-event edge, or missing asset; a chain without a live public
+root stays outside the active dedup set. The
+`ff-080-canonical-exact-alias` marker preserves older command histories.
+
 **Candidate durability contract (FF-034).** The workflow retains each
 candidate's immutable event, query/attempt, tweet, author, age, and video-page
 evidence until processing reaches a terminal outcome. Terminal persistence is
@@ -144,11 +154,12 @@ another child spawn, or `finalizeEvent`. The monitor's event-removal
 transaction owns downstream-checklist closure, and its destroy/release path
 owns cleanup for this case.
 
-**Failed-execution recovery contract (FF-007).** The monitor may start a new
+**Failed-execution recovery contract (FF-007 + FF-080).** The monitor may start a new
 run under the same deterministic Workflow ID only when the prior run closed
 unsuccessfully. EventWorkflow has no outer execution timeout: its attempt loop
 is finite, while each activity and Video child retains its own timeout. Before
-new work starts, the replacement run loads active persisted assets, the
+new work starts, the replacement run loads active persisted assets plus exact
+aliases from every persisted variant to its live canonical root, the
 monotonic `attempts_completed` and `unavailable_attempts` checkpoints plus the
 latest classified search evidence from downstream metadata, and every
 persisted candidate with its full evidence. Terminal candidates seed
@@ -197,8 +208,9 @@ dense hashing, then two dedup stages straddle vision (#171 shipped 2026-08-09):
   arrivals wait; success drops their staging objects and credits every vote to
   the representative without hashing them. Their terminal outcomes wait for
   that representative under FF-065. Claimant failure transfers ownership to
-  the next independent staging object. An MD5 already present in a kept asset
-  collapses immediately. A match against a vision-pending clip accumulates its
+  the next independent staging object. An MD5 already present in a kept asset,
+  or restored as a retired variant of that asset under FF-080, collapses
+  immediately. A match against a vision-pending clip accumulates its
   vote and follower URL in memory (#180). FF-005 bounds dense
   extraction to 640-pixel-wide grayscale PNGs before Go equalizes and reduces
   to the final 9×8 dHash. FF-041 carries the algorithm, preprocessing, and
@@ -254,7 +266,8 @@ dense hashing, then two dedup stages straddle vision (#171 shipped 2026-08-09):
   Older histories retain independent `PromoteAndPersist`,
   `BumpAssetPopularity`, `SupersedeAssets`, terminal-outcome, and
   `RebalanceRanks` commands. The old activities stay registered until those
-  histories age out.
+  histories age out. `ff-080-canonical-exact-alias` separately controls
+  retired-variant restoration and redirect commands.
 - **Visibility and rank:** The API derives both from current evidence on every
   read. A verified clip at popularity three suppresses all popularity-one
   clips; an unverified clip at three suppresses only unverified
@@ -280,7 +293,7 @@ These are separate policies over different sets. Do not merge their criteria:
 
 | Policy | Set being ordered | Comparator | Effect |
 |---|---|---|---|
-| Dedup keeper selection | Perceptually matching clips in the same verified or unverified pool | [`IsUpgrade`](../../internal/domain/video/quality.go): meaningfully longer capped duration, then bits per pixel with an anti-churn margin, then resolution; incumbent wins ties | Chooses which bytes and asset identity survive a duplicate cluster. It never uses popularity. |
+| Dedup keeper selection | Perceptually matching clips in the same verified or unverified pool | [`IsUpgrade`](../../internal/domain/video/quality.go): meaningfully longer capped duration, then bits per pixel with an anti-churn margin, then resolution; incumbent wins ties. FF-081 records that this thresholded pairwise relation is not a total cluster order. | Chooses which bytes and asset identity survive a duplicate cluster. It never uses popularity. |
 | Public visibility | Distinct active shares for one event after dedup | Verified popularity ≥3 suppresses every popularity-one share; unverified popularity ≥3 suppresses only unverified popularity-one shares | Omits low-evidence alternatives from the event projection without changing durable state or direct URLs. |
 | Public ranking | Shares that survive public visibility | [`CompareShares`](../../internal/domain/video/rank.go): verified, popularity, file size, older creation time, then share ID | Assigns contiguous frontend order. It does not supersede assets or decide whether two clips are duplicates. |
 

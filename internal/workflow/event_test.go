@@ -38,6 +38,7 @@ const (
 	ff060DownloadFailureIDForTest    = "ff-060-download-failure-detail"
 	ff061AvailabilityChangeIDForTest = "ff-061-search-availability"
 	ff065ExactFollowerIDForTest      = "ff-065-exact-follower-outcome"
+	ff080CanonicalAliasIDForTest     = "ff-080-canonical-exact-alias"
 	discoveryPGRetryAttemptsForTest  = 5
 )
 
@@ -101,7 +102,7 @@ func baseEventEnvWithRecovery(
 	assets videoactivity.LoadEventAssetsOutput,
 	discoveryConfig ...discoveryactivity.GetDiscoveryConfigOutput,
 ) *testsuite.TestWorkflowEnvironment {
-	return baseEventEnvWithOptions(s, recovery, assets, false, false, false, discoveryConfig...)
+	return baseEventEnvWithOptions(s, recovery, assets, false, false, false, false, discoveryConfig...)
 }
 
 // preHashEventEnv activates FF-022 for tests that exercise parent-owned
@@ -113,6 +114,7 @@ func preHashEventEnv(s *testsuite.WorkflowTestSuite) *testsuite.TestWorkflowEnvi
 		videoactivity.LoadEventAssetsOutput{},
 		true,
 		true,
+		false,
 		false,
 	)
 }
@@ -127,6 +129,7 @@ func preFF065PreHashEventEnv(s *testsuite.WorkflowTestSuite) *testsuite.TestWork
 		true,
 		false,
 		false,
+		false,
 	)
 }
 
@@ -137,6 +140,7 @@ func baseEventEnvWithOptions(
 	preHashMD5 bool,
 	deferExactFollowerOutcomes bool,
 	atomicPlacement bool,
+	canonicalExactAliases bool,
 	discoveryConfig ...discoveryactivity.GetDiscoveryConfigOutput,
 ) *testsuite.TestWorkflowEnvironment {
 	env := s.NewTestWorkflowEnvironment()
@@ -165,6 +169,12 @@ func baseEventEnvWithOptions(
 	}
 	env.OnGetVersion(ff066AtomicPlacementIDForTest, sdkworkflow.DefaultVersion, sdkworkflow.Version(1)).
 		Return(atomicPlacementVersion).Maybe()
+	canonicalAliasVersion := sdkworkflow.DefaultVersion
+	if canonicalExactAliases {
+		canonicalAliasVersion = sdkworkflow.Version(1)
+	}
+	env.OnGetVersion(ff080CanonicalAliasIDForTest, sdkworkflow.DefaultVersion, sdkworkflow.Version(1)).
+		Return(canonicalAliasVersion).Maybe()
 	// Default GetDiscoveryConfig stub. MaxAttempts=10 matches the
 	// pre-#162 hardcoded value that existing tests were written
 	// against (`want 10` assertions in AttemptsRun tests). Tests that need a

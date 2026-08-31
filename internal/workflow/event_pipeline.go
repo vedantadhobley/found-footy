@@ -80,6 +80,7 @@ type pipeline struct {
 	durableDownloadFailures                 bool
 	deferExactFollowerOutcomes              bool
 	atomicPlacement                         bool
+	canonicalExactAliases                   bool
 
 	// activity option ctxs
 	downloadCtx workflow.Context
@@ -89,6 +90,7 @@ type pipeline struct {
 
 	// state — mutated only in callbacks / spawnCandidate (single-threaded)
 	assets      []clip
+	exactRoots  map[string]uuid.UUID
 	pending     []clip
 	hashing     map[string]*hashClaim
 	inFlight    int
@@ -118,6 +120,7 @@ func newPipeline(ctx workflow.Context, in EventWorkflowInput, cfg pipelineConfig
 		durableDownloadFailures:    cfg.durableDownloadFailures,
 		deferExactFollowerOutcomes: cfg.deferExactFollowerOutcomes,
 		atomicPlacement:            cfg.atomicPlacement,
+		canonicalExactAliases:      cfg.canonicalExactAliases,
 		downloadCtx:                videoDownloadActivityContext(ctx),
 		hashCtx:                    videoHashActivityContext(ctx),
 		visionCtx: workflow.WithActivityOptions(ctx, workflow.ActivityOptions{
@@ -130,6 +133,7 @@ func newPipeline(ctx workflow.Context, in EventWorkflowInput, cfg pipelineConfig
 			RetryPolicy:         &temporal.RetryPolicy{InitialInterval: time.Second, BackoffCoefficient: 2, MaximumAttempts: 5},
 		}),
 		hashing:    make(map[string]*hashClaim),
+		exactRoots: make(map[string]uuid.UUID),
 		candidates: make(map[string]candidateOwnership),
 		timings:    make(map[string]candidateTiming),
 	}
@@ -144,6 +148,7 @@ type pipelineConfig struct {
 	durableDownloadFailures                 bool
 	deferExactFollowerOutcomes              bool
 	atomicPlacement                         bool
+	canonicalExactAliases                   bool
 	startedAt                               time.Time
 }
 
@@ -168,7 +173,10 @@ type candidateTiming struct {
 // forget its exact/perceptual dedup set and could treat an already-surfaced
 // clip as new. The activity projection uses current public evidence order,
 // preserving deterministic winner preference across recovery.
-func (p *pipeline) restoreAssets(restored []videoactivity.RestoredEventAsset) {
+func (p *pipeline) restoreAssets(
+	restored []videoactivity.RestoredEventAsset,
+	aliases []videoactivity.RestoredExactAlias,
+) {
 	for _, asset := range restored {
 		popularity := asset.Popularity
 		if popularity < 1 {
@@ -181,5 +189,37 @@ func (p *pipeline) restoreAssets(restored []videoactivity.RestoredEventAsset) {
 			fileSizeBytes: asset.FileSizeBytes, bitrate: asset.Bitrate,
 			popularity: popularity, verified: asset.Verified, assetID: asset.AssetID,
 		})
+		p.rememberExactRoot(asset.MD5, asset.AssetID)
+	}
+	for _, alias := range aliases {
+		p.rememberExactRoot(alias.MD5, alias.AssetID)
+	}
+}
+
+// rememberExactRoot records the current live representative for one known MD5
+// variant. The map is version-gated because it changes the command sequence:
+// a recurring retired variant now skips hash/vision and credits its live root.
+func (p *pipeline) rememberExactRoot(md5 string, rootID uuid.UUID) {
+	if !p.canonicalExactAliases || md5 == "" || rootID == uuid.Nil {
+		return
+	}
+	p.exactRoots[md5] = rootID
+}
+
+// redirectExactRoots preserves identity when a winner supersedes assets. Every
+// exact variant formerly represented by a loser must now resolve to the new
+// live root; otherwise a recurrence can try to recreate a retired asset UUID.
+func (p *pipeline) redirectExactRoots(loserIDs []uuid.UUID, winnerID uuid.UUID) {
+	if !p.canonicalExactAliases || winnerID == uuid.Nil || len(loserIDs) == 0 {
+		return
+	}
+	losers := make(map[uuid.UUID]struct{}, len(loserIDs))
+	for _, id := range loserIDs {
+		losers[id] = struct{}{}
+	}
+	for md5, rootID := range p.exactRoots {
+		if _, found := losers[rootID]; found {
+			p.exactRoots[md5] = winnerID
+		}
 	}
 }

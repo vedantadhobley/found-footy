@@ -14,6 +14,10 @@ its historical heading anchors valid.
 
 New decisions after the frozen archive:
 
+- [Exact variants follow the live canonical asset](./2026-08-31-exact-variants-follow-live-canonical-asset.md)
+  — FF-080 preserves retired MD5s as aliases of their live supersession root,
+  rejects corrupt cycles during recovery, and keeps exact recurrence on the
+  atomic placement path.
 - [Provider shadow evidence refines trust signatures](./2026-08-31-provider-shadow-evidence-refines-trust-signatures.md)
   — FF-075 makes clocks phase-aware, carries supported corrections through
   debounce, recognizes narrow scorer replacements, and preserves typed fetch

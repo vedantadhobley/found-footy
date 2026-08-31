@@ -91,3 +91,24 @@ func TestIsUpgrade(t *testing.T) {
 		})
 	}
 }
+
+// TestIsUpgrade_DansoProductionCycle preserves FF-081's production evidence:
+// the current thresholded pairwise policy is not a total order. B beats A on
+// density, C beats B on duration, and A beats C on density. A future cluster
+// comparator must make the keeper independent of arrival/match order without
+// losing the completeness preference this case exposed.
+func TestIsUpgrade_DansoProductionCycle(t *testing.T) {
+	a := ClipQuality{DurationMS: 8_900, Bitrate: bp(1_308_000), Width: 1280, Height: 720}
+	b := ClipQuality{DurationMS: 8_400, Bitrate: bp(1_475_000), Width: 1280, Height: 720}
+	c := ClipQuality{DurationMS: 10_100, Bitrate: bp(960_000), Width: 1280, Height: 720}
+
+	if !IsUpgrade(b, a) {
+		t.Fatal("B should beat A on encoding density")
+	}
+	if !IsUpgrade(c, b) {
+		t.Fatal("C should beat B on completeness")
+	}
+	if !IsUpgrade(a, c) {
+		t.Fatal("A should beat C on encoding density")
+	}
+}

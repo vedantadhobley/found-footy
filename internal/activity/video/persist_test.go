@@ -370,11 +370,10 @@ func TestPromoteAndPersist_HappyPath(t *testing.T) {
 	}
 }
 
-func TestLoadEventAssets_RestoresOnlyActiveLiveAssets(t *testing.T) {
+func TestLoadEventAssets_RestoresLiveAssetsAndRetiredAliases(t *testing.T) {
 	a, _, assets, shares := newPersist()
 	eventID := uuid.New()
 	liveID, supersededID, removedID := uuid.New(), uuid.New(), uuid.New()
-	winnerID := uuid.New()
 	bitrate := 4_000_000
 	assets.byID[liveID] = &dvideo.Asset{
 		ID: liveID, EventID: eventID, MD5: []byte("0123456789abcdef"),
@@ -383,7 +382,7 @@ func TestLoadEventAssets_RestoresOnlyActiveLiveAssets(t *testing.T) {
 		DurationMS: 8_000, FileSizeBytes: 900_000, Bitrate: &bitrate, Popularity: 4,
 	}
 	assets.byID[supersededID] = &dvideo.Asset{
-		ID: supersededID, EventID: eventID, MD5: []byte("fedcba9876543210"), SupersededBy: &winnerID,
+		ID: supersededID, EventID: eventID, MD5: []byte("fedcba9876543210"), SupersededBy: &liveID,
 	}
 	assets.byID[removedID] = &dvideo.Asset{
 		ID: removedID, EventID: eventID, MD5: []byte("aaaaaaaaaaaaaaaa"),
@@ -406,6 +405,43 @@ func TestLoadEventAssets_RestoresOnlyActiveLiveAssets(t *testing.T) {
 		got.HashVersion != dvideo.CurrentFrameHashVersion(0.1) || !got.Verified ||
 		got.Popularity != 4 || got.Bitrate == nil || *got.Bitrate != bitrate {
 		t.Errorf("restored asset = %+v, want live verified asset", got)
+	}
+	wantAliases := map[string]uuid.UUID{
+		hex.EncodeToString([]byte("0123456789abcdef")): liveID,
+		hex.EncodeToString([]byte("fedcba9876543210")): liveID,
+	}
+	if len(out.ExactAliases) != len(wantAliases) {
+		t.Fatalf("exact aliases = %+v, want %d live-root aliases", out.ExactAliases, len(wantAliases))
+	}
+	for _, alias := range out.ExactAliases {
+		if wantAliases[alias.MD5] != alias.AssetID {
+			t.Errorf("exact alias = %+v, want live root %s", alias, liveID)
+		}
+	}
+}
+
+func TestLoadEventAssets_RejectsSupersessionCycle(t *testing.T) {
+	a, _, assets, shares := newPersist()
+	eventID := uuid.New()
+	aID, bID, cID := uuid.New(), uuid.New(), uuid.New()
+	assets.byID[aID] = &dvideo.Asset{
+		ID: aID, EventID: eventID, MD5: []byte("aaaaaaaaaaaaaaaa"), SupersededBy: &bID,
+	}
+	assets.byID[bID] = &dvideo.Asset{
+		ID: bID, EventID: eventID, MD5: []byte("bbbbbbbbbbbbbbbb"), SupersededBy: &cID,
+	}
+	assets.byID[cID] = &dvideo.Asset{
+		ID: cID, EventID: eventID, MD5: []byte("cccccccccccccccc"), SupersededBy: &aID,
+	}
+	shares.shares = []*dvideo.Share{
+		{ID: "s_a", AssetID: aID, EventID: eventID, State: dvideo.ShareStateSuperseded},
+		{ID: "s_b", AssetID: bID, EventID: eventID, State: dvideo.ShareStateSuperseded},
+		{ID: "s_c", AssetID: cID, EventID: eventID, State: dvideo.ShareStateSuperseded},
+	}
+
+	_, err := a.LoadEventAssets(context.Background(), LoadEventAssetsInput{EventID: eventID})
+	if err == nil || !strings.Contains(err.Error(), "supersession cycle") {
+		t.Fatalf("LoadEventAssets error = %v, want supersession cycle", err)
 	}
 }
 

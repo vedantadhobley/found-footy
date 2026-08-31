@@ -92,15 +92,26 @@ func (p *pipeline) onVideoDone(fallbackTweetURL string) func(workflow.Future) {
 	}
 }
 
-// matchMD5 reports whether c is byte-identical to a kept or in-flight clip.
-// md5-exact is the ONLY dedup safe before vision: identical bytes are the same
-// clip in every respect (same category, quality, frames). Returns the matched
-// index into the relevant list and isAsset — true for a promoted asset (has a
-// DB row), false for a still-pending clip (votes accumulate in memory, #180).
+// matchMD5 reports whether c is byte-identical to a kept or in-flight clip, or
+// is a persisted exact variant already consolidated onto a kept asset. The
+// latter has already passed vision in a prior placement, so it is safe to
+// credit the live canonical asset without repeating hash or vision. Returns
+// the matched index into the relevant list and isAsset — true for a promoted
+// asset (has a DB row), false for a still-pending clip (votes accumulate in
+// memory, #180).
 func (p *pipeline) matchMD5(c clip) (idx int, isAsset, matched bool) {
 	for i := range p.assets {
 		if p.assets[i].md5 == c.md5 {
 			return i, true, true
+		}
+	}
+	if p.canonicalExactAliases {
+		if rootID, known := p.exactRoots[c.md5]; known {
+			for i := range p.assets {
+				if p.assets[i].assetID == rootID {
+					return i, true, true
+				}
+			}
 		}
 	}
 	for i := range p.pending {
@@ -291,6 +302,7 @@ func (p *pipeline) dedupAndPromote(c clip, vout visionactivity.ValidateClipOutpu
 	// An existing asset wins. c collapses onto it (bump + drop); any OTHER
 	// matched assets (a bridge c revealed) also consolidate onto that winner.
 	winnerID := p.assets[best].assetID
+	p.rememberExactRoot(c.md5, winnerID)
 	p.duplicateExactCluster(c, winnerID)
 	var losers []uuid.UUID
 	for _, idx := range matched {

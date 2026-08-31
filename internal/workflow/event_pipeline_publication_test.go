@@ -19,9 +19,10 @@ import (
 	"github.com/vedantadhobley/found-footy/internal/workflow"
 )
 
-func TestEventWorkflow_AtomicExactDuplicateCommitsAndPublishes(t *testing.T) {
+func TestEventWorkflow_RecurringSupersededMD5CreditsLiveCanonicalAsset(t *testing.T) {
 	var s testsuite.WorkflowTestSuite
 	assetID := uuid.New()
+	const retiredMD5 = "fedcba9876543210fedcba9876543210"
 	env := baseEventEnvWithOptions(&s,
 		discoveryactivity.LoadEventRecoveryStateOutput{},
 		videoactivity.LoadEventAssetsOutput{Assets: []videoactivity.RestoredEventAsset{{
@@ -29,7 +30,8 @@ func TestEventWorkflow_AtomicExactDuplicateCommitsAndPublishes(t *testing.T) {
 			HashVersion: dvideo.CurrentFrameHashVersion(0.1),
 			FrameHashes: []uint64{1, 2, 3}, Width: 1280, Height: 720,
 			DurationMS: 7000, FileSizeBytes: 900_000, Popularity: 1, Verified: true,
-		}}},
+		}}, ExactAliases: []videoactivity.RestoredExactAlias{{MD5: retiredMD5, AssetID: assetID}}},
+		true,
 		true,
 		true,
 		true,
@@ -49,7 +51,7 @@ func TestEventWorkflow_AtomicExactDuplicateCommitsAndPublishes(t *testing.T) {
 	env.OnActivity("DownloadAndStage", mock.Anything, mock.Anything).
 		Return(videoactivity.DownloadAndStageOutput{
 			Outcome: videoactivity.OutcomePassed,
-			MD5:     "0123456789abcdef0123456789abcdef", StagingKey: "staging/exact.mp4",
+			MD5:     retiredMD5, StagingKey: "staging/exact.mp4",
 			Width: 1280, Height: 720, DurationMS: 7000, SizeBytes: 900_000,
 		}, nil)
 	var committed videoactivity.CommitClipPlacementInput
@@ -89,6 +91,7 @@ func TestEventWorkflow_RemovedPlacementDoesNotPublish(t *testing.T) {
 			FrameHashes: []uint64{1, 2, 3}, Width: 1280, Height: 720,
 			DurationMS: 7000, FileSizeBytes: 900_000, Popularity: 1, Verified: true,
 		}}},
+		true,
 		true,
 		true,
 		true,
@@ -241,6 +244,7 @@ func TestEventWorkflow_EmitsCriticalPathMeasurements(t *testing.T) {
 		videoactivity.LoadEventAssetsOutput{},
 		true,
 		true,
+		false,
 		false,
 		discoveryactivity.GetDiscoveryConfigOutput{
 			MaxAttempts: 1, AttemptSpacing: time.Minute,

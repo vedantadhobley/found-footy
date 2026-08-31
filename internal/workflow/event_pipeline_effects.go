@@ -49,6 +49,7 @@ func (p *pipeline) promote(c clip, vout visionactivity.ValidateClipOutput) (uuid
 		"asset_id", pout.AssetID.String(), "minted", pout.Minted)
 	c.assetID = pout.AssetID
 	p.assets = append(p.assets, c)
+	p.rememberExactRoot(c.md5, c.assetID)
 	if c.verified {
 		p.verified++
 	} else {
@@ -131,6 +132,7 @@ func (p *pipeline) supersede(winnerID uuid.UUID, loserIDs []uuid.UUID) {
 		return
 	}
 	p.superseded += len(loserIDs)
+	p.redirectExactRoots(loserIDs, winnerID)
 	// The winner-select collapse changed this event's surfaced set → announce.
 	p.publishEventVideo("", "supersede")
 
