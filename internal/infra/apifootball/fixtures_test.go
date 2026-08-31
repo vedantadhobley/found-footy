@@ -408,10 +408,11 @@ func TestListFixturesByIDs(t *testing.T) {
 	defer m.Close()
 
 	c := newClientForFixtures(t, ctx, m.URL())
-	_, failedIDs, err := c.ListFixturesByIDs(ctx, []int64{1_515_514, 1_515_515})
+	result, err := c.ListFixturesByIDs(ctx, []int64{1_515_514, 1_515_515})
 	if err != nil {
 		t.Fatalf("ListFixturesByIDs: %v", err)
 	}
+	failedIDs := result.FailedIDs()
 	if len(failedIDs) != 0 {
 		t.Errorf("failedIDs = %v; want empty", failedIDs)
 	}
@@ -430,13 +431,14 @@ func TestListFixturesByIDs_Empty(t *testing.T) {
 	m := newMockFixturesServer()
 	defer m.Close()
 	c := newClientForFixtures(t, ctx, m.URL())
-	got, failedIDs, err := c.ListFixturesByIDs(ctx, nil)
+	result, err := c.ListFixturesByIDs(ctx, nil)
 	if err != nil {
 		t.Fatalf("ListFixturesByIDs(nil): %v", err)
 	}
-	if got != nil {
-		t.Errorf("returned fixtures %v, want nil", got)
+	if result.Fixtures != nil {
+		t.Errorf("returned fixtures %v, want nil", result.Fixtures)
 	}
+	failedIDs := result.FailedIDs()
 	if failedIDs != nil {
 		t.Errorf("returned failedIDs %v, want nil", failedIDs)
 	}
@@ -460,10 +462,11 @@ func TestListFixturesByIDs_ChunksAndParallels(t *testing.T) {
 	}
 
 	c := newClientForFixtures(t, ctx, m.URL())
-	_, failedIDs, err := c.ListFixturesByIDs(ctx, ids)
+	result, err := c.ListFixturesByIDs(ctx, ids)
 	if err != nil {
 		t.Fatalf("ListFixturesByIDs(25): %v", err)
 	}
+	failedIDs := result.FailedIDs()
 	if len(failedIDs) != 0 {
 		t.Errorf("failedIDs = %v; want empty", failedIDs)
 	}
@@ -491,10 +494,11 @@ func TestListFixturesByIDs_PartialFailure(t *testing.T) {
 	}
 
 	c := newClientForFixtures(t, ctx, m.URL())
-	_, failedIDs, err := c.ListFixturesByIDs(ctx, ids)
+	result, err := c.ListFixturesByIDs(ctx, ids)
 	if err != nil {
 		t.Fatalf("expected partial failure to be expressed via failedIDs, not err; got err=%v", err)
 	}
+	failedIDs := result.FailedIDs()
 	if len(failedIDs) != 5 {
 		t.Errorf("failedIDs len = %d; want 5", len(failedIDs))
 	}
@@ -502,6 +506,10 @@ func TestListFixturesByIDs_PartialFailure(t *testing.T) {
 		if i >= len(failedIDs) || failedIDs[i] != want {
 			t.Errorf("failedIDs[%d] = %d; want %d", i, failedIDs[i], want)
 		}
+	}
+	if len(result.Failures) != 1 ||
+		result.Failures[0].Kind != apifootball.FixtureFetchFailureTransport {
+		t.Fatalf("failures = %+v, want one typed transport failure", result.Failures)
 	}
 }
 
@@ -520,13 +528,14 @@ func TestListFixturesByIDs_AllChunksFail(t *testing.T) {
 	}
 
 	c := newClientForFixtures(t, ctx, m.URL())
-	fixtures, failedIDs, err := c.ListFixturesByIDs(ctx, ids)
+	result, err := c.ListFixturesByIDs(ctx, ids)
 	if err == nil {
 		t.Fatal("expected err on total failure, got nil")
 	}
-	if len(fixtures) != 0 {
-		t.Errorf("fixtures len = %d; want 0", len(fixtures))
+	if len(result.Fixtures) != 0 {
+		t.Errorf("fixtures len = %d; want 0", len(result.Fixtures))
 	}
+	failedIDs := result.FailedIDs()
 	if len(failedIDs) != 25 {
 		t.Errorf("failedIDs len = %d; want 25 (all input)", len(failedIDs))
 	}
@@ -715,11 +724,17 @@ func TestListFixturesByIDs_RejectsIncompleteOrInvalidFixturePayload(t *testing.T
 			defer m.Close()
 
 			c := newClientForFixtures(t, ctx, m.URL())
-			_, failedIDs, err := c.ListFixturesByIDs(ctx, tt.ids)
+			result, err := c.ListFixturesByIDs(ctx, tt.ids)
+			failedIDs := result.FailedIDs()
 			if len(failedIDs) != len(tt.ids) {
 				t.Fatalf("failedIDs = %v, want all requested IDs %v", failedIDs, tt.ids)
 			}
 			requireFixtureContractReason(t, err, tt.want)
+			if len(result.Failures) != 1 ||
+				result.Failures[0].Kind != apifootball.FixtureFetchFailureContract ||
+				result.Failures[0].ContractReason != tt.want {
+				t.Fatalf("failures = %+v, want contract reason %q", result.Failures, tt.want)
+			}
 		})
 	}
 }

@@ -91,6 +91,14 @@ the current branch.
   rollout and release-identity verification. The shadow evaluator is now
   collecting natural provider observations; enforcement remains intentionally
   absent until that evidence is reviewed.
+- **Shadow audit (2026-08-31):** The first live corpus contained four genuine
+  regression episodes and exposed normal halftime resets, correction
+  continuation, scorer replacement, typed fetch provenance, and isolated
+  rejection gaps. The branch now repairs those non-enforcing classifications
+  and pins the exact observations as tests; the complete engineering gate
+  passes. Deploy the repair and run one more live shadow window before the
+  durable enforcement migration. See the
+  [focused audit](./design/audits/provider-integrity-shadow-2026-08-31.md).
 - **Design:** [API-Football provider-integrity circuit breaker](./design/proposals/provider-integrity-circuit-breaker.md).
 
 ### FF-076 — scorer name without provider ID is treated as anonymous

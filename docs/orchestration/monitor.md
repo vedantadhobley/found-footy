@@ -39,7 +39,9 @@ response array, unique fixture/team identity, nonnegative scores, and event
 teams belonging to the fixture. A by-ID chunk must return every requested ID
 exactly once and must send `events` as an array; missing and `null` are rejected
 while explicit `[]` is valid. One rejected chunk follows the existing
-`FailedIDs` next-poll retry path; an all-chunk rejection fails the fetch.
+`FailedIDs` next-poll retry path; an all-chunk rejection fails the fetch. Chunk
+results preserve `transport` versus `contract` and the bounded contract reason.
+Total failure keeps that evidence in retryable Temporal error details.
 
 After a successful active refresh, `ReconcileFixture` translates its stored
 pre-write snapshot, confirmed event history, and fresh observation into the
@@ -47,8 +49,12 @@ provider-independent `providerintegrity` facts. The pure evaluator returns an
 advisory fixture policy and bounded reasons. `ActivePollWorkflow` aggregates
 the verdicts, recommends a global `positive_only` policy after two regressed
 fixtures or three missing confirmed events, logs anomalies, and retains the
-batch verdict in its result. A coherent recent one-goal correction remains
-trusted only when score decrement and complete event inventory agree.
+batch verdict in its result. Clock comparison understands period boundaries. A
+coherent recent one-goal correction remains trusted when score decrement and
+complete event inventory agree, then retains that authorization through the
+existing absence debounce. An exact one-for-one scorer replacement is trusted
+when team, type, detail, clock, and stable score agree. Identity conflicts
+reject only the affected fixture; they do not reject an unrelated batch.
 
 This phase does **not** enforce its recommendation: fixture refresh, event
 votes, completion, and cleanup still follow the existing path. Durable circuit

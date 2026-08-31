@@ -60,14 +60,22 @@ func AssessFixture(comparison FixtureComparison) FixtureVerdict {
 		comparison, missing, identityChanged || phaseRegressed || terminalRegressed ||
 			clockRegressed || populatedFieldCleared,
 	)
+	verdict.SupportedReplacement = supportedEventReplacement(
+		comparison, missing, identityChanged || phaseRegressed || terminalRegressed ||
+			clockRegressed || populatedFieldCleared,
+	)
 	if scoreDecreased && !verdict.SupportedGoalCorrection {
 		verdict.Reasons = append(verdict.Reasons, ReasonScoreDecreased)
 	}
-	if len(missing) > 0 && !verdict.SupportedGoalCorrection {
+	if len(missing) > 0 && !verdict.SupportedGoalCorrection && !verdict.SupportedReplacement {
 		verdict.Reasons = append(verdict.Reasons, ReasonConfirmedEventsMissing)
 	}
 	if len(verdict.Reasons) > 0 {
-		verdict.Policy = PolicyPositiveOnly
+		if identityChanged {
+			verdict.Policy = PolicyRejected
+		} else {
+			verdict.Policy = PolicyPositiveOnly
+		}
 	}
 	return verdict
 }
@@ -81,18 +89,12 @@ func AggregateFixtureVerdicts(verdicts []FixtureVerdict) BatchVerdict {
 		if !verdict.Policy.Valid() {
 			continue
 		}
-		if verdict.Policy == PolicyRejected {
-			out.Policy = PolicyRejected
-		}
 		if !verdict.Anomalous() {
 			continue
 		}
 		out.Fixtures = append(out.Fixtures, verdict)
 		out.RegressedFixtures++
 		out.MissingConfirmedEvents += verdict.MissingConfirmedEvents
-	}
-	if out.Policy == PolicyRejected {
-		return out
 	}
 	if out.RegressedFixtures >= globalFixtureTripCount {
 		out.Policy = PolicyPositiveOnly
@@ -126,7 +128,10 @@ func supportedGoalCorrection(comparison FixtureComparison, missing []EventFact, 
 	stored := comparison.Stored
 	observed := comparison.Observed
 	missingGoal := missing[0]
-	if !scoreDroppedForTeamByOne(stored, observed, missingGoal.TeamID) ||
+	firstVote := scoreDroppedForTeamByOne(stored, observed, missingGoal.TeamID)
+	continuingVote := missingGoal.DebounceCount > 0 &&
+		missingGoal.DebounceCount < 3 && scoresEqual(stored, observed)
+	if (!firstVote && !continuingVote) ||
 		!observedGoalInventoryMatchesScore(observed, comparison.ObservedEvents) {
 		return false
 	}
@@ -135,6 +140,42 @@ func supportedGoalCorrection(comparison FixtureComparison, missing []EventFact, 
 	}
 	distance := fixtureClock(observed) - eventClock(missingGoal.Minute, missingGoal.Extra)
 	return distance >= 0 && distance <= goalCorrectionWindowMinutes
+}
+
+// supportedEventReplacement recognizes one provider identity refinement, such
+// as a scorer correction, without weakening the disappearance guard. The old
+// and new facts must be the only unmatched pair and describe the same event.
+func supportedEventReplacement(
+	comparison FixtureComparison,
+	missing []EventFact,
+	hasOtherRegression bool,
+) bool {
+	if hasOtherRegression || len(missing) != 1 ||
+		!scoresEqual(comparison.Stored, comparison.Observed) {
+		return false
+	}
+
+	confirmed := make(map[string]struct{}, len(comparison.ConfirmedEvents))
+	for _, event := range comparison.ConfirmedEvents {
+		confirmed[event.Key] = struct{}{}
+	}
+	var unmatched []EventFact
+	for _, event := range comparison.ObservedEvents {
+		if _, exists := confirmed[event.Key]; !exists {
+			unmatched = append(unmatched, event)
+		}
+	}
+	if len(unmatched) != 1 {
+		return false
+	}
+
+	oldEvent, newEvent := missing[0], unmatched[0]
+	return oldEvent.TeamID == newEvent.TeamID &&
+		oldEvent.Type == newEvent.Type &&
+		oldEvent.Detail == newEvent.Detail &&
+		oldEvent.PlayerID != nil && newEvent.PlayerID != nil &&
+		*oldEvent.PlayerID != *newEvent.PlayerID &&
+		abs(eventClock(oldEvent.Minute, oldEvent.Extra)-eventClock(newEvent.Minute, newEvent.Extra)) <= 1
 }
 
 func scoreDroppedForTeamByOne(stored, observed FixtureFacts, teamID int) bool {
@@ -186,6 +227,17 @@ func materialClockRegressed(stored, observed FixtureFacts) bool {
 	if stored.Elapsed == nil || observed.Elapsed == nil {
 		return false
 	}
+	storedRank, storedKnown := phaseRank(stored.Status)
+	observedRank, observedKnown := phaseRank(observed.Status)
+	if storedKnown && observedKnown && observedRank > storedRank {
+		return false
+	}
+	// BT and ET share one phase rank because API-Football reuses ET for both
+	// extra-time periods. Entering or leaving the break can clear extra.
+	if (stored.Status == "et" && observed.Status == "bt") ||
+		(stored.Status == "bt" && observed.Status == "et") {
+		return false
+	}
 	return fixtureClock(observed)+materialClockRollbackMinutes < fixtureClock(stored)
 }
 
@@ -232,4 +284,23 @@ func eventClock(minute int, extra *int) int {
 
 func optionalIntDecreased(stored, observed *int) bool {
 	return stored != nil && observed != nil && *observed < *stored
+}
+
+func scoresEqual(stored, observed FixtureFacts) bool {
+	return optionalIntEqual(stored.HomeScore, observed.HomeScore) &&
+		optionalIntEqual(stored.AwayScore, observed.AwayScore)
+}
+
+func optionalIntEqual(left, right *int) bool {
+	if left == nil || right == nil {
+		return left == nil && right == nil
+	}
+	return *left == *right
+}
+
+func abs(value int) int {
+	if value < 0 {
+		return -value
+	}
+	return value
 }

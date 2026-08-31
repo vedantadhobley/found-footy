@@ -3,8 +3,11 @@ package monitor
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
+
+	"go.temporal.io/sdk/temporal"
 
 	"github.com/vedantadhobley/found-footy/internal/domain/fixture"
 	"github.com/vedantadhobley/found-footy/internal/infra/apifootball"
@@ -304,5 +307,56 @@ func TestFetchLiveFixtures_EmptyShortCircuits(t *testing.T) {
 	}
 	if fetcher.lastIDs != nil {
 		t.Error("empty input should NOT hit fetcher")
+	}
+}
+
+func TestFetchLiveFixtures_PreservesContractFailureEvidence(t *testing.T) {
+	contractErr := &apifootball.FixtureContractError{
+		Reason: apifootball.FixtureContractEventsNull,
+	}
+	fetcher := &fakeFetcher{
+		failures: []apifootball.FixtureFetchFailure{{
+			IDs: []int64{101, 102}, Kind: apifootball.FixtureFetchFailureContract,
+			ContractReason: apifootball.FixtureContractEventsNull,
+		}},
+		err: contractErr,
+	}
+	acts := newActs(fetcher, newFakeFixtureRepo(), newFakeEventRepo(), time.Now().UTC())
+
+	_, err := acts.FetchLiveFixtures(context.Background(), FetchLiveFixturesInput{
+		IDs: []int64{101, 102},
+	})
+	if err == nil {
+		t.Fatal("FetchLiveFixtures error = nil, want retryable classified failure")
+	}
+	var applicationErr *temporal.ApplicationError
+	if !errors.As(err, &applicationErr) ||
+		applicationErr.Type() != ProviderFetchFailureErrorType ||
+		!applicationErr.HasDetails() {
+		t.Fatalf("error = %T %v, want typed Temporal application error", err, err)
+	}
+	var out FetchLiveFixturesOutput
+	if err := applicationErr.Details(&out); err != nil {
+		t.Fatalf("decode failure details: %v", err)
+	}
+	if len(out.FailedIDs) != 2 || len(out.Failures) != 1 ||
+		out.Failures[0].Kind != ProviderFetchFailureContract ||
+		out.Failures[0].ContractReason != string(apifootball.FixtureContractEventsNull) {
+		t.Fatalf("output = %+v, want typed contract failure", out)
+	}
+}
+
+func TestFetchLiveFixtures_TotalTransportFailureStillRetriesActivity(t *testing.T) {
+	fetcher := &fakeFetcher{
+		failures: []apifootball.FixtureFetchFailure{{
+			IDs: []int64{101}, Kind: apifootball.FixtureFetchFailureTransport,
+		}},
+		err: errors.New("connection reset"),
+	}
+	acts := newActs(fetcher, newFakeFixtureRepo(), newFakeEventRepo(), time.Now().UTC())
+
+	_, err := acts.FetchLiveFixtures(context.Background(), FetchLiveFixturesInput{IDs: []int64{101}})
+	if err == nil {
+		t.Fatal("FetchLiveFixtures error = nil, want transport failure for Temporal retry")
 	}
 }

@@ -27,6 +27,39 @@ import (
 // goroutines — see the method comment for partial-failure semantics.
 const IDsBatchLimit = 20
 
+// FixtureFetchFailureKind separates malformed provider data from ordinary
+// transport failure. Only contract failures are provider-integrity evidence.
+type FixtureFetchFailureKind string
+
+const (
+	FixtureFetchFailureTransport FixtureFetchFailureKind = "transport"
+	FixtureFetchFailureContract  FixtureFetchFailureKind = "contract"
+)
+
+// FixtureFetchFailure describes one failed by-ID request chunk without
+// exposing raw provider bodies or unbounded error strings to workflows.
+type FixtureFetchFailure struct {
+	IDs            []int64
+	Kind           FixtureFetchFailureKind
+	ContractReason FixtureContractReason
+}
+
+// FixturesByIDsResult preserves successful fixtures and typed failed chunks.
+// Partial and total provider failure both return this evidence to the caller.
+type FixturesByIDsResult struct {
+	Fixtures []APIFixture
+	Failures []FixtureFetchFailure
+}
+
+// FailedIDs flattens the failed chunks in request order.
+func (r FixturesByIDsResult) FailedIDs() []int64 {
+	var ids []int64
+	for _, failure := range r.Failures {
+		ids = append(ids, failure.IDs...)
+	}
+	return ids
+}
+
 // APIFixture is one item in the /fixtures response array. Only the
 // fields we consume are named; unknown fields get dropped by
 // json.Decode (the SDK uses reflection + tags). If api-sports.io adds
@@ -226,26 +259,21 @@ func buildFixtureListQuery(p FixtureListParams) (url.Values, error) {
 // caps at 20 IDs per request (docs/api-football/fixtures-endpoint.md).
 //
 // PARTIAL-FAILURE SEMANTICS. When one chunk's HTTP call or fixture-contract
-// validation fails while others succeed, we still return the fixtures that
-// came back and list the IDs that did not in failedIDs. Callers decide whether to
-// retry (Ingest loops with backoff on failedIDs; Monitor logs and
-// lets the next poll cycle recover). err is set only on catastrophic
-// failure: ctx cancelled, or every chunk failed transport/validation. When
-// err is nil,
-// failedIDs may still be non-empty — check it explicitly.
+// validation fails while others succeed, the result retains the successful
+// fixtures and one typed failure for the rejected chunk. Callers decide
+// whether to retry result.FailedIDs(). err is set only on catastrophic
+// failure: context cancellation or every chunk failing transport/validation.
+// Even then, the result preserves the bounded failure evidence.
 //
 // Zero-length input short-circuits with no round trip.
-func (c *Client) ListFixturesByIDs(ctx context.Context, ids []int64) (
-	fixtures []APIFixture,
-	failedIDs []int64,
-	err error,
-) {
+func (c *Client) ListFixturesByIDs(ctx context.Context, ids []int64) (FixturesByIDsResult, error) {
+	var result FixturesByIDsResult
 	if len(ids) == 0 {
-		return nil, nil, nil
+		return result, nil
 	}
 
 	chunks := chunkIDs(ids, IDsBatchLimit)
-	results := make([][]APIFixture, len(chunks))
+	chunkResults := make([][]APIFixture, len(chunks))
 	failedChunks := make([]bool, len(chunks))
 	chunkErrors := make([]error, len(chunks))
 
@@ -264,7 +292,7 @@ func (c *Client) ListFixturesByIDs(ctx context.Context, ids []int64) (
 				chunkErrors[i] = err
 				return nil
 			}
-			results[i] = got
+			chunkResults[i] = got
 			return nil
 		})
 	}
@@ -276,21 +304,20 @@ func (c *Client) ListFixturesByIDs(ctx context.Context, ids []int64) (
 	// If ctx was cancelled underneath us, surface that as the error.
 	// Chunks that hadn't started yet count as failed.
 	if ctxErr := ctx.Err(); ctxErr != nil {
-		for _, chunk := range chunks {
-			failedIDs = append(failedIDs, chunk...)
-		}
-		return nil, failedIDs, ctxErr
+		result.Failures = []FixtureFetchFailure{fixtureFetchFailure(ids, ctxErr)}
+		return result, ctxErr
 	}
 
 	// Flatten successes + collect failed IDs.
 	successCount := 0
-	for i, r := range results {
+	for i, fixtures := range chunkResults {
 		if failedChunks[i] {
-			failedIDs = append(failedIDs, chunks[i]...)
+			result.Failures = append(result.Failures,
+				fixtureFetchFailure(chunks[i], chunkErrors[i]))
 			continue
 		}
 		successCount++
-		fixtures = append(fixtures, r...)
+		result.Fixtures = append(result.Fixtures, fixtures...)
 	}
 
 	// Catastrophic: every chunk failed. Return error so caller can
@@ -302,11 +329,24 @@ func (c *Client) ListFixturesByIDs(ctx context.Context, ids []int64) (
 				causes = append(causes, chunkErr)
 			}
 		}
-		return nil, failedIDs, fmt.Errorf(
+		return result, fmt.Errorf(
 			"apifootball.ListFixturesByIDs: all %d chunks failed: %w", len(chunks), errors.Join(causes...))
 	}
 
-	return fixtures, failedIDs, nil
+	return result, nil
+}
+
+func fixtureFetchFailure(ids []int64, err error) FixtureFetchFailure {
+	failure := FixtureFetchFailure{
+		IDs:  append([]int64(nil), ids...),
+		Kind: FixtureFetchFailureTransport,
+	}
+	var contractErr *FixtureContractError
+	if errors.As(err, &contractErr) {
+		failure.Kind = FixtureFetchFailureContract
+		failure.ContractReason = contractErr.Reason
+	}
+	return failure
 }
 
 // fetchFixturesByIDsChunk is one HTTP call to /fixtures?ids= for a

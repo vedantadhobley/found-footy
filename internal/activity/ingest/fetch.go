@@ -116,9 +116,12 @@ func (a *Activities) FetchFixturesByIDs(ctx context.Context, in FetchFixturesByI
 	if len(in.IDs) == 0 {
 		return FetchFixturesByIDsOutput{}, nil
 	}
-	fixtures, failedIDs, err := a.APIFootball.ListFixturesByIDs(ctx, in.IDs)
+	result, err := a.APIFootball.ListFixturesByIDs(ctx, in.IDs)
+	failedIDs := result.FailedIDs()
 	if err != nil {
 		return FetchFixturesByIDsOutput{FailedIDs: failedIDs}, fmt.Errorf("ingest.FetchFixturesByIDs: %w", err)
 	}
-	return FetchFixturesByIDsOutput{Fixtures: fixtures, Count: len(fixtures), FailedIDs: failedIDs}, nil
+	return FetchFixturesByIDsOutput{
+		Fixtures: result.Fixtures, Count: len(result.Fixtures), FailedIDs: failedIDs,
+	}, nil
 }

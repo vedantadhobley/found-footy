@@ -14,6 +14,10 @@ its historical heading anchors valid.
 
 New decisions after the frozen archive:
 
+- [Provider shadow evidence refines trust signatures](./2026-08-31-provider-shadow-evidence-refines-trust-signatures.md)
+  — FF-075 makes clocks phase-aware, carries supported corrections through
+  debounce, recognizes narrow scorer replacements, and preserves typed fetch
+  failure evidence.
 - [Retention separates public, media, and audit lifecycles](./2026-08-30-retention-separates-public-media-and-audit-lifecycles.md)
   — FF-079 bounds the public read model and Garage storage by completed UTC
   kickoff dates while preserving SQL history and retry-safe reclamation facts.

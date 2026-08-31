@@ -25,6 +25,7 @@ import (
 type fakeFetcher struct {
 	response  []apifootball.APIFixture
 	failedIDs []int64 // simulate partial failure — set to non-nil to exercise the FailedIDs path
+	failures  []apifootball.FixtureFetchFailure
 	err       error
 	lastIDs   []int64
 }
@@ -41,10 +42,16 @@ func (s *recordingSpawner) SpawnEvent(_ context.Context, workflowID string, in d
 }
 
 func (f *fakeFetcher) ListFixturesByIDs(_ context.Context, ids []int64) (
-	[]apifootball.APIFixture, []int64, error,
+	apifootball.FixturesByIDsResult, error,
 ) {
 	f.lastIDs = ids
-	return f.response, f.failedIDs, f.err
+	failures := f.failures
+	if len(failures) == 0 && len(f.failedIDs) > 0 {
+		failures = []apifootball.FixtureFetchFailure{{
+			IDs: f.failedIDs, Kind: apifootball.FixtureFetchFailureTransport,
+		}}
+	}
+	return apifootball.FixturesByIDsResult{Fixtures: f.response, Failures: failures}, f.err
 }
 
 type fakeFixtureRepo struct {

@@ -24,3 +24,6 @@ code before work begins.
 - [`audit-2026-08-17-codex.md`](./audit-2026-08-17-codex.md) — independent
   code-first audit, production-log validation, prior-finding disposition, and
   staged cleanup plan.
+- [`provider-integrity-shadow-2026-08-31.md`](./provider-integrity-shadow-2026-08-31.md)
+  — FF-075 production shadow corpus, false-trip classification, and enforcement
+  gate.

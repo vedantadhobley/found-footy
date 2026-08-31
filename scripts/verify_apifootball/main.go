@@ -93,11 +93,12 @@ func run() error {
 	// ── 3. ListFixturesByIDs with ≤ IDsBatchLimit — one chunk. ──
 	fmt.Printf("→ Step 3: ListFixturesByIDs(%d IDs) — single-chunk path\n", apifootball.IDsBatchLimit-5)
 	small := collectIDs(dateFixtures, apifootball.IDsBatchLimit-5)
-	got, failed, err := c.ListFixturesByIDs(ctx, small)
+	smallResult, err := c.ListFixturesByIDs(ctx, small)
 	if err != nil {
 		return fmt.Errorf("ListFixturesByIDs(small): %w", err)
 	}
-	fmt.Printf("  ✓ got %d fixtures, %d failed IDs (want 0)\n", len(got), len(failed))
+	fmt.Printf("  ✓ got %d fixtures, %d failed IDs (want 0)\n",
+		len(smallResult.Fixtures), len(smallResult.FailedIDs()))
 
 	// ── 4. ListFixturesByIDs with > IDsBatchLimit — multi-chunk. ──
 	targetLen := apifootball.IDsBatchLimit*2 + apifootball.IDsBatchLimit/2 // 50
@@ -107,13 +108,13 @@ func run() error {
 	fmt.Printf("→ Step 4: ListFixturesByIDs(%d IDs) — multi-chunk parallel path\n", targetLen)
 	large := collectIDs(dateFixtures, targetLen)
 	t0 := time.Now()
-	gotLarge, failedLarge, err := c.ListFixturesByIDs(ctx, large)
+	largeResult, err := c.ListFixturesByIDs(ctx, large)
 	elapsed := time.Since(t0)
 	if err != nil {
 		return fmt.Errorf("ListFixturesByIDs(large): %w", err)
 	}
 	fmt.Printf("  ✓ got %d fixtures, %d failed, %.2fs wall (chunks fired in parallel)\n",
-		len(gotLarge), len(failedLarge), elapsed.Seconds())
+		len(largeResult.Fixtures), len(largeResult.FailedIDs()), elapsed.Seconds())
 
 	// ── 5. Rate-limit gauges. Scrape the Prometheus text exposition. ──
 	fmt.Println("→ Step 5: rate-limit gauges populated?")

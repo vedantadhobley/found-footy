@@ -134,7 +134,8 @@ func (a *Activities) PollStagingFixtures(ctx context.Context, in PollStagingFixt
 	for i, f := range candidates {
 		ids[i] = f.ID
 	}
-	apiFixtures, failedIDs, err := a.APIFootball.ListFixturesByIDs(ctx, ids)
+	result, err := a.APIFootball.ListFixturesByIDs(ctx, ids)
+	failedIDs := result.FailedIDs()
 	if err != nil {
 		// Catastrophic (all chunks failed / ctx cancelled) — surface the
 		// error but keep the FailedIDs count so the workflow can log it.
@@ -143,8 +144,8 @@ func (a *Activities) PollStagingFixtures(ctx context.Context, in PollStagingFixt
 	}
 	out.MissedIDs = len(failedIDs)
 
-	apiByID := make(map[int64]apifootball.APIFixture, len(apiFixtures))
-	for _, af := range apiFixtures {
+	apiByID := make(map[int64]apifootball.APIFixture, len(result.Fixtures))
+	for _, af := range result.Fixtures {
 		apiByID[af.Fixture.ID] = af
 	}
 
