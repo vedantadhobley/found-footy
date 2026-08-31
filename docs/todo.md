@@ -355,15 +355,18 @@ the current branch.
   bytes and five retained threshold cases. Comparable duplicate bridge leaks
   favored the current keeper, while J. King proved that duration-first
   metadata can prefer a longer screen/player-chrome copy over a cleaner short
-  copy. Cadence did not reverse a reviewed keeper.
-- **Next work:** Convert the accepted component and threshold labels into a
-  compact non-media regression fixture, then review natural post-FF-082 pairs
-  before supersession reclaims their losing bytes. Do not change `IsUpgrade`
-  until reliable presentation evidence resolves the FF-052 screen-detection
-  gap. Any replacement must be a documented product policy, not fitted
-  metadata weights. Separately repair the three legacy Danso edges onto the
-  clear 62.159 s active winner after explicit production-data approval. See the
-  [focused audit](./design/audits/video-quality-2026-08-31.md).
+  copy. Cadence did not reverse a reviewed keeper. Ten accepted judgments now
+  form an executable non-media corpus with full derived dHash sequences,
+  retained metadata, human labels, and snapshots of current behavior. Tests
+  replay current behavior without redefining it as the desired result.
+- **Next work:** Review natural post-FF-082 pairs before supersession reclaims
+  their losing bytes, then evaluate any policy proposal against the accepted
+  corpus. Do not change `IsUpgrade` until reliable presentation evidence
+  resolves the FF-052 screen-detection gap. Any replacement must be a
+  documented product policy, not fitted metadata weights. Separately repair
+  the three legacy Danso edges onto the clear 62.159 s active winner after
+  explicit production-data approval. See the [focused
+  audit](./design/audits/video-quality-2026-08-31.md).
 
 ### FF-082 — retain cadence as independent keeper-quality evidence
 

@@ -145,6 +145,11 @@ match and historical supersession graphs, detects bridges and quality cycles,
 replays bounded arrival orders, and emits a direct-pair CSV whose label columns
 remain human-owned. Its tests pin the Danso cycle, topology-sensitive replay,
 historical matcher drift, score comparisons, and the review-manifest contract.
+The same package owns a compact ten-pair non-media regression corpus containing
+production-derived dHash sequences, retained metadata, accepted human identity
+and quality labels, and the observed current outputs. Tests replay the matcher
+and comparator while keeping known policy disagreements explicit instead of
+treating current output as ground truth.
 FF-082 tests positive nullable frame-rate persistence across workflow version
 gating, activity recovery projections, domain invariants, and Postgres asset
 and atomic-placement round trips. Keeper behavior remains unchanged.

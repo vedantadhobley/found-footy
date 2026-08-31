@@ -47,3 +47,23 @@ The source tweet URL is the original promoted candidate when durable outcome
 detail retains that mapping. A superseded share resolves to its current winner,
 so reviewers must use the source URL to inspect retired bytes when the tweet
 still exists.
+
+## Reviewed regression corpus
+
+[`testdata/reviewed-pairs.json`](./testdata/reviewed-pairs.json) preserves ten
+accepted pair judgments from the 2026-08-31 review. It contains only derived
+dHash sequences, retained technical metadata, human labels, and a snapshot of
+the current matcher and comparator results. It contains no video, image, tweet
+text, or media URL.
+
+The two outcomes are deliberately separate:
+
+- `human` records whether the presentations should collapse and which one a
+  reviewer would retain.
+- `current` records what the production matcher and comparator do today.
+
+Tests replay `current` from the stored evidence and validate `human` as an
+independent product judgment. A known mismatch, such as J. King's visibly
+cleaner short cut losing to the duration-first comparator, is regression
+evidence rather than a failing assertion. This lets a future policy measure
+which accepted cases it improves without silently rewriting the labels.
