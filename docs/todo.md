@@ -350,12 +350,19 @@ the current branch.
   audit command now emits one stable row per direct dHash match with separate
   `dedup_decision` and `quality_winner` labels plus cadence, compression,
   completeness, resolution, source, and topology evidence. FF-082 retains
-  frame rate for new assets; old corpus rows remain unknown.
-- **Next work:** Review the prioritized direct-pair manifest and convert the
-  accepted labels into regression fixtures. Any replacement must be a
-  documented product policy, not fitted metadata weights. Separately repair
-  the three legacy Danso edges onto the clear 62.159 s active winner after
-  explicit production-data approval. See the
+  frame rate for new assets; old corpus rows remain unknown. The prioritized
+  review classified every arrival-sensitive component that still had visible
+  bytes and five retained threshold cases. Comparable duplicate bridge leaks
+  favored the current keeper, while J. King proved that duration-first
+  metadata can prefer a longer screen/player-chrome copy over a cleaner short
+  copy. Cadence did not reverse a reviewed keeper.
+- **Next work:** Convert the accepted component and threshold labels into a
+  compact non-media regression fixture, then review natural post-FF-082 pairs
+  before supersession reclaims their losing bytes. Do not change `IsUpgrade`
+  until reliable presentation evidence resolves the FF-052 screen-detection
+  gap. Any replacement must be a documented product policy, not fitted
+  metadata weights. Separately repair the three legacy Danso edges onto the
+  clear 62.159 s active winner after explicit production-data approval. See the
   [focused audit](./design/audits/video-quality-2026-08-31.md).
 
 ### FF-082 — retain cadence as independent keeper-quality evidence
