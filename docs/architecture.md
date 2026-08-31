@@ -60,7 +60,7 @@ found-footy/
 │   │   ├── staging_poll.go              ✓ O2: StagingPollWorkflow (*/15 cron)
 │   │   ├── twitter_maintenance.go       ✓ FF-058: six-hour static-session persistence + search-DOM canary
 │   │   ├── event.go                     ✓ #164c + FF-022 + FF-034 + FF-061: per-goal producer, classified usable/outage budgets, immediate candidate launch, durable recovery
-│   │   ├── event_pipeline.go            ✓ shared Selector state, deterministic contexts, restoration, and construction
+│   │   ├── event_pipeline.go            ✓ shared Selector state, deterministic contexts, live-asset/canonical-exact restoration, and construction
 │   │   ├── event_pipeline_intake.go     ✓ candidate launch, exact-MD5 ownership, hash claimant failover, and consumer loop
 │   │   ├── event_pipeline_validation.go ✓ vision, category-scoped perceptual dedup, winner selection, and legacy replay dispatch
 │   │   ├── event_pipeline_placement.go  ✓ FF-066/FF-067 atomic accepted-candidate placement, removal gate, attribution, supersession, and invalidation

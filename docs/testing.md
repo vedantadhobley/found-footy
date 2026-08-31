@@ -249,10 +249,14 @@ loser objects, then retries after the source disappeared without recopying. A
 pre-existing deterministic asset with mismatched immutable storage identity
 still fails closed.
 
-The FF-066 EventWorkflow test forces an exact duplicate against a restored
-asset and requires one `CommitClipPlacement`, one `event.video`, and zero hash,
-vision, popularity-bump, or separate terminal-outcome calls. The default
-version used by the existing suite continues to prove replay of the old
+The FF-080 EventWorkflow test rediscovers the MD5 of a superseded asset and
+requires one `CommitClipPlacement` against its restored live root, one
+`event.video`, and zero hash, vision, popularity-bump, or separate
+terminal-outcome calls. Activity tests require recovery to retain both live and
+retired MD5 aliases and reject a three-node supersession cycle explicitly. A
+production-derived domain regression preserves FF-081's non-transitive
+pairwise quality evidence until a total cluster order is designed. The default
+versions used by the existing suite continue to prove replay of the old
 command graph.
 
 ## Tier 2 — adapter integration (testcontainers)

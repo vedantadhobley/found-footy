@@ -93,6 +93,8 @@ const (
 	ff065ExactFollowerOutcomeVersion  = workflow.Version(1)
 	ff066AtomicPlacementChangeID      = "ff-066-atomic-clip-placement"
 	ff066AtomicPlacementVersion       = workflow.Version(1)
+	ff080CanonicalExactAliasChangeID  = "ff-080-canonical-exact-alias"
+	ff080CanonicalExactAliasVersion   = workflow.Version(1)
 
 	// Pre-FF-061 histories retain FF-017's roughly 0/10/30/60 activity retry
 	// chain for replay compatibility. New histories use one activity attempt
@@ -263,6 +265,11 @@ func EventWorkflow(ctx workflow.Context, in EventWorkflowInput) (EventWorkflowOu
 		workflow.DefaultVersion,
 		ff066AtomicPlacementVersion,
 	) != workflow.DefaultVersion
+	canonicalExactAliases := workflow.GetVersion(ctx,
+		ff080CanonicalExactAliasChangeID,
+		workflow.DefaultVersion,
+		ff080CanonicalExactAliasVersion,
+	) != workflow.DefaultVersion
 	p := newPipeline(ctx, in, pipelineConfig{
 		maxHamming: cfgOut.MaxHamming, minRun: cfgOut.MinRunFrames, maxGaps: cfgOut.MaxGapFrames,
 		longMaxHamming: cfgOut.LongMaxHamming, longMinRun: cfgOut.LongMinRunFrames, longMaxGaps: cfgOut.LongMaxGapFrames,
@@ -272,6 +279,7 @@ func EventWorkflow(ctx workflow.Context, in EventWorkflowInput) (EventWorkflowOu
 		durableDownloadFailures:    durableDownloadFailures,
 		deferExactFollowerOutcomes: deferExactFollowerOutcomes,
 		atomicPlacement:            atomicPlacement,
+		canonicalExactAliases:      canonicalExactAliases,
 		startedAt:                  startedAt,
 	}, log)
 
@@ -302,7 +310,7 @@ func EventWorkflow(ctx workflow.Context, in EventWorkflowInput) (EventWorkflowOu
 		).Get(p.persistCtx, &assetsOut); err != nil {
 			return out, err
 		}
-		p.restoreAssets(assetsOut.Assets)
+		p.restoreAssets(assetsOut.Assets, assetsOut.ExactAliases)
 
 		recoveryCtx := workflow.WithActivityOptions(ctx, workflow.ActivityOptions{
 			StartToCloseTimeout: discoveryPGShortActivityTTL,

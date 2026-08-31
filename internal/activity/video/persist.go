@@ -7,8 +7,8 @@
 //	CommitClipPlacement — the current FF-066 path: candidate terminal state,
 //	  popularity credit, asset/share mint, and supersession commit in one pg
 //	  transaction; S3 copy and cleanup form its retry-safe activity tail.
-//	LoadEventAssets — restore live persisted assets into a replacement
-//	  EventWorkflow execution so dedup retains prior progress.
+//	LoadEventAssets — restore live persisted assets plus retired-MD5 aliases
+//	  into a replacement EventWorkflow execution so dedup retains prior progress.
 //	DeleteStaging — drop a staging object (rejected clip / dedup loser).
 //	DestroyEvent — tear down an overturned event's clips (#172): revoke all its
 //	  shares (→ 410) + reclaim its Garage objects. Caller cancels discovery first.
@@ -255,37 +255,100 @@ type RestoredEventAsset struct {
 	Verified      bool
 }
 
-// LoadEventAssetsOutput returns the event's live durable dedup state.
+// RestoredExactAlias maps a persisted exact-byte variant to the live asset
+// that currently represents it. Superseded variants remain useful dedup
+// evidence after their own asset leaves the public set.
+type RestoredExactAlias struct {
+	MD5     string
+	AssetID uuid.UUID
+}
+
+// LoadEventAssetsOutput returns the event's live durable dedup state and the
+// exact-byte aliases needed to resolve retired variants to that state.
 type LoadEventAssetsOutput struct {
-	Assets []RestoredEventAsset
+	Assets       []RestoredEventAsset
+	ExactAliases []RestoredExactAlias
 }
 
 // LoadEventAssets restores the durable portion of EventWorkflow's in-memory
-// state. Shares arrive in current-evidence order; removed and superseded shares,
-// plus assets already superseded by another asset, are excluded.
+// state. Shares arrive in current-evidence order. Only active, unsuperseded
+// assets re-enter the perceptual matcher; every share asset whose supersession
+// chain terminates at one of those live assets contributes an exact-byte alias.
+// A corrupt supersession cycle fails closed instead of hanging recovery.
 func (a *PersistActivities) LoadEventAssets(ctx context.Context, in LoadEventAssetsInput) (LoadEventAssetsOutput, error) {
 	var out LoadEventAssetsOutput
 	shares, err := a.Shares.GetByEvent(ctx, in.EventID)
 	if err != nil {
 		return out, fmt.Errorf("video.LoadEventAssets: get shares: %w", err)
 	}
+	assets := make(map[uuid.UUID]*dvideo.Asset, len(shares))
+	loadAsset := func(id uuid.UUID) (*dvideo.Asset, error) {
+		if asset, ok := assets[id]; ok {
+			return asset, nil
+		}
+		asset, err := a.Assets.Get(ctx, id)
+		if err != nil {
+			return nil, fmt.Errorf("get asset %s: %w", id, err)
+		}
+		if asset.EventID != in.EventID {
+			return nil, fmt.Errorf("asset %s belongs to event %s, want %s", id, asset.EventID, in.EventID)
+		}
+		assets[id] = asset
+		return asset, nil
+	}
+
+	// Load every share asset once so the alias pass can follow chains even
+	// when the terminal winner's share appears later in evidence order.
+	for _, share := range shares {
+		if _, err := loadAsset(share.AssetID); err != nil {
+			return out, fmt.Errorf("video.LoadEventAssets: %w", err)
+		}
+	}
+
+	live := make(map[uuid.UUID]struct{}, len(shares))
 	for _, share := range shares {
 		if share.State != dvideo.ShareStateActive {
 			continue
 		}
-		asset, err := a.Assets.Get(ctx, share.AssetID)
-		if err != nil {
-			return out, fmt.Errorf("video.LoadEventAssets: get asset %s: %w", share.AssetID, err)
-		}
+		asset := assets[share.AssetID]
 		if asset.SupersededBy != nil {
 			continue
 		}
+		live[asset.ID] = struct{}{}
 		out.Assets = append(out.Assets, RestoredEventAsset{
 			AssetID: asset.ID, MD5: hex.EncodeToString(asset.MD5),
 			HashVersion: asset.FrameHashVersion, FrameHashes: asset.FrameHashes,
 			Width: asset.Width, Height: asset.Height, DurationMS: asset.DurationMS,
 			FileSizeBytes: asset.FileSizeBytes, Bitrate: asset.Bitrate,
 			Popularity: asset.Popularity, Verified: share.TimestampVerified,
+		})
+	}
+
+	seenMD5 := make(map[string]struct{}, len(shares))
+	for _, share := range shares {
+		asset := assets[share.AssetID]
+		md5Hex := hex.EncodeToString(asset.MD5)
+		if _, seen := seenMD5[md5Hex]; seen {
+			continue
+		}
+		root := asset
+		visited := make(map[uuid.UUID]struct{})
+		for root.SupersededBy != nil {
+			if _, seen := visited[root.ID]; seen {
+				return out, fmt.Errorf("video.LoadEventAssets: supersession cycle at asset %s", root.ID)
+			}
+			visited[root.ID] = struct{}{}
+			root, err = loadAsset(*root.SupersededBy)
+			if err != nil {
+				return out, fmt.Errorf("video.LoadEventAssets: %w", err)
+			}
+		}
+		if _, isLive := live[root.ID]; !isLive {
+			continue
+		}
+		seenMD5[md5Hex] = struct{}{}
+		out.ExactAliases = append(out.ExactAliases, RestoredExactAlias{
+			MD5: md5Hex, AssetID: root.ID,
 		})
 	}
 	return out, nil

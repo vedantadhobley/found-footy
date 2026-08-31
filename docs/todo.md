@@ -271,6 +271,74 @@ the current branch.
   while reclaiming only media outside the public window, including a durable
   retry after any partial Garage failure.
 
+### FF-080 — recurring superseded MD5 can fail accepted-candidate placement
+
+- **Status:** `implemented`
+- **Severity:** P1
+- **Observed:** On 2026-08-31, Raphinha's 19′ event in Barcelona–Rayo
+  (`75288d5d-5af7-474d-b5e5-cb511ccb9405`) rediscovered bytes whose
+  deterministic asset already existed but had been superseded. Recovery had
+  restored only live assets, so the workflow classified the MD5 as new and
+  `CommitClipPlacement` correctly refused to make the retired asset live
+  again. The activity exhausted retries and restarted the workflow. A later
+  live winner happened to arrive, after which the same candidate could receive
+  duplicate credit; without that arrival the checklist could have remained
+  open.
+- **Cause:** Asset identity is deterministic on `(event_id, md5)`, but the
+  in-memory exact set forgot every MD5 when its asset left the active share
+  set. Supersession changed the public representative without preserving the
+  retired exact variant as an alias of that representative.
+- **Invariant:** Every accepted persisted MD5 represented in an event's active
+  dedup set has one live canonical root. Rediscovering any variant in that
+  root's supersession history must credit the live root through the normal
+  atomic placement transaction. It may not recreate, reactivate, or place
+  against the retired asset.
+- **Implementation:** `LoadEventAssets` now follows each event asset's
+  `superseded_by` chain, fails closed on a cycle or cross-event edge, and
+  returns aliases only when the terminal root is an active public asset. New
+  EventWorkflow histories restore that map and redirect all aliases whenever
+  placement supersedes a loser. A known variant skips repeated hash/vision but
+  still commits candidate attribution, popularity, derived rank, cleanup, and
+  `event.video` invalidation against the live root. The Postgres live-winner
+  guard remains defense in depth. The command change is gated by
+  `ff-080-canonical-exact-alias`.
+- **Regressions:** Activity tests cover live-root restoration through a retired
+  variant and explicit three-node cycle rejection. Workflow coverage
+  rediscovers a retired MD5, requires placement against the restored live root,
+  and permits no hash or vision call.
+- **Completion condition:** Release the worker change, verify one natural
+  recurring retired variant credits its live root without workflow restart,
+  and separately repair the one known legacy supersession cycle after an
+  explicit production-data approval. See the
+  [decision](./decisions/2026-08-31-exact-variants-follow-live-canonical-asset.md).
+
+### FF-081 — pairwise quality policy is not a stable cluster order
+
+- **Status:** `confirmed`
+- **Severity:** P2
+- **Observed:** Production contains one three-asset supersession cycle on K.
+  Danso's 67′ Tottenham–Charlton event
+  (`fa9af5bb-f842-47df-9ecf-cd44c16d0e75`). Under the current comparator,
+  the 8.4 s clip beats the 8.9 s clip on density, the 10.1 s clip beats the
+  8.4 s clip on duration, and the 8.9 s clip beats the 10.1 s clip on density.
+  The cycle predates FF-066. Direct resolution fails closed at its bounded
+  traversal guard; a separate active share keeps the event visible.
+- **Cause:** `IsUpgrade` is a thresholded pairwise relation, not a total order.
+  Selecting the best member by folding it over `matchAssets` can therefore
+  depend on current evidence order. A dHash bridge may consolidate several
+  incumbents onto a winner that another arrival order would not select.
+- **Current boundary:** FF-066's event-locked transaction requires the selected
+  winner to be live and prevents the old compatibility sequence from creating
+  another persisted cycle. It does not make keeper quality order-independent.
+  FF-080 prevents recurring exact variants from exercising a retired winner;
+  it deliberately does not change public keeper policy.
+- **Next work:** Build a production-derived cluster corpus, including all
+  multi-match bridges and arrival permutations. Define one deterministic total
+  cluster order that preserves the intended completeness and encoding-quality
+  tradeoff, then validate which bytes would change before altering
+  `IsUpgrade`. Repair the known cycle only after the new invariant is released
+  and the exact production mutation is separately approved.
+
 ### FF-003 — candidate can pass without exact-event semantic evidence
 
 - **Status:** `confirmed`
