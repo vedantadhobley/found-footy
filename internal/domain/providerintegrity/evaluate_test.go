@@ -33,6 +33,61 @@ func TestAssessFixture_SupportedRecentGoalCorrectionIsTrusted(t *testing.T) {
 	}
 }
 
+func TestAssessFixture_SupportedGoalCorrectionContinuesThroughAbsenceDebounce(t *testing.T) {
+	comparison := baseComparison()
+	comparison.Stored.Elapsed = intp(42)
+	comparison.Observed.Elapsed = intp(43)
+	comparison.ConfirmedEvents = append(comparison.ConfirmedEvents, EventFact{
+		Key:           "40_12_goal_1",
+		TeamID:        40,
+		PlayerID:      intp(12),
+		Type:          "goal",
+		Detail:        "normal goal",
+		Minute:        40,
+		DebounceCount: 2,
+	})
+
+	verdict := AssessFixture(comparison)
+	if verdict.Policy != PolicyTrusted || !verdict.SupportedGoalCorrection {
+		t.Fatalf("verdict = %+v, want trusted continuation of supported correction", verdict)
+	}
+}
+
+func TestAssessFixture_ScorerReplacementIsTrusted(t *testing.T) {
+	comparison := baseComparison()
+	comparison.ObservedEvents = []EventFact{{
+		Key:      "40_11_goal_1",
+		TeamID:   40,
+		PlayerID: intp(11),
+		Type:     "goal",
+		Detail:   "normal goal",
+		Minute:   30,
+	}}
+
+	verdict := AssessFixture(comparison)
+	if verdict.Policy != PolicyTrusted || !verdict.SupportedReplacement ||
+		verdict.MissingConfirmedEvents != 1 {
+		t.Fatalf("verdict = %+v, want trusted one-for-one scorer replacement", verdict)
+	}
+}
+
+func TestAssessFixture_UnrelatedNewEventDoesNotAuthorizeDisappearance(t *testing.T) {
+	comparison := baseComparison()
+	comparison.ObservedEvents = []EventFact{{
+		Key:      "40_11_goal_1",
+		TeamID:   40,
+		PlayerID: intp(11),
+		Type:     "goal",
+		Detail:   "normal goal",
+		Minute:   60,
+	}}
+
+	verdict := AssessFixture(comparison)
+	if verdict.Policy != PolicyPositiveOnly || verdict.SupportedReplacement {
+		t.Fatalf("verdict = %+v, want unrelated replacement quarantined", verdict)
+	}
+}
+
 func TestAssessFixture_UnsupportedEventDisappearanceQuarantinesOnlyFixture(t *testing.T) {
 	comparison := baseComparison()
 	comparison.ConfirmedEvents = append(comparison.ConfirmedEvents, EventFact{
@@ -78,16 +133,18 @@ func TestAssessFixture_StaleGoalCorrectionIsNotAutomaticallyTrusted(t *testing.T
 
 func TestAssessFixture_SemanticRegressionsAreTyped(t *testing.T) {
 	tests := []struct {
-		name   string
-		mutate func(*FixtureComparison)
-		want   Reason
+		name       string
+		mutate     func(*FixtureComparison)
+		want       Reason
+		wantPolicy MutationPolicy
 	}{
 		{
 			name: "identity",
 			mutate: func(comparison *FixtureComparison) {
 				comparison.Observed.AwayID = 99
 			},
-			want: ReasonFixtureIdentityChanged,
+			want:       ReasonFixtureIdentityChanged,
+			wantPolicy: PolicyRejected,
 		},
 		{
 			name: "phase",
@@ -95,7 +152,8 @@ func TestAssessFixture_SemanticRegressionsAreTyped(t *testing.T) {
 				comparison.Stored.Status = "2h"
 				comparison.Observed.Status = "ht"
 			},
-			want: ReasonPhaseRegressed,
+			want:       ReasonPhaseRegressed,
+			wantPolicy: PolicyPositiveOnly,
 		},
 		{
 			name: "terminal",
@@ -105,7 +163,8 @@ func TestAssessFixture_SemanticRegressionsAreTyped(t *testing.T) {
 				comparison.Observed.Status = "2h"
 				comparison.Observed.Terminal = false
 			},
-			want: ReasonTerminalRegressed,
+			want:       ReasonTerminalRegressed,
+			wantPolicy: PolicyPositiveOnly,
 		},
 		{
 			name: "clock",
@@ -113,21 +172,24 @@ func TestAssessFixture_SemanticRegressionsAreTyped(t *testing.T) {
 				comparison.Stored.Elapsed = intp(61)
 				comparison.Observed.Elapsed = intp(50)
 			},
-			want: ReasonClockRegressed,
+			want:       ReasonClockRegressed,
+			wantPolicy: PolicyPositiveOnly,
 		},
 		{
 			name: "score",
 			mutate: func(comparison *FixtureComparison) {
 				comparison.Observed.HomeScore = intp(0)
 			},
-			want: ReasonScoreDecreased,
+			want:       ReasonScoreDecreased,
+			wantPolicy: PolicyPositiveOnly,
 		},
 		{
 			name: "cleared",
 			mutate: func(comparison *FixtureComparison) {
 				comparison.Observed.HomeScore = nil
 			},
-			want: ReasonPopulatedFieldCleared,
+			want:       ReasonPopulatedFieldCleared,
+			wantPolicy: PolicyPositiveOnly,
 		},
 	}
 
@@ -136,10 +198,83 @@ func TestAssessFixture_SemanticRegressionsAreTyped(t *testing.T) {
 			comparison := baseComparison()
 			tt.mutate(&comparison)
 			verdict := AssessFixture(comparison)
-			if verdict.Policy != PolicyPositiveOnly || !containsReason(verdict.Reasons, tt.want) {
+			if verdict.Policy != tt.wantPolicy || !containsReason(verdict.Reasons, tt.want) {
 				t.Fatalf("verdict = %+v, want reason %q", verdict, tt.want)
 			}
 		})
+	}
+}
+
+func TestAssessFixture_PeriodBoundaryClockResetIsTrusted(t *testing.T) {
+	tests := []struct {
+		name            string
+		storedStatus    string
+		storedElapsed   int
+		storedExtra     int
+		observedStatus  string
+		observedElapsed int
+	}{
+		{
+			name:         "halftime to second half",
+			storedStatus: "ht", storedElapsed: 45, storedExtra: 4,
+			observedStatus: "2h", observedElapsed: 46,
+		},
+		{
+			name:         "extra-time break to next period",
+			storedStatus: "bt", storedElapsed: 105, storedExtra: 2,
+			observedStatus: "et", observedElapsed: 106,
+		},
+		{
+			name:         "extra-time period to break",
+			storedStatus: "et", storedElapsed: 105, storedExtra: 2,
+			observedStatus: "bt", observedElapsed: 105,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			comparison := baseComparison()
+			comparison.Stored.Status = tt.storedStatus
+			comparison.Stored.Elapsed = intp(tt.storedElapsed)
+			comparison.Stored.Extra = intp(tt.storedExtra)
+			comparison.Observed.Status = tt.observedStatus
+			comparison.Observed.Elapsed = intp(tt.observedElapsed)
+			comparison.Observed.Extra = nil
+
+			verdict := AssessFixture(comparison)
+			if verdict.Policy != PolicyTrusted || containsReason(verdict.Reasons, ReasonClockRegressed) {
+				t.Fatalf("verdict = %+v, want trusted period boundary", verdict)
+			}
+		})
+	}
+}
+
+func TestAssessFixture_SamePhaseClockRollbackRemainsQuarantined(t *testing.T) {
+	comparison := baseComparison()
+	comparison.Stored.Status = "2h"
+	comparison.Stored.Elapsed = intp(90)
+	comparison.Stored.Extra = intp(15)
+	comparison.Observed.Status = "2h"
+	comparison.Observed.Elapsed = intp(46)
+	comparison.Observed.Extra = nil
+
+	verdict := AssessFixture(comparison)
+	if verdict.Policy != PolicyPositiveOnly || !containsReason(verdict.Reasons, ReasonClockRegressed) {
+		t.Fatalf("verdict = %+v, want same-phase rollback quarantined", verdict)
+	}
+}
+
+func TestAggregateFixtureVerdicts_IsolatedRejectedFixtureDoesNotRejectBatch(t *testing.T) {
+	verdict := FixtureVerdict{
+		FixtureID: 100,
+		Policy:    PolicyRejected,
+		Reasons:   []Reason{ReasonFixtureIdentityChanged},
+	}
+
+	batch := AggregateFixtureVerdicts([]FixtureVerdict{verdict})
+	if batch.Policy != PolicyTrusted || len(batch.Fixtures) != 1 ||
+		batch.Fixtures[0].Policy != PolicyRejected {
+		t.Fatalf("batch = %+v, want isolated rejected fixture with trusted global policy", batch)
 	}
 }
 
@@ -187,7 +322,10 @@ func baseComparison() FixtureComparison {
 		AwayScore:  intp(0),
 	}
 	observed := stored
-	goal := EventFact{Key: "40_10_goal_1", TeamID: 40, Type: "goal", Minute: 30}
+	goal := EventFact{
+		Key: "40_10_goal_1", TeamID: 40, PlayerID: intp(10), Type: "goal",
+		Detail: "normal goal", Minute: 30, DebounceCount: 3,
+	}
 	return FixtureComparison{
 		Stored:          stored,
 		Observed:        observed,

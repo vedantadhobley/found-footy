@@ -1,5 +1,10 @@
 # Provider fixture responses require a contract and shadow trust assessment
 
+The [2026-08-31 shadow-evidence decision](./2026-08-31-provider-shadow-evidence-refines-trust-signatures.md)
+refines period progress, correction continuation, identity replacement,
+fixture-scoped rejection, and typed total-fetch evidence after the first live
+corpus.
+
 ## Context
 
 API-Football can return HTTP 200 while its envelope is erroneous, incomplete,

@@ -65,11 +65,14 @@ type FixtureFacts struct {
 // EventFact is the provider-independent identity and clock evidence needed to
 // determine whether one confirmed event is still represented.
 type EventFact struct {
-	Key    string
-	TeamID int
-	Type   string
-	Minute int
-	Extra  *int
+	Key           string
+	TeamID        int
+	PlayerID      *int
+	Type          string
+	Detail        string
+	Minute        int
+	Extra         *int
+	DebounceCount int
 }
 
 // FixtureComparison pairs the last stored facts with one fresh provider
@@ -90,6 +93,7 @@ type FixtureVerdict struct {
 	Reasons                 []Reason
 	MissingConfirmedEvents  int
 	SupportedGoalCorrection bool
+	SupportedReplacement    bool
 }
 
 // Anomalous reports whether this fixture should be quarantined when

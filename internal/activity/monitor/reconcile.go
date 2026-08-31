@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"go.temporal.io/sdk/temporal"
 
 	"github.com/vedantadhobley/found-footy/internal/contract/fixturepresentation"
 	"github.com/vedantadhobley/found-footy/internal/domain/event"
@@ -48,7 +49,29 @@ type FetchLiveFixturesInput struct {
 type FetchLiveFixturesOutput struct {
 	Fixtures  []apifootball.APIFixture
 	FailedIDs []int64
+	Failures  []ProviderFetchFailure
 }
+
+// ProviderFetchFailureKind is the workflow-facing provider observation class.
+type ProviderFetchFailureKind string
+
+const (
+	ProviderFetchFailureTransport ProviderFetchFailureKind = "transport"
+	ProviderFetchFailureContract  ProviderFetchFailureKind = "contract"
+)
+
+// ProviderFetchFailure is the bounded activity/workflow contract for one
+// failed provider request chunk. ContractReason is populated only for contract
+// failures and comes from the adapter's typed reason registry.
+type ProviderFetchFailure struct {
+	IDs            []int64
+	Kind           ProviderFetchFailureKind
+	ContractReason string
+}
+
+// ProviderFetchFailureErrorType carries bounded by-ID failure evidence through
+// Temporal's retryable activity-error boundary.
+const ProviderFetchFailureErrorType = "ProviderFixtureFetchFailure"
 
 // FetchLiveFixtures calls apifootball with the given IDs. Zero-length
 // input short-circuits — no round trip.
@@ -56,11 +79,39 @@ func (a *Activities) FetchLiveFixtures(ctx context.Context, in FetchLiveFixtures
 	if len(in.IDs) == 0 {
 		return FetchLiveFixturesOutput{}, nil
 	}
-	fixtures, failedIDs, err := a.APIFootball.ListFixturesByIDs(ctx, in.IDs)
-	if err != nil {
-		return FetchLiveFixturesOutput{FailedIDs: failedIDs}, fmt.Errorf("monitor.FetchLiveFixtures: %w", err)
+	result, err := a.APIFootball.ListFixturesByIDs(ctx, in.IDs)
+	out := FetchLiveFixturesOutput{
+		Fixtures: result.Fixtures, FailedIDs: result.FailedIDs(),
+		Failures: providerFetchFailures(result.Failures),
 	}
-	return FetchLiveFixturesOutput{Fixtures: fixtures, FailedIDs: failedIDs}, nil
+	if err != nil {
+		wrapped := fmt.Errorf("monitor.FetchLiveFixtures: %w", err)
+		if ctx.Err() != nil {
+			return out, wrapped
+		}
+		return FetchLiveFixturesOutput{}, temporal.NewApplicationErrorWithOptions(
+			"API-Football by-ID fixture fetch failed",
+			ProviderFetchFailureErrorType,
+			temporal.ApplicationErrorOptions{Cause: wrapped, Details: []any{out}},
+		)
+	}
+	return out, nil
+}
+
+func providerFetchFailures(failures []apifootball.FixtureFetchFailure) []ProviderFetchFailure {
+	out := make([]ProviderFetchFailure, 0, len(failures))
+	for _, failure := range failures {
+		kind := ProviderFetchFailureTransport
+		if failure.Kind == apifootball.FixtureFetchFailureContract {
+			kind = ProviderFetchFailureContract
+		}
+		out = append(out, ProviderFetchFailure{
+			IDs:            append([]int64(nil), failure.IDs...),
+			Kind:           kind,
+			ContractReason: string(failure.ContractReason),
+		})
+	}
+	return out
 }
 
 // ── ReconcileFixture ──────────────────────────────────────────

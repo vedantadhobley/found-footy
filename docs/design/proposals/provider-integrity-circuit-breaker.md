@@ -1,10 +1,12 @@
 # API-Football provider-integrity circuit breaker
 
-**Status:** Partially implemented for
+**Status:** Partially implemented and live-shadow audited for
 [`FF-075`](../../todo.md#ff-075--successful-provider-responses-can-destructively-regress-live-state).
 The wire contract and non-enforcing semantic evaluator have shipped; durable
-circuit/quarantine state and mutation enforcement remain proposed. Current
-behavior is authoritative in the
+circuit/quarantine state and mutation enforcement remain proposed. The
+[first production shadow audit](../audits/provider-integrity-shadow-2026-08-31.md)
+found and locally repaired classification gaps; one additional live shadow
+window remains an enforcement gate. Current behavior is authoritative in the
 [fixture-monitoring ledger](../../orchestration/monitor.md).
 
 ## Problem
@@ -228,8 +230,8 @@ State transitions and operator actions require durable reason evidence.
 1. **Shipped:** harden the API envelope and requested-ID coverage contract.
 2. **Shipped:** add the pure evaluator in shadow mode. Record typed workflow
    verdicts and adapter contract metrics while preserving current mutations.
-3. Run the regression corpus and at least one live match window; classify every
-   false trip before enforcement.
+3. **In progress:** the August 30 regression corpus and first live-window audit
+   are pinned; run the repaired evaluator through one additional live window.
 4. Apply the additive provider-state/quarantine migration.
 5. Enforce `rejected` and `positive_only` policies.
 6. Add audited force-open and fixture-resolution operations. Force-close must

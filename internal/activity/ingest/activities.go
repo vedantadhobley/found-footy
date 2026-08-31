@@ -25,15 +25,11 @@ import (
 // *apifootball.Client, tests pass an in-memory fake. Isolates the
 // activity from the full apifootball surface.
 //
-// ListFixturesByIDs returns (fixtures, failedIDs, err): fixtures are
-// the IDs that came back, failedIDs are the IDs that didn't. err is
-// only set on catastrophic failure — partial failures surface as
-// non-empty failedIDs with err=nil. See apifootball.ListFixturesByIDs.
+// ListFixturesByIDs preserves typed failure evidence per request chunk. err is
+// set only on catastrophic failure; partial failures remain in the result.
 type fixtureFetcher interface {
 	ListFixtures(ctx context.Context, params apifootball.FixtureListParams) ([]apifootball.APIFixture, error)
-	ListFixturesByIDs(ctx context.Context, ids []int64) (
-		fixtures []apifootball.APIFixture, failedIDs []int64, err error,
-	)
+	ListFixturesByIDs(context.Context, []int64) (apifootball.FixturesByIDsResult, error)
 
 	// GetCurrentSeason + ListTeamsForLeague back the tracked-team
 	// refresh step. Kept on the same interface as the fixture calls

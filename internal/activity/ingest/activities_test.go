@@ -63,10 +63,16 @@ func (f *fakeFetcher) ListFixtures(_ context.Context, params apifootball.Fixture
 }
 
 func (f *fakeFetcher) ListFixturesByIDs(_ context.Context, ids []int64) (
-	[]apifootball.APIFixture, []int64, error,
+	apifootball.FixturesByIDsResult, error,
 ) {
 	f.byIDsLastCall = ids
-	return f.byIDsResponse, f.byIDsFailedIDs, f.byIDsErr
+	result := apifootball.FixturesByIDsResult{Fixtures: f.byIDsResponse}
+	if len(f.byIDsFailedIDs) > 0 {
+		result.Failures = []apifootball.FixtureFetchFailure{{
+			IDs: f.byIDsFailedIDs, Kind: apifootball.FixtureFetchFailureTransport,
+		}}
+	}
+	return result, f.byIDsErr
 }
 
 func (f *fakeFetcher) GetCurrentSeason(_ context.Context, leagueID int) (int, error) {

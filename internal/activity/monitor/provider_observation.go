@@ -45,9 +45,12 @@ func providerFixtureComparison(
 			providerEventFact(
 				storedEvent.NaturalKey,
 				storedEvent.Team.ID,
+				storedEvent.Player.ID,
 				storedEvent.Type,
+				storedEvent.Detail,
 				storedEvent.Minute,
 				storedEvent.Extra,
+				storedEvent.DebounceCount,
 			))
 	}
 	for index, observedEvent := range observed.Events {
@@ -63,9 +66,12 @@ func providerFixtureComparison(
 			providerEventFact(
 				event.ComposeNaturalKey(observedEvent.Team.ID, observedEvent.Player.ID, domainType, sequence),
 				observedEvent.Team.ID,
+				observedEvent.Player.ID,
 				domainType,
+				observedEvent.Detail,
 				observedEvent.Time.Elapsed,
 				observedEvent.Time.Extra,
+				0,
 			))
 	}
 	return comparison
@@ -92,15 +98,21 @@ func providerFixtureFacts(stored *fixture.Fixture) providerintegrity.FixtureFact
 func providerEventFact(
 	key string,
 	teamID int,
+	playerID *int,
 	eventType event.Type,
+	detail apifootball.APIEventDetail,
 	minute int,
 	extra *int,
+	debounceCount int,
 ) providerintegrity.EventFact {
 	return providerintegrity.EventFact{
-		Key:    key,
-		TeamID: teamID,
-		Type:   string(eventType),
-		Minute: minute,
-		Extra:  extra,
+		Key:           key,
+		TeamID:        teamID,
+		PlayerID:      playerID,
+		Type:          string(eventType),
+		Detail:        string(detail),
+		Minute:        minute,
+		Extra:         extra,
+		DebounceCount: debounceCount,
 	}
 }

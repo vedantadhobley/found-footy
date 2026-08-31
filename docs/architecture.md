@@ -233,15 +233,24 @@ between stored canonical facts and one validated provider observation. The pure
 evaluator returns typed `trusted`, `positive_only`, or `rejected` policies plus
 bounded reason codes. Monitor first reuses its canonical sequence allocator, so
 the evaluator compares the same natural keys reconciliation will use rather
-than maintaining a second event-matching algorithm. A recent, single-goal
-disappearance is a supported correction only when the correct score side drops
-by one and the remaining goal inventory has exact score parity.
+than maintaining a second event-matching algorithm. Clock rollback is
+phase-aware, so stoppage-time clearing across `HT → 2H` and extra-time period
+boundaries is forward progress while a same-phase collapse remains anomalous.
+A recent, single-goal disappearance is supported when the correct score side
+drops by one and the remaining goal inventory has exact score parity; that
+authorization continues through the existing partial absence debounce. An
+exact one-for-one player attribution replacement is also supported when team,
+type, detail, clock, and unchanged score agree.
 
 The batch aggregator recommends a global `positive_only` circuit when at least
 two fixtures regress or at least three confirmed events disappear. One
-anomalous fixture remains isolated. This phase is deliberately advisory:
-Monitor emits the verdict but still executes existing reconciliation. Durable
-circuit state, quarantine, and mutation enforcement have not shipped.
+anomalous fixture remains isolated, including an identity-conflict observation
+whose fixture policy is `rejected`. Adapter chunk failures retain typed
+`transport` or `contract` evidence plus the bounded contract reason through the
+Monitor activity and retryable Temporal error boundary. This phase is
+deliberately advisory: Monitor emits the verdict but still executes existing
+reconciliation. Durable circuit state, quarantine, and mutation enforcement
+have not shipped.
 
 ### video domain (D3)
 

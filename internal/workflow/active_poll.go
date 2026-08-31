@@ -39,6 +39,7 @@
 package workflow
 
 import (
+	"errors"
 	"fmt"
 	"time"
 
@@ -76,10 +77,11 @@ type ActivePollWorkflowOutput struct {
 	// MissedIDs — IDs the client-side chunk fetch didn't get back this
 	// cycle. Not retried in-workflow; the next 30s poll picks them up
 	// naturally. Surfaced for observability.
-	MissedIDs          int
-	NewEvents          int
-	EventsBecameStable []string
-	EventsRemoved      []string
+	MissedIDs             int
+	ProviderFetchFailures []monitor.ProviderFetchFailure
+	NewEvents             int
+	EventsBecameStable    []string
+	EventsRemoved         []string
 	// GoalAbsencesHeld are provider-array omissions protected from VAR
 	// classification because the score still requires those goals.
 	GoalAbsencesHeld []string
@@ -169,6 +171,14 @@ func ActivePollWorkflow(ctx workflow.Context, in ActivePollWorkflowInput) (Activ
 	if err := workflow.ExecuteActivity(ctx, "FetchLiveFixtures",
 		monitor.FetchLiveFixturesInput(listOut),
 	).Get(ctx, &fetchOut); err != nil {
+		if classified, ok := classifiedProviderFetchFailure(err); ok {
+			out.FetchedCount = len(classified.Fixtures)
+			out.MissedIDs = len(classified.FailedIDs)
+			out.ProviderFetchFailures = classified.Failures
+			logger.Warn("FetchLiveFixtures failed with typed provider evidence",
+				"missed", out.MissedIDs,
+				"failures", classified.Failures)
+		}
 		// Catastrophic (all chunks failed / ctx cancelled) — log and
 		// exit. Next cycle retries the whole set.
 		logger.Warn("FetchLiveFixtures failed catastrophically", "error", err)
@@ -177,9 +187,11 @@ func ActivePollWorkflow(ctx workflow.Context, in ActivePollWorkflowInput) (Activ
 	}
 	out.FetchedCount = len(fetchOut.Fixtures)
 	out.MissedIDs = len(fetchOut.FailedIDs)
+	out.ProviderFetchFailures = fetchOut.Failures
 	if out.MissedIDs > 0 {
 		logger.Warn("FetchLiveFixtures partial: missed IDs will retry next cycle",
-			"missed", out.MissedIDs, "fetched", out.FetchedCount)
+			"missed", out.MissedIDs, "fetched", out.FetchedCount,
+			"failures", fetchOut.Failures)
 	}
 
 	if len(fetchOut.Fixtures) == 0 {
@@ -347,4 +359,18 @@ func ActivePollWorkflow(ctx workflow.Context, in ActivePollWorkflowInput) (Activ
 		"errors", len(out.Errors),
 	)
 	return out, nil
+}
+
+func classifiedProviderFetchFailure(err error) (monitor.FetchLiveFixturesOutput, bool) {
+	var applicationErr *temporal.ApplicationError
+	if !errors.As(err, &applicationErr) ||
+		applicationErr.Type() != monitor.ProviderFetchFailureErrorType ||
+		!applicationErr.HasDetails() {
+		return monitor.FetchLiveFixturesOutput{}, false
+	}
+	var out monitor.FetchLiveFixturesOutput
+	if decodeErr := applicationErr.Details(&out); decodeErr != nil {
+		return monitor.FetchLiveFixturesOutput{}, false
+	}
+	return out, true
 }

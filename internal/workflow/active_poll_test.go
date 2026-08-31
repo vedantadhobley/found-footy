@@ -11,6 +11,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/stretchr/testify/mock"
+	"go.temporal.io/sdk/temporal"
 	"go.temporal.io/sdk/testsuite"
 
 	livefeedactivity "github.com/vedantadhobley/found-footy/internal/activity/livefeed"
@@ -129,6 +130,47 @@ func TestActivePollWorkflow_AggregatesProviderIntegrityShadowVerdicts(t *testing
 	if out.ProviderIntegrity.Policy != providerintegrity.PolicyPositiveOnly ||
 		out.ProviderIntegrity.RegressedFixtures != 2 {
 		t.Fatalf("ProviderIntegrity = %+v, want systemic positive-only verdict", out.ProviderIntegrity)
+	}
+	env.AssertExpectations(t)
+}
+
+func TestActivePollWorkflow_PreservesTypedProviderFetchFailure(t *testing.T) {
+	var s testsuite.WorkflowTestSuite
+	env := newActivePollEnv(&s)
+
+	env.OnActivity("ActivateUpcoming", mock.Anything, mock.Anything).
+		Return(monitor.ActivateUpcomingOutput{}, nil).Once()
+	env.OnActivity("ListActiveFixtureIDs", mock.Anything).
+		Return(monitor.ListActiveFixtureIDsOutput{IDs: []int64{101, 102}}, nil).Once()
+	failureOut := monitor.FetchLiveFixturesOutput{
+		FailedIDs: []int64{101, 102},
+		Failures: []monitor.ProviderFetchFailure{{
+			IDs: []int64{101, 102}, Kind: monitor.ProviderFetchFailureContract,
+			ContractReason: string(apifootball.FixtureContractEventsNull),
+		}},
+	}
+	fetchErr := temporal.NewApplicationErrorWithOptions(
+		"API-Football by-ID fixture fetch failed",
+		monitor.ProviderFetchFailureErrorType,
+		temporal.ApplicationErrorOptions{Details: []any{failureOut}},
+	)
+	env.OnActivity("FetchLiveFixtures", mock.Anything, mock.Anything).
+		Return(monitor.FetchLiveFixturesOutput{}, fetchErr).Twice()
+
+	env.ExecuteWorkflow(workflow.ActivePollWorkflow, workflow.ActivePollWorkflowInput{})
+	if !env.IsWorkflowCompleted() {
+		t.Fatal("workflow did not complete")
+	}
+	if err := env.GetWorkflowError(); err != nil {
+		t.Fatalf("workflow error: %v", err)
+	}
+	var out workflow.ActivePollWorkflowOutput
+	if err := env.GetWorkflowResult(&out); err != nil {
+		t.Fatalf("workflow result: %v", err)
+	}
+	if out.MissedIDs != 2 || len(out.ProviderFetchFailures) != 1 ||
+		out.ProviderFetchFailures[0].ContractReason != string(apifootball.FixtureContractEventsNull) {
+		t.Fatalf("output = %+v, want typed contract failure", out)
 	}
 	env.AssertExpectations(t)
 }

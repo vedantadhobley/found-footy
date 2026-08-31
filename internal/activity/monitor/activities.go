@@ -42,13 +42,10 @@ import (
 
 // fixtureFetcher is the narrow interface the Monitor activities need
 // from the apifootball adapter — same idiom as ingest's fetcher. The
-// (fixtures, failedIDs, err) return shape carries partial-failure info
-// per apifootball.ListFixturesByIDs — err is set only on catastrophic
-// transport/contract failure; failedIDs lists IDs whose chunk did not validate.
+// The result preserves partial-failure class and contract reason so the
+// provider-integrity boundary does not collapse malformed data into downtime.
 type fixtureFetcher interface {
-	ListFixturesByIDs(ctx context.Context, ids []int64) (
-		fixtures []apifootball.APIFixture, failedIDs []int64, err error,
-	)
+	ListFixturesByIDs(context.Context, []int64) (apifootball.FixturesByIDsResult, error)
 }
 
 // Activities bundles the deps every monitor activity needs. Now is
