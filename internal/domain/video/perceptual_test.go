@@ -8,6 +8,7 @@ import (
 	"image"
 	"image/color"
 	"image/png"
+	"math/rand"
 	"testing"
 )
 
@@ -129,6 +130,14 @@ func TestMatch_Offset(t *testing.T) {
 	if !Match(a, b, 0, 3, 0) {
 		t.Error("offset copy should match at the aligned offset")
 	}
+	evidence := BestAlignment(a, b, 0, 0)
+	if evidence != (AlignmentEvidence{LeftStart: 0, RightStart: 2, Frames: 5}) {
+		t.Fatalf("alignment = %+v, want left=0 right=2 frames=5 gaps=0", evidence)
+	}
+	reversed := BestAlignment(b, a, 0, 0)
+	if reversed != (AlignmentEvidence{LeftStart: 2, RightStart: 0, Frames: 5}) {
+		t.Fatalf("reversed alignment = %+v, want swapped offsets", reversed)
+	}
 }
 
 func TestMatch_NoMatch(t *testing.T) {
@@ -165,4 +174,77 @@ func TestMatch_GapTolerance(t *testing.T) {
 	if !Match(a, b, 0, 5, 1) {
 		t.Error("one tolerated gap should bridge into a 5-run")
 	}
+	if evidence := BestAlignment(a, b, 0, 1); evidence != (AlignmentEvidence{Frames: 5, Gaps: 1}) {
+		t.Fatalf("gap-tolerant alignment = %+v, want full five-frame span with one gap", evidence)
+	}
+}
+
+func TestBestAlignment_EmptyAndNegativeGapBudget(t *testing.T) {
+	if evidence := BestAlignment(nil, []uint64{1}, 0, 0); evidence != (AlignmentEvidence{}) {
+		t.Fatalf("empty alignment = %+v, want zero value", evidence)
+	}
+	a := []uint64{0, 0, 0}
+	b := []uint64{0, ^uint64(0), 0}
+	if evidence := BestAlignment(a, b, 0, -1); evidence.Frames != 1 || evidence.Gaps != 0 {
+		t.Fatalf("negative gap budget alignment = %+v, want strict one-frame run", evidence)
+	}
+}
+
+// TestBestAlignmentPreservesBooleanMatcherPolicy compares the evidence-bearing
+// implementation with the former window-only algorithm over deterministic
+// random sequences. The production match gate must not drift as diagnostics
+// become richer.
+func TestBestAlignmentPreservesBooleanMatcherPolicy(t *testing.T) {
+	rng := rand.New(rand.NewSource(81)) //nolint:gosec // deterministic test fixture
+	for trial := 0; trial < 1_000; trial++ {
+		left := make([]uint64, 1+rng.Intn(80))
+		right := make([]uint64, 1+rng.Intn(80))
+		for i := range left {
+			left[i] = rng.Uint64()
+		}
+		for i := range right {
+			right[i] = rng.Uint64()
+		}
+		maxHamming := rng.Intn(65)
+		maxGaps := rng.Intn(6)
+		minRun := 1 + rng.Intn(50)
+		want := referenceMatch(left, right, maxHamming, minRun, maxGaps)
+		if got := Match(left, right, maxHamming, minRun, maxGaps); got != want {
+			t.Fatalf("trial %d match=%t want=%t lengths=%d/%d hamming=%d run=%d gaps=%d",
+				trial, got, want, len(left), len(right), maxHamming, minRun, maxGaps)
+		}
+	}
+}
+
+// referenceMatch preserves the pre-evidence matcher shape inside the test.
+func referenceMatch(a, b []uint64, maxHamming, minRun, maxGaps int) bool {
+	if len(a) < minRun || len(b) < minRun {
+		return false
+	}
+	best := 0
+	for offset := -(len(a) - 1); offset <= len(b)-1; offset++ {
+		var aligned []bool
+		for i := range a {
+			j := i + offset
+			if j >= 0 && j < len(b) {
+				aligned = append(aligned, Hamming(a[i], b[j]) <= maxHamming)
+			}
+		}
+		left, misses := 0, 0
+		for right, matched := range aligned {
+			if !matched {
+				misses++
+			}
+			for misses > maxGaps {
+				if !aligned[left] {
+					misses--
+				}
+				left++
+			}
+			if width := right - left + 1; width > best {
+				best = width
+			}
+		}
+	}
+	return best >= minRun
 }

@@ -112,6 +112,74 @@ func simulateKeeperPolicy(
 	return strings.Join(ids, ",")
 }
 
+// simulateSubstitutionPolicy replays the experimental pairwise policy without
+// closing a perceptual graph transitively. A candidate hidden by any live
+// substitute cannot itself retire another incumbent; otherwise it retires only
+// incumbents for which it is a direct substitute and coexists with tradeoffs.
+func simulateSubstitutionPolicy(
+	assets []asset,
+	match [][]bool,
+	evidence [][]matcherEvidence,
+	order []int,
+) string {
+	return simulateDirectionalPolicy(assets, match, evidence, order, evaluateSubstitution)
+}
+
+func simulateStableOffsetPolicy(
+	assets []asset,
+	match [][]bool,
+	evidence [][]matcherEvidence,
+	order []int,
+) string {
+	return simulateDirectionalPolicy(assets, match, evidence, order, evaluateStableOffsetSubstitution)
+}
+
+func simulateDirectionalPolicy(
+	assets []asset,
+	match [][]bool,
+	evidence [][]matcherEvidence,
+	order []int,
+	evaluate func(asset, asset, matcherEvidence) substitutionDecision,
+) string {
+	var live []int
+	for _, candidate := range order {
+		blocked := false
+		var replaced map[int]struct{}
+		for position, incumbent := range live {
+			if !match[candidate][incumbent] {
+				continue
+			}
+			decision := evaluate(assets[candidate], assets[incumbent], evidence[candidate][incumbent])
+			if decision.rightSubstitutesLeft {
+				blocked = true
+				break
+			}
+			if decision.leftSubstitutesRight {
+				if replaced == nil {
+					replaced = make(map[int]struct{})
+				}
+				replaced[position] = struct{}{}
+			}
+		}
+		if blocked {
+			continue
+		}
+		kept := live[:0]
+		for position, incumbent := range live {
+			if _, drop := replaced[position]; !drop {
+				kept = append(kept, incumbent)
+			}
+		}
+		live = append(kept, candidate)
+	}
+	ids := make([]string, len(live))
+	for i, index := range live {
+		ids[i] = assets[index].id
+	}
+	sort.Strings(ids)
+	return strings.Join(ids, ",")
+}
+
 // visitOrders visits every permutation when bounded by max; larger components
 // receive chronological, reverse, and deterministic shuffled samples.
 func visitOrders(size, max int, visit func([]int)) bool {

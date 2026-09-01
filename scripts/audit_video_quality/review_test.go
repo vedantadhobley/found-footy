@@ -6,6 +6,8 @@ import (
 	"encoding/csv"
 	"strings"
 	"testing"
+
+	dvideo "github.com/vedantadhobley/found-footy/internal/domain/video"
 )
 
 func TestWriteReviewCSVSeparatesEvidenceFromLabels(t *testing.T) {
@@ -24,7 +26,10 @@ func TestWriteReviewCSVSeparatesEvidenceFromLabels(t *testing.T) {
 		popularity: 2, observedPopularity: 1, verified: true,
 	}
 	finding := componentFinding{
-		assets: []asset{left, right}, matchEdges: []matchEdge{{leftID: left.id, rightID: right.id, primaryWindow: 30}},
+		assets: []asset{left, right}, matchEdges: []matchEdge{{
+			leftID: left.id, rightID: right.id,
+			evidence: matcherEvidence{primary: dvideo.AlignmentEvidence{Frames: 30}},
+		}},
 		outcomes: map[string]int{"one": 1}, terminalIDs: []string{left.id, right.id},
 	}
 
@@ -50,6 +55,11 @@ func TestWriteReviewCSVSeparatesEvidenceFromLabels(t *testing.T) {
 	if row[columns["left_exact_observations"]] != "2" || row[columns["right_exact_observations"]] != "1" {
 		t.Errorf("exact observations = %q/%q",
 			row[columns["left_exact_observations"]], row[columns["right_exact_observations"]])
+	}
+	if row[columns["best_route"]] != "primary" || row[columns["coverage_class"]] != "partial_overlap" ||
+		row[columns["experimental_action"]] != "keep_both" {
+		t.Errorf("coverage evidence route=%q class=%q action=%q",
+			row[columns["best_route"]], row[columns["coverage_class"]], row[columns["experimental_action"]])
 	}
 	for _, label := range []string{"dedup_decision", "quality_winner", "quality_reasons", "notes"} {
 		if row[columns[label]] != "" {

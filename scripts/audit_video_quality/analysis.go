@@ -43,6 +43,22 @@ type auditResult struct {
 	bandDiffersFromTerminalCount   int
 	strictDiffersFromTerminalCount int
 	policyComparisons              []policyComparison
+	coverageClasses                map[string]int
+	experimentalActions            map[string]int
+	experimentalOrderSensitive     int
+	historicalPolicyEvaluated      int
+	historicalPolicyChanges        int
+	stableCoverageClasses          map[string]int
+	stableActions                  map[string]int
+	stableOrderSensitive           int
+	stableHistoricalChanges        int
+	cadenceActions                 map[string]int
+	cadenceHistoricalChanges       int
+	directCoverSelectedAssets      int
+	directCoverTerminalAssets      int
+	directCoverDifferentComponents int
+	directCoverAmbiguousComponents int
+	directCoverInexactComponents   int
 }
 
 // componentFinding captures one connected current-match component and every
@@ -65,14 +81,21 @@ type componentFinding struct {
 	bestGridWinnerID            string
 	chronologicalResult         string
 	anchoredChronologicalResult string
+	experimentalOutcomes        map[string]int
+	experimentalChronological   string
+	stableOutcomes              map[string]int
+	stableChronological         string
+	directCoverIDs              []string
+	directCoverAlternatives     int
+	directCoverExact            bool
 }
 
 // matchEdge records the strongest current matcher evidence between two
 // retained assets. The windows are measured independently for the primary and
 // sustained Hamming policies so a visual review can locate bridge evidence.
 type matchEdge struct {
-	leftID, rightID           string
-	primaryWindow, longWindow int
+	leftID, rightID string
+	evidence        matcherEvidence
 }
 
 // poolKey is the production perceptual-dedup scope.
@@ -85,15 +108,20 @@ type poolKey struct {
 // poolGraph holds one scope's chronological assets and pairwise current-policy
 // match matrix.
 type poolGraph struct {
-	assets  []asset
-	match   [][]bool
-	connect [][]bool
+	assets   []asset
+	match    [][]bool
+	evidence [][]matcherEvidence
+	connect  [][]bool
 }
 
 // analyze reconstructs the current match graph, persisted supersession graph,
 // and arrival-order outcomes for every retained event pool.
 func analyze(assets []asset, maxPermutations int) auditResult {
-	result := auditResult{assetCount: len(assets)}
+	result := auditResult{
+		assetCount: len(assets), coverageClasses: make(map[string]int),
+		experimentalActions: make(map[string]int), stableCoverageClasses: make(map[string]int),
+		stableActions: make(map[string]int), cadenceActions: make(map[string]int),
+	}
 	if maxPermutations < 1 {
 		maxPermutations = 1
 	}
@@ -150,6 +178,43 @@ func analyze(assets []asset, maxPermutations int) auditResult {
 			if len(finding.anchoredOutcomes) > 1 {
 				result.anchoredOrderSensitiveCount++
 			}
+			if len(finding.experimentalOutcomes) > 1 {
+				result.experimentalOrderSensitive++
+			}
+			if len(finding.stableOutcomes) > 1 {
+				result.stableOrderSensitive++
+			}
+			result.directCoverSelectedAssets += len(finding.directCoverIDs)
+			result.directCoverTerminalAssets += len(finding.terminalIDs)
+			if strings.Join(finding.directCoverIDs, ",") != strings.Join(finding.terminalIDs, ",") {
+				result.directCoverDifferentComponents++
+			}
+			if finding.directCoverAlternatives > 1 {
+				result.directCoverAmbiguousComponents++
+			}
+			if !finding.directCoverExact {
+				result.directCoverInexactComponents++
+			}
+			assetByID := make(map[string]asset, len(finding.assets))
+			for _, item := range finding.assets {
+				assetByID[item.id] = item
+			}
+			for _, edge := range finding.matchEdges {
+				decision := evaluateSubstitution(
+					assetByID[edge.leftID], assetByID[edge.rightID], edge.evidence,
+				)
+				result.coverageClasses[string(decision.coverageClass)]++
+				result.experimentalActions[decision.action()]++
+				stableDecision := evaluateStableOffsetSubstitution(
+					assetByID[edge.leftID], assetByID[edge.rightID], edge.evidence,
+				)
+				result.stableCoverageClasses[string(stableDecision.coverageClass)]++
+				result.stableActions[stableDecision.action()]++
+				cadenceDecision := evaluateCadenceAwareSubstitution(
+					assetByID[edge.leftID], assetByID[edge.rightID], edge.evidence,
+				)
+				result.cadenceActions[cadenceDecision.action()]++
+			}
 			if finding.strictWinnerID != finding.bandWinnerID {
 				result.strictDiffersFromBandCount++
 			}
@@ -178,6 +243,20 @@ func analyze(assets []asset, maxPermutations int) auditResult {
 		}
 		if !pairMatches[pairKey(item.id, target.id)] {
 			result.historicalEdgesNotCurrent++
+			continue
+		}
+		result.historicalPolicyEvaluated++
+		decision := evaluateSubstitution(item, target, measureMatcherEvidence(item, target))
+		if !decision.rightSubstitutesLeft {
+			result.historicalPolicyChanges++
+		}
+		stableDecision := evaluateStableOffsetSubstitution(item, target, measureMatcherEvidence(item, target))
+		if !stableDecision.rightSubstitutesLeft {
+			result.stableHistoricalChanges++
+		}
+		cadenceDecision := evaluateCadenceAwareSubstitution(item, target, measureMatcherEvidence(item, target))
+		if !cadenceDecision.rightSubstitutesLeft {
+			result.cadenceHistoricalChanges++
 		}
 	}
 	result.supersessionCycles = findSupersessionCycles(assets, byID)
@@ -208,23 +287,21 @@ func analyze(assets []asset, maxPermutations int) auditResult {
 // event/category/hash-version pool.
 func buildPoolGraph(assets []asset) poolGraph {
 	match := make([][]bool, len(assets))
+	evidence := make([][]matcherEvidence, len(assets))
 	connect := make([][]bool, len(assets))
 	for i := range match {
 		match[i] = make([]bool, len(assets))
+		evidence[i] = make([]matcherEvidence, len(assets))
 		connect[i] = make([]bool, len(assets))
 		match[i][i] = true
 		connect[i][i] = true
 	}
 	for i := range assets {
 		for j := i + 1; j < len(assets); j++ {
-			matched := dvideo.Match(
-				assets[i].frameHashes, assets[j].frameHashes,
-				primaryMaxHamming, primaryMinRun, primaryMaxGaps,
-			) || dvideo.Match(
-				assets[i].frameHashes, assets[j].frameHashes,
-				longMaxHamming, longMinRun, longMaxGaps,
-			)
+			measured := measureMatcherEvidence(assets[i], assets[j])
+			matched := measured.matches()
 			match[i][j], match[j][i] = matched, matched
+			evidence[i][j], evidence[j][i] = measured, measured.swapped()
 			connect[i][j], connect[j][i] = matched, matched
 		}
 	}
@@ -237,7 +314,7 @@ func buildPoolGraph(assets []asset) poolGraph {
 			connect[i][target], connect[target][i] = true, true
 		}
 	}
-	return poolGraph{assets: assets, match: match, connect: connect}
+	return poolGraph{assets: assets, match: match, evidence: evidence, connect: connect}
 }
 
 // connectedComponents returns every component in an undirected match matrix.
@@ -273,15 +350,19 @@ func connectedComponents(match [][]bool) [][]int {
 func analyzeComponent(graph poolGraph, indexes []int, maxPermutations int) componentFinding {
 	assets := make([]asset, len(indexes))
 	match := make([][]bool, len(indexes))
+	evidence := make([][]matcherEvidence, len(indexes))
 	for i, source := range indexes {
 		assets[i] = graph.assets[source]
 		match[i] = make([]bool, len(indexes))
+		evidence[i] = make([]matcherEvidence, len(indexes))
 		for j, target := range indexes {
 			match[i][j] = graph.match[source][target]
+			evidence[i][j] = graph.evidence[source][target]
 		}
 	}
 	finding := componentFinding{
 		assets: assets, outcomes: make(map[string]int), anchoredOutcomes: make(map[string]int),
+		experimentalOutcomes: make(map[string]int), stableOutcomes: make(map[string]int),
 	}
 	memberIDs := make(map[string]struct{}, len(assets))
 	for _, item := range assets {
@@ -292,15 +373,7 @@ func analyzeComponent(graph poolGraph, indexes []int, maxPermutations int) compo
 			if match[i][j] {
 				finding.edges++
 				finding.matchEdges = append(finding.matchEdges, matchEdge{
-					leftID: assets[i].id, rightID: assets[j].id,
-					primaryWindow: longestAuditWindow(
-						assets[i].frameHashes, assets[j].frameHashes,
-						primaryMaxHamming, primaryMaxGaps,
-					),
-					longWindow: longestAuditWindow(
-						assets[i].frameHashes, assets[j].frameHashes,
-						longMaxHamming, longMaxGaps,
-					),
+					leftID: assets[i].id, rightID: assets[j].id, evidence: evidence[i][j],
 				})
 			}
 		}
@@ -318,6 +391,10 @@ func analyzeComponent(graph poolGraph, indexes []int, maxPermutations int) compo
 		finding.outcomes[outcome]++
 		anchoredOutcome := simulateKeeperPolicy(assets, match, order, anchoredBandWinner)
 		finding.anchoredOutcomes[anchoredOutcome]++
+		experimentalOutcome := simulateSubstitutionPolicy(assets, match, evidence, order)
+		finding.experimentalOutcomes[experimentalOutcome]++
+		stableOutcome := simulateStableOffsetPolicy(assets, match, evidence, order)
+		finding.stableOutcomes[stableOutcome]++
 		finding.permutations++
 	}
 	finding.exhaustive = visitOrders(len(assets), maxPermutations, visit)
@@ -329,6 +406,13 @@ func analyzeComponent(graph poolGraph, indexes []int, maxPermutations int) compo
 	finding.anchoredChronologicalResult = simulateKeeperPolicy(
 		assets, match, chronological, anchoredBandWinner,
 	)
+	finding.experimentalChronological = simulateSubstitutionPolicy(assets, match, evidence, chronological)
+	finding.stableChronological = simulateStableOffsetPolicy(assets, match, evidence, chronological)
+	substitutes := buildSubstitutionMatrix(assets, match, evidence, evaluateCadenceAwareSubstitution)
+	cover := minimumDirectCover(assets, substitutes)
+	finding.directCoverIDs = coverIDs(assets, cover.selected)
+	finding.directCoverAlternatives = cover.alternatives
+	finding.directCoverExact = cover.exact
 	for _, item := range assets {
 		if item.supersededBy == "" {
 			finding.terminalIDs = append(finding.terminalIDs, item.id)
@@ -339,38 +423,6 @@ func analyzeComponent(graph poolGraph, indexes []int, maxPermutations int) compo
 	finding.bucketWinnerID = bucketWinner(assets).id
 	finding.bandWinnerID = anchoredBandWinner(assets).id
 	return finding
-}
-
-// longestAuditWindow reproduces the domain matcher's unexported diagnostic:
-// the longest aligned window with at most maxGaps over-threshold frames.
-func longestAuditWindow(a, b []uint64, maxHamming, maxGaps int) int {
-	best := 0
-	for offset := -(len(a) - 1); offset <= len(b)-1; offset++ {
-		var aligned []bool
-		for i := range a {
-			j := i + offset
-			if j < 0 || j >= len(b) {
-				continue
-			}
-			aligned = append(aligned, dvideo.Hamming(a[i], b[j]) <= maxHamming)
-		}
-		left, misses := 0, 0
-		for right, matched := range aligned {
-			if !matched {
-				misses++
-			}
-			for misses > maxGaps {
-				if !aligned[left] {
-					misses--
-				}
-				left++
-			}
-			if width := right - left + 1; width > best {
-				best = width
-			}
-		}
-	}
-	return best
 }
 
 // isBridgeNode reports whether node connects at least two neighbors that do

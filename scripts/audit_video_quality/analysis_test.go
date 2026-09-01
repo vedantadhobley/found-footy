@@ -4,6 +4,8 @@ package main
 import (
 	"strings"
 	"testing"
+
+	dvideo "github.com/vedantadhobley/found-footy/internal/domain/video"
 )
 
 // TestCurrentPolicyDansoCycleDependsOnArrivalOrder proves the retained
@@ -96,13 +98,13 @@ func TestBuildPoolGraphRetainsHistoricalConnectivity(t *testing.T) {
 // TestLongestAuditWindowMatchesGapPolicy pins the diagnostic used to explain
 // production bridge edges without exposing domain internals solely for an
 // audit command.
-func TestLongestAuditWindowMatchesGapPolicy(t *testing.T) {
+func TestDomainAlignmentEvidenceMatchesGapPolicy(t *testing.T) {
 	a := []uint64{0, 0, 0, 0, 0}
 	b := []uint64{0, 0, ^uint64(0), 0, 0}
-	if got := longestAuditWindow(a, b, 0, 0); got != 2 {
+	if got := dvideo.BestAlignment(a, b, 0, 0).Frames; got != 2 {
 		t.Fatalf("window without gaps = %d, want 2", got)
 	}
-	if got := longestAuditWindow(a, b, 0, 1); got != 5 {
+	if got := dvideo.BestAlignment(a, b, 0, 1).Frames; got != 5 {
 		t.Fatalf("window with one gap = %d, want 5", got)
 	}
 }

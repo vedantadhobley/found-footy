@@ -185,6 +185,49 @@ func TestReviewedPairCorpusPreservesHumanJudgments(t *testing.T) {
 	}
 }
 
+// TestStableOffsetPolicyExplainsReviewedMbappeBoundary pins the first accepted
+// direct-match case used to evaluate aggregate coverage. Aggregation correctly
+// recognizes the longer clip as containing the short cut, while the current
+// experimental per-frame compression floor remains more conservative than the
+// human quality judgment.
+func TestStableOffsetPolicyExplainsReviewedMbappeBoundary(t *testing.T) {
+	corpus := loadReviewedPairCorpus(t)
+	for _, pair := range corpus.Cases {
+		if pair.ID != "mbappe-80-overlay-short-cut" {
+			continue
+		}
+		leftHashes, err := decodeFrameHashes(pair.Left.FrameHashes)
+		if err != nil {
+			t.Fatal(err)
+		}
+		rightHashes, err := decodeFrameHashes(pair.Right.FrameHashes)
+		if err != nil {
+			t.Fatal(err)
+		}
+		left, right := reviewedAssetForPolicy(pair.Left), reviewedAssetForPolicy(pair.Right)
+		left.frameHashes, right.frameHashes = leftHashes, rightHashes
+		measured := measureMatcherEvidence(left, right)
+		if !measured.matches() {
+			t.Fatal("reviewed Mbappe pair must remain a current direct match")
+		}
+		decision := evaluateStableOffsetSubstitution(left, right, measured)
+		if decision.coverageClass != coverageRightContainsLeft {
+			t.Fatalf("stable coverage = %s, want longer right clip to contain left", decision.coverageClass)
+		}
+		if decision.action() != "keep_both" || pair.Human.QualityWinner != "right" {
+			t.Fatalf("experimental action/human winner = %s/%s, want measured keep_both versus right",
+				decision.action(), pair.Human.QualityWinner)
+		}
+		cadenceAware := evaluateCadenceAwareSubstitution(left, right, measured)
+		if cadenceAware.action() != "collapse_left" {
+			t.Fatalf("cadence-aware action = %s, want longer human-preferred right clip",
+				cadenceAware.action())
+		}
+		return
+	}
+	t.Fatal("reviewed Mbappe pair missing")
+}
+
 func loadReviewedPairCorpus(t *testing.T) reviewedPairCorpus {
 	t.Helper()
 	raw, err := os.ReadFile("testdata/reviewed-pairs.json")
