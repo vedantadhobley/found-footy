@@ -87,6 +87,86 @@ func TestMigrateAdoptsCurrentSchemaAndIsIdempotent(t *testing.T) {
 	}
 }
 
+func migrationPrefixThrough(t *testing.T, through string) fstest.MapFS {
+	t.Helper()
+	entries, err := fs.ReadDir(migrations.FS, ".")
+	if err != nil {
+		t.Fatalf("read migrations: %v", err)
+	}
+	prefix := fstest.MapFS{}
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".sql") || entry.Name() > through {
+			continue
+		}
+		data, err := fs.ReadFile(migrations.FS, entry.Name())
+		if err != nil {
+			t.Fatalf("read migration %s: %v", entry.Name(), err)
+		}
+		prefix[entry.Name()] = &fstest.MapFile{Data: data}
+	}
+	return prefix
+}
+
+// TestMigrateTerminalizesRemovedEventCandidates proves FF-084's bounded data
+// repair touches only pending candidates whose owning event is already removed.
+func TestMigrateTerminalizesRemovedEventCandidates(t *testing.T) {
+	ctx, pool, _ := setupMigrationPool(t)
+	if err := pool.Migrate(ctx, migrationPrefixThrough(t, "20260831_02_retain_accepted_video_variants.sql")); err != nil {
+		t.Fatalf("apply pre-FF-084 chain: %v", err)
+	}
+	fixtureID := int64(9403)
+	fixture := makeStaging(fixtureID, time.Date(2026, 8, 31, 22, 0, 0, 0, time.UTC))
+	if err := fixture.Activate(time.Date(2026, 8, 31, 21, 55, 0, 0, time.UTC)); err != nil {
+		t.Fatalf("activate fixture: %v", err)
+	}
+	if err := pg.NewFixtureRepo(pool).Insert(ctx, fixture); err != nil {
+		t.Fatalf("insert fixture: %v", err)
+	}
+	removedEventID := uuid.New()
+	liveEventID := uuid.New()
+	if _, err := pool.Exec(ctx, `
+		INSERT INTO events (
+			id, fixture_id, natural_key, event_type, detail, team_id,
+			team_name, minute, removed, removed_reason, removed_at
+		) VALUES
+			($2, $1, 'migration_removed_goal', 'goal', 'normal goal', 1,
+			 'Home', 30, true, 'var', NOW()),
+			($3, $1, 'migration_live_goal', 'goal', 'normal goal', 2,
+			 'Away', 40, false, NULL, NULL)
+	`, fixtureID, removedEventID, liveEventID); err != nil {
+		t.Fatalf("seed migration events: %v", err)
+	}
+	if _, err := pool.Exec(ctx, `
+		INSERT INTO event_search_candidates (
+			event_id, fixture_id, search_attempt, query, tweet_url,
+			video_page_url, outcome_class
+		) VALUES
+			($2, $1, 1, 'query', 'https://x.com/removed/status/1', 'video', 'pending'),
+			($3, $1, 1, 'query', 'https://x.com/live/status/2', 'video', 'pending')
+	`, fixtureID, removedEventID, liveEventID); err != nil {
+		t.Fatalf("seed migration candidates: %v", err)
+	}
+
+	if err := pool.Migrate(ctx, migrations.FS); err != nil {
+		t.Fatalf("apply FF-084 migration: %v", err)
+	}
+	var removedOutcome, removedReason, liveOutcome string
+	if err := pool.QueryRow(ctx, `
+		SELECT outcome_class, reject_reason FROM event_search_candidates
+		WHERE event_id = $1
+	`, removedEventID).Scan(&removedOutcome, &removedReason); err != nil {
+		t.Fatalf("read removed candidate: %v", err)
+	}
+	if err := pool.QueryRow(ctx, `
+		SELECT outcome_class FROM event_search_candidates WHERE event_id = $1
+	`, liveEventID).Scan(&liveOutcome); err != nil {
+		t.Fatalf("read live candidate: %v", err)
+	}
+	if removedOutcome != "rejected" || removedReason != "event_removed" || liveOutcome != "pending" {
+		t.Fatalf("migration outcomes removed=%s/%s live=%s", removedOutcome, removedReason, liveOutcome)
+	}
+}
+
 func TestMigrateRepairsPartiallyAppliedHistoricalChange(t *testing.T) {
 	ctx, pool, _ := setupMigrationPool(t)
 	if _, err := pool.Exec(ctx, `

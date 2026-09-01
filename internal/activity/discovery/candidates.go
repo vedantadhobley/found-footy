@@ -12,6 +12,7 @@ import (
 	discoverycontract "github.com/vedantadhobley/found-footy/internal/contract/discovery"
 	twittercontract "github.com/vedantadhobley/found-footy/internal/contract/twittersearch"
 	ddiscovery "github.com/vedantadhobley/found-footy/internal/domain/discovery"
+	"github.com/vedantadhobley/found-footy/internal/infra/pg"
 )
 
 // StoreCandidateInput is the workflow-owned evidence persisted when a
@@ -27,42 +28,18 @@ type StoreCandidateOutput struct {
 	Inserted bool
 }
 
-// StoreCandidate inserts one candidate into event_search_candidates.
-// Uses ON CONFLICT (event_id, tweet_url) DO NOTHING so the activity is
-// idempotent on retry. Runs one SQL statement per candidate — batch
-// insertion is a future optimization; typical Discovery attempts
-// surface <20 candidates so per-candidate insert overhead is trivial.
+// StoreCandidate inserts one candidate into event_search_candidates. The
+// repository serializes this observation with event removal so a late
+// activity commits directly as rejected/event_removed instead of pending.
 func (a *Activities) StoreCandidate(ctx context.Context, in StoreCandidateInput) (StoreCandidateOutput, error) {
 	callCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
 
-	// Null the age field when we didn't extract it (age=0 is used as
-	// the sentinel by the search endpoint's decodeExtractResult).
-	var agePtr *float64
-	if in.AgeMinutesAtDiscovery > 0 {
-		agePtr = &in.AgeMinutesAtDiscovery
-	}
-
-	tag, err := a.Pool.Exec(callCtx, `
-		INSERT INTO event_search_candidates (
-			event_id, fixture_id, search_attempt, query,
-			tweet_url, tweet_text, video_page_url, duration_seconds,
-			username, age_minutes_at_discovery
-		) VALUES (
-			$1, $2, $3, $4,
-			$5, $6, $7, $8,
-			$9, $10
-		)
-		ON CONFLICT (event_id, tweet_url) DO NOTHING
-	`,
-		in.EventID, in.FixtureID, in.SearchAttempt, in.Query,
-		in.TweetURL, in.TweetText, in.VideoPageURL, in.DurationSeconds,
-		in.Username, agePtr,
-	)
+	inserted, err := pg.NewCandidateRepo(a.Pool).Observe(callCtx, in)
 	if err != nil {
 		return StoreCandidateOutput{}, fmt.Errorf("discovery.StoreCandidate: event=%s tweet=%s: %w", in.EventID, in.TweetURL, err)
 	}
-	return StoreCandidateOutput{Inserted: tag.RowsAffected() == 1}, nil
+	return StoreCandidateOutput{Inserted: inserted}, nil
 }
 
 // RecoveryCandidate is one candidate already owned by the event. Evidence and
@@ -286,10 +263,9 @@ type UpsertCandidateOutcomeInput struct {
 	Detail       json.RawMessage
 }
 
-// UpsertCandidateOutcome durably records one terminal candidate state. On a
-// conflict it preserves the first-observation evidence and updates only the
-// terminal fields. The fixture guard turns an impossible identity mismatch
-// into an error instead of attaching an outcome to the wrong event evidence.
+// UpsertCandidateOutcome durably records one terminal candidate state. The
+// repository preserves first-observation evidence and serializes the write
+// with event removal so event_removed cannot be overwritten by late work.
 func (a *Activities) UpsertCandidateOutcome(ctx context.Context, in UpsertCandidateOutcomeInput) error {
 	callCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
@@ -302,78 +278,11 @@ func (a *Activities) UpsertCandidateOutcome(ctx context.Context, in UpsertCandid
 		return fmt.Errorf("discovery.UpsertCandidateOutcome: non-terminal outcome %q", in.Outcome)
 	}
 
-	var age *float64
-	if in.Evidence.AgeMinutesAtDiscovery > 0 {
-		age = &in.Evidence.AgeMinutesAtDiscovery
-	}
-	var reason *string
-	if in.RejectReason != "" {
-		reason = &in.RejectReason
-	}
-	var detail []byte
-	if len(in.Detail) > 0 {
-		detail = in.Detail
-	}
-
-	// pgx encodes a nil []byte for a JSONB parameter as JSON null rather than
-	// SQL NULL. NULLIF handles both representations before replay metadata is
-	// merged; otherwise jsonb concatenation produces [null, {"replay": ...}].
-	tag, err := a.Pool.Exec(callCtx, `
-		INSERT INTO event_search_candidates (
-			event_id, fixture_id, search_attempt, query,
-			tweet_url, tweet_text, video_page_url, duration_seconds,
-			username, age_minutes_at_discovery,
-			outcome_class, reject_reason, outcome_detail, outcome_at
-		) VALUES (
-			$1, $2, $3, $4,
-			$5, $6, $7, $8,
-			$9, $10,
-			$11, $12, $13, NOW()
-		)
-		ON CONFLICT (event_id, tweet_url) DO UPDATE
-		SET outcome_class = EXCLUDED.outcome_class,
-		    reject_reason = EXCLUDED.reject_reason,
-		    outcome_detail = CASE
-		        WHEN event_search_candidates.outcome_detail ? 'replay'
-		        THEN COALESCE(NULLIF(EXCLUDED.outcome_detail, 'null'::jsonb), '{}'::jsonb) ||
-		             jsonb_build_object('replay', event_search_candidates.outcome_detail->'replay')
-		        ELSE EXCLUDED.outcome_detail
-		    END,
-		    outcome_at = CASE
-		        WHEN event_search_candidates.outcome_class = EXCLUDED.outcome_class
-		         AND event_search_candidates.reject_reason IS NOT DISTINCT FROM EXCLUDED.reject_reason
-		         AND event_search_candidates.outcome_detail IS NOT DISTINCT FROM CASE
-		             WHEN event_search_candidates.outcome_detail ? 'replay'
-		             THEN COALESCE(NULLIF(EXCLUDED.outcome_detail, 'null'::jsonb), '{}'::jsonb) ||
-		                  jsonb_build_object('replay', event_search_candidates.outcome_detail->'replay')
-		             ELSE EXCLUDED.outcome_detail
-		         END
-		        THEN COALESCE(event_search_candidates.outcome_at, EXCLUDED.outcome_at)
-		        ELSE EXCLUDED.outcome_at
-		    END
-		WHERE event_search_candidates.fixture_id = EXCLUDED.fixture_id
-	`,
-		in.Evidence.EventID,
-		in.Evidence.FixtureID,
-		in.Evidence.SearchAttempt,
-		in.Evidence.Query,
-		in.Evidence.TweetURL,
-		in.Evidence.TweetText,
-		in.Evidence.VideoPageURL,
-		in.Evidence.DurationSeconds,
-		in.Evidence.Username,
-		age,
-		string(in.Outcome),
-		reason,
-		detail,
-	)
-	if err != nil {
+	if err := pg.NewCandidateRepo(a.Pool).Complete(
+		callCtx, in.Evidence, in.Outcome, in.RejectReason, in.Detail,
+	); err != nil {
 		return fmt.Errorf("discovery.UpsertCandidateOutcome: event=%s tweet=%s: %w",
 			in.Evidence.EventID, in.Evidence.TweetURL, err)
-	}
-	if tag.RowsAffected() != 1 {
-		return fmt.Errorf("discovery.UpsertCandidateOutcome: evidence identity mismatch for event=%s tweet=%s",
-			in.Evidence.EventID, in.Evidence.TweetURL)
 	}
 	return nil
 }
@@ -386,19 +295,9 @@ func (a *Activities) RecordCandidateOutcome(ctx context.Context, in RecordCandid
 	callCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
 
-	var reason *string
-	if in.RejectReason != "" {
-		reason = &in.RejectReason
-	}
-	var detail []byte
-	if len(in.Detail) > 0 {
-		detail = in.Detail
-	}
-	if _, err := a.Pool.Exec(callCtx, `
-		UPDATE event_search_candidates
-		   SET outcome_class = $3, reject_reason = $4, outcome_detail = $5, outcome_at = NOW()
-		 WHERE event_id = $1 AND tweet_url = $2
-	`, in.EventID, in.TweetURL, string(in.Outcome), reason, detail); err != nil {
+	if err := pg.NewCandidateRepo(a.Pool).CompleteLegacy(
+		callCtx, in.EventID, in.TweetURL, in.Outcome, in.RejectReason, in.Detail,
+	); err != nil {
 		return fmt.Errorf("discovery.RecordCandidateOutcome: event=%s tweet=%s: %w", in.EventID, in.TweetURL, err)
 	}
 	return nil

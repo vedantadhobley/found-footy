@@ -43,7 +43,7 @@ found-footy/
 │   │   │   └── query_builder_test.go    name, particle, dedup, fallback, and safeguard cases
 │   │   └── vision/                      ✓ D5 (2026-07-28): clock.go + evaluate.go + schema.go + tests — clip-clock validation, wired into EventWorkflow consumer
 │   ├── infra/                           live infrastructure adapters
-│   │   ├── pg/                          ✓ S2 + FF-013/FF-066/FF-070/FF-071: pool + instruments + ordered migration/required-object gates + focused repos + atomic placement/audit + relational identity constraints
+│   │   ├── pg/                          ✓ S2 + FF-013/FF-066/FF-070/FF-071/FF-084: pool + instruments + ordered migration/required-object gates + focused repos + event-serialized candidate/removal and atomic placement/audit + relational identity constraints
 │   │   ├── nats/                        ✓ S3: client + instruments
 │   │   ├── s3/                          ✓ S4: Garage client + instruments
 │   │   ├── llm/                         ✓ S6: OpenAI-compatible client + typed errors + Chat
@@ -283,6 +283,14 @@ attribution, retry-safe popularity, asset/share identity, and optional
 supersession in one transaction. `video_shares.rank` remains a replay-only
 compatibility column; `ShareRepo.ListLiveForEvents` derives public order for a
 request-wide event batch from current evidence.
+
+FF-084 makes the event row the common serialization boundary for every
+candidate state transition, not only accepted placement. `CandidateRepo`
+owns observation and terminal outcome writes. VAR removal terminalizes pending
+candidates before it closes the parent checklist; late observations become
+`rejected/event_removed`, and replay preparation refuses removed events. This
+keeps Temporal cancellation outside the persistence invariant while preserving
+terminal evidence that committed before removal.
 
 FF-083 makes that boundary retain every accepted distinct MD5, including a
 variant that loses its first keeper comparison. `video_assets.superseded_by`
