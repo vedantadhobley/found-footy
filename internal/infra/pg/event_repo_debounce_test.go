@@ -259,6 +259,16 @@ func TestEventRepo_Absence_RemovalClosesDownstream(t *testing.T) {
 	if err := repo.RegisterDownstreamWorkflow(ctx, e.ID, "discovery", "discovery-"+e.ID.String()); err != nil {
 		t.Fatalf("RegisterDownstreamWorkflow: %v", err)
 	}
+	if _, err := pool.Exec(ctx, `
+		INSERT INTO event_search_candidates (
+			event_id, fixture_id, search_attempt, query, tweet_url,
+			video_page_url, outcome_class, reject_reason, outcome_at
+		) VALUES
+			($1, $2, 1, 'query', 'https://x.com/pending/status/1', 'video-1', 'pending', NULL, NULL),
+			($1, $2, 1, 'query', 'https://x.com/terminal/status/2', 'video-2', 'rejected', 'clock_mismatch', NOW())
+	`, e.ID, e.FixtureID); err != nil {
+		t.Fatalf("seed candidates: %v", err)
+	}
 	// Count is 3 after trigger; three absences drive it to zero → removed.
 	for i, wf := range []string{"a1", "a2", "a3"} {
 		_, hitZero, err := repo.RegisterEventAbsence(ctx, e.ID, wf)
@@ -281,5 +291,23 @@ func TestEventRepo_Absence_RemovalClosesDownstream(t *testing.T) {
 	}
 	if outcome == nil || *outcome != string(event.OutcomeEventRemoved) {
 		t.Errorf("outcome_class = %v, want %q", outcome, event.OutcomeEventRemoved)
+	}
+	var eventRemoved, preservedTerminal, pending int
+	if err := pool.QueryRow(ctx, `
+		SELECT
+			COUNT(*) FILTER (
+				WHERE outcome_class = 'rejected' AND reject_reason = 'event_removed'
+			)::int,
+			COUNT(*) FILTER (
+				WHERE outcome_class = 'rejected' AND reject_reason = 'clock_mismatch'
+			)::int,
+			COUNT(*) FILTER (WHERE outcome_class = 'pending')::int
+		FROM event_search_candidates WHERE event_id = $1
+	`, e.ID).Scan(&eventRemoved, &preservedTerminal, &pending); err != nil {
+		t.Fatalf("query candidate outcomes: %v", err)
+	}
+	if eventRemoved != 1 || preservedTerminal != 1 || pending != 0 {
+		t.Fatalf("candidate outcomes event_removed/preserved/pending = %d/%d/%d, want 1/1/0",
+			eventRemoved, preservedTerminal, pending)
 	}
 }

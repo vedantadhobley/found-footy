@@ -249,3 +249,62 @@ func TestCandidateReplayStore_PrepareRejectsIdentityDrift(t *testing.T) {
 		t.Fatal("expected identity drift error")
 	}
 }
+
+// TestCandidateReplayStore_PrepareRejectsRemovedEvent prevents a historical
+// repair from reopening candidate work after VAR removal became authoritative.
+func TestCandidateReplayStore_PrepareRejectsRemovedEvent(t *testing.T) {
+	ctx, pool, fixtureRepo := setupRepo(t)
+	fixture := makeStaging(8132, time.Date(2026, 8, 31, 21, 0, 0, 0, time.UTC))
+	if err := fixture.Activate(time.Date(2026, 8, 31, 20, 55, 0, 0, time.UTC)); err != nil {
+		t.Fatalf("activate: %v", err)
+	}
+	if err := fixtureRepo.Insert(ctx, fixture); err != nil {
+		t.Fatalf("insert fixture: %v", err)
+	}
+	eventID := uuid.New()
+	if _, err := pool.Exec(ctx, `
+		INSERT INTO events (
+			id, fixture_id, natural_key, event_type, detail,
+			team_id, team_name, player_name, minute, downstream_triggered,
+			removed, removed_reason, removed_at
+		) VALUES ($1, $2, '45_10_goal_1', 'goal', 'normal goal',
+		          45, 'Team', 'Player', 90, true, true, 'var', NOW())
+	`, eventID, fixture.ID); err != nil {
+		t.Fatalf("seed removed replay event: %v", err)
+	}
+	if _, err := pool.Exec(ctx, `
+		INSERT INTO event_search_candidates (
+			event_id, fixture_id, search_attempt, query, tweet_url,
+			video_page_url, outcome_class, reject_reason, outcome_at
+		) VALUES ($1, $2, 1, 'query', 'https://x.com/replay/status/1',
+		          'video', 'rejected', $3, NOW())
+	`, eventID, fixture.ID, pginfra.ClockMismatchRejectReason); err != nil {
+		t.Fatalf("seed replay candidate: %v", err)
+	}
+
+	store := pginfra.NewCandidateReplayStore(pool)
+	_, err := store.PrepareCandidateReplay(ctx, pginfra.PrepareCandidateReplayInput{
+		EventID: eventID, WorkflowID: "event-replay-removed-" + eventID.String(),
+		ReplayKind:   pginfra.ClockBoundaryReplayKind,
+		RejectReason: pginfra.ClockMismatchRejectReason, MaxAttempts: 15,
+	})
+	if err == nil {
+		t.Fatal("removed event replay unexpectedly prepared")
+	}
+	var outcome, reason string
+	var checklists int
+	if err := pool.QueryRow(ctx, `
+		SELECT outcome_class, reject_reason FROM event_search_candidates
+		WHERE event_id = $1
+	`, eventID).Scan(&outcome, &reason); err != nil {
+		t.Fatalf("read candidate: %v", err)
+	}
+	if err := pool.QueryRow(ctx, `
+		SELECT COUNT(*) FROM event_downstream_workflows WHERE event_id = $1
+	`, eventID).Scan(&checklists); err != nil {
+		t.Fatalf("count checklists: %v", err)
+	}
+	if outcome != "rejected" || reason != pginfra.ClockMismatchRejectReason || checklists != 0 {
+		t.Fatalf("removed replay mutated candidate/checklist: %s/%q/%d", outcome, reason, checklists)
+	}
+}

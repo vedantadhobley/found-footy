@@ -3,6 +3,7 @@
 package pg_test
 
 import (
+	"context"
 	"testing"
 	"time"
 
@@ -180,5 +181,160 @@ func TestDiscoveryActivities_TerminalUpsertCreatesMissingEvidence(t *testing.T) 
 		outcomeAt.IsZero() {
 		t.Fatalf("terminal candidate mismatch: count=%d fixture=%d attempt=%d query=%q text=%q page=%q duration=%v user=%q age=%v outcome=%q at=%v",
 			count, fixtureID, attempt, query, text, page, duration, user, age, outcome, outcomeAt)
+	}
+	if err := activities.RecordCandidateOutcome(ctx, discoveryactivity.RecordCandidateOutcomeInput{
+		EventID: eventID, TweetURL: "https://x.com/missing/status/0",
+		Outcome: discoveryactivity.OutcomeFailed, RejectReason: "legacy_missing",
+	}); err != nil {
+		t.Fatalf("legacy missing-row compatibility: %v", err)
+	}
+}
+
+// TestDiscoveryActivities_RemovedEventCannotRegainPendingCandidate proves
+// that observations and outcomes which finish after VAR removal retain their
+// audit evidence but cannot reopen workflow-owned pending work.
+func TestDiscoveryActivities_RemovedEventCannotRegainPendingCandidate(t *testing.T) {
+	ctx, pool, fixtureRepo := setupRepo(t)
+	fixture := makeStaging(8122, time.Date(2026, 8, 31, 20, 0, 0, 0, time.UTC))
+	if err := fixture.Activate(time.Date(2026, 8, 31, 19, 55, 0, 0, time.UTC)); err != nil {
+		t.Fatalf("activate: %v", err)
+	}
+	if err := fixtureRepo.Insert(ctx, fixture); err != nil {
+		t.Fatalf("insert fixture: %v", err)
+	}
+
+	eventID := uuid.New()
+	if _, err := pool.Exec(ctx, `
+		INSERT INTO events (
+			id, fixture_id, natural_key, event_type, detail,
+			team_id, team_name, player_name, minute, downstream_triggered,
+			removed, removed_reason, removed_at
+		) VALUES ($1, $2, '44_9_goal_1', 'goal', 'normal goal',
+		          44, 'Team', 'Player', 89, true, true, 'var', NOW())
+	`, eventID, fixture.ID); err != nil {
+		t.Fatalf("seed removed event: %v", err)
+	}
+
+	first := discoverycontract.CandidateEvidence{
+		EventID: eventID, FixtureID: fixture.ID, SearchAttempt: 1, Query: "query",
+		TweetURL: "https://x.com/late/status/1", VideoPageURL: "video-one",
+	}
+	second := first
+	second.TweetURL = "https://x.com/late/status/2"
+	second.VideoPageURL = "video-two"
+	activities := &discoveryactivity.Activities{Pool: pool}
+	stored, err := activities.StoreCandidate(ctx, first)
+	if err != nil || !stored.Inserted {
+		t.Fatalf("StoreCandidate = %+v, %v", stored, err)
+	}
+	if err := activities.UpsertCandidateOutcome(ctx, discoveryactivity.UpsertCandidateOutcomeInput{
+		Evidence: first, Outcome: discoveryactivity.OutcomePromoted,
+	}); err != nil {
+		t.Fatalf("late terminal overwrite: %v", err)
+	}
+	if err := activities.UpsertCandidateOutcome(ctx, discoveryactivity.UpsertCandidateOutcomeInput{
+		Evidence: second, Outcome: discoveryactivity.OutcomeRejected,
+		RejectReason: "clock_mismatch",
+	}); err != nil {
+		t.Fatalf("late terminal insert: %v", err)
+	}
+	if err := activities.RecordCandidateOutcome(ctx, discoveryactivity.RecordCandidateOutcomeInput{
+		EventID: eventID, TweetURL: first.TweetURL,
+		Outcome: discoveryactivity.OutcomeFailed, RejectReason: "late_legacy",
+	}); err != nil {
+		t.Fatalf("late legacy overwrite: %v", err)
+	}
+
+	var total, removed, pending int
+	if err := pool.QueryRow(ctx, `
+		SELECT COUNT(*)::int,
+		       COUNT(*) FILTER (
+		           WHERE outcome_class = 'rejected' AND reject_reason = 'event_removed'
+		       )::int,
+		       COUNT(*) FILTER (WHERE outcome_class = 'pending')::int
+		FROM event_search_candidates WHERE event_id = $1
+	`, eventID).Scan(&total, &removed, &pending); err != nil {
+		t.Fatalf("read late candidates: %v", err)
+	}
+	if total != 2 || removed != 2 || pending != 0 {
+		t.Fatalf("late candidates total/removed/pending = %d/%d/%d, want 2/2/0", total, removed, pending)
+	}
+}
+
+// TestDiscoveryActivities_ObservationWaitsForRemovalLock proves the ordering
+// contract itself: a candidate writer cannot cross an uncommitted removal and
+// records event_removed after that transaction wins.
+func TestDiscoveryActivities_ObservationWaitsForRemovalLock(t *testing.T) {
+	ctx, pool, fixtureRepo := setupRepo(t)
+	fixture := makeStaging(8123, time.Date(2026, 8, 31, 21, 0, 0, 0, time.UTC))
+	if err := fixture.Activate(time.Date(2026, 8, 31, 20, 55, 0, 0, time.UTC)); err != nil {
+		t.Fatalf("activate: %v", err)
+	}
+	if err := fixtureRepo.Insert(ctx, fixture); err != nil {
+		t.Fatalf("insert fixture: %v", err)
+	}
+	eventID := uuid.New()
+	if _, err := pool.Exec(ctx, `
+		INSERT INTO events (
+			id, fixture_id, natural_key, event_type, detail,
+			team_id, team_name, player_name, minute, downstream_triggered
+		) VALUES ($1, $2, '46_11_goal_1', 'goal', 'normal goal',
+		          46, 'Team', 'Player', 91, true)
+	`, eventID, fixture.ID); err != nil {
+		t.Fatalf("seed event: %v", err)
+	}
+
+	removalTx, err := pool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin removal: %v", err)
+	}
+	defer func() { _ = removalTx.Rollback(context.Background()) }()
+	if _, err := removalTx.Exec(ctx, `
+		UPDATE events
+		SET removed = true, removed_reason = 'var', removed_at = NOW()
+		WHERE id = $1
+	`, eventID); err != nil {
+		t.Fatalf("stage removal: %v", err)
+	}
+
+	evidence := discoverycontract.CandidateEvidence{
+		EventID: eventID, FixtureID: fixture.ID, SearchAttempt: 1, Query: "query",
+		TweetURL: "https://x.com/locked/status/1", VideoPageURL: "video",
+	}
+	type storeCall struct {
+		out discoveryactivity.StoreCandidateOutput
+		err error
+	}
+	done := make(chan storeCall, 1)
+	go func() {
+		out, err := (&discoveryactivity.Activities{Pool: pool}).StoreCandidate(context.Background(), evidence)
+		done <- storeCall{out: out, err: err}
+	}()
+	select {
+	case call := <-done:
+		t.Fatalf("candidate crossed uncommitted removal: %+v, %v", call.out, call.err)
+	case <-time.After(250 * time.Millisecond):
+	}
+	if err := removalTx.Commit(ctx); err != nil {
+		t.Fatalf("commit removal: %v", err)
+	}
+	var call storeCall
+	select {
+	case call = <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("candidate did not resume after removal commit")
+	}
+	if call.err != nil || !call.out.Inserted {
+		t.Fatalf("late observation = %+v, %v", call.out, call.err)
+	}
+	var outcome, reason string
+	if err := pool.QueryRow(ctx, `
+		SELECT outcome_class, reject_reason FROM event_search_candidates
+		WHERE event_id = $1 AND tweet_url = $2
+	`, eventID, evidence.TweetURL).Scan(&outcome, &reason); err != nil {
+		t.Fatalf("read candidate: %v", err)
+	}
+	if outcome != "rejected" || reason != "event_removed" {
+		t.Fatalf("late candidate = %s/%s, want rejected/event_removed", outcome, reason)
 	}
 }

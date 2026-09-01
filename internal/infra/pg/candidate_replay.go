@@ -167,6 +167,14 @@ func (s *CandidateReplayStore) PrepareCandidateReplay(
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 
+	removed, err := lockCandidateEvent(ctx, tx, in.EventID, 0)
+	if err != nil {
+		return out, fmt.Errorf("pg.CandidateReplayStore.Prepare: %w", err)
+	}
+	if removed {
+		return out, fmt.Errorf("pg.CandidateReplayStore.Prepare: event=%s is removed", in.EventID)
+	}
+
 	if err := tx.QueryRow(ctx, `
 		SELECT COUNT(*)::int
 		FROM event_search_candidates

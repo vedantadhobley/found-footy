@@ -440,6 +440,45 @@ the current branch.
   media cutoff. Historical first-loss variants cannot be backfilled.
 - **Decision:** [Accepted variants form direct lineage, not perceptual clusters](./decisions/2026-08-31-accepted-variants-form-direct-lineage.md).
 
+### FF-084 — event removal can leave or recreate pending candidates
+
+- **Status:** `implemented`
+- **Severity:** P2
+- **Observed:** A read-only production audit on 2026-08-31 found 53 candidate
+  rows still `pending` after their discovery parent had completed. Fifteen
+  belonged to removed events and the newest was created that day. The other 38
+  are older pre-FF-034 residue under `no_candidates`,
+  `candidates_no_assets`, or `assets_surfaced`; none of the 53 carried an
+  asset credit. This issue owns only the 15 removal-derived rows.
+- **Cause:** `RegisterEventAbsence` marked the event removed and closed its
+  downstream checklist in one transaction, then the monitor requested
+  Temporal cancellation. It did not terminalize candidate rows. Cancellation
+  is cooperative, so an observation or terminal activity already running
+  could also commit after removal and create or restore a pending row.
+  Historical replay preparation had the same reopen window.
+- **Invariant:** Once `events.removed` is true, that event has no pending
+  candidates. Removal, observation, ordinary terminal persistence, replay
+  preparation, and accepted placement serialize on the event row. Terminal
+  outcomes that committed before removal remain immutable; only pending or
+  newly observed rows become `rejected/event_removed`.
+- **Implementation:** Candidate observation and outcome writes now use one
+  Postgres repository that locks the event before mutation. The removal
+  transaction terminalizes all pending candidates before closing the parent
+  checklist. A late writer retains its immutable evidence but commits directly
+  as `event_removed`. Replay preparation rejects removed events, and placement
+  uses the same helper without overwriting an earlier uncredited terminal
+  verdict. Migration
+  `20260831_03_terminalize_removed_event_candidates.sql` repairs only pending
+  rows joined to removed events; it deliberately leaves the 38 unrelated
+  historical rows for their owning recovery policy.
+- **Regressions:** Postgres integration coverage proves removal closes pending
+  candidates while preserving terminal rows, every late activity path remains
+  terminal, removed events cannot enter replay, and the bounded migration does
+  not touch a live event's pending candidate.
+- **Completion condition:** Apply the data migration, release the worker, then
+  verify removed events have zero pending candidates and that a natural late
+  cancellation records `rejected/event_removed` without reopening its parent.
+
 ### FF-003 — candidate can pass without exact-event semantic evidence
 
 - **Status:** `confirmed`

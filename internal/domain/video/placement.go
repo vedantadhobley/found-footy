@@ -51,10 +51,6 @@ type ClipPlacementResult struct {
 	EventRemoved         bool
 }
 
-// PlacementRejectEventRemoved is the terminal candidate reason used when VAR
-// removal wins the event-row lock before an accepted clip can commit.
-const PlacementRejectEventRemoved = "event_removed"
-
 // PlacementRepo atomically owns every database mutation caused by an accepted
 // candidate: candidate terminal state, observed-variant attribution,
 // popularity credit, asset/share mint, and optional supersession. S3

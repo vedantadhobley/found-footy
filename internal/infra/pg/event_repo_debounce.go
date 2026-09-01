@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -206,11 +207,16 @@ func (r *EventRepo) registerEventAbsence(
 		hitZero = flipped && err == nil
 	}
 
-	// When the event just flipped to removed (VAR overturn), close out any
-	// still-pending downstream workflow rows in the SAME transaction, so
-	// fixture completion isn't blocked forever waiting on a discovery for
-	// an event that no longer exists. See audit-2026-07-26 P1 #1.
+	// When the event just flipped to removed (VAR overturn), close every
+	// candidate before its owning downstream row in the SAME transaction.
+	// Candidate writers share this event lock, so work that loses the race
+	// observes removed=true and cannot recreate pending afterward.
 	if hitZero {
+		if _, err := terminalizePendingCandidatesForRemovedEvent(
+			ctx, tx, eventID, "", time.Now().UTC(),
+		); err != nil {
+			return 0, false, fmt.Errorf("pg.EventRepo.RegisterEventAbsence: close candidates on removal: %w", err)
+		}
 		if _, err := tx.Exec(ctx, `
 			UPDATE event_downstream_workflows
 			SET completed_at = NOW(), outcome_class = $2

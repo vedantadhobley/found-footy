@@ -19,6 +19,11 @@ const (
 	OutcomeSuperseded CandidateOutcome = "superseded"
 	OutcomeRejected   CandidateOutcome = "rejected"
 	OutcomeFailed     CandidateOutcome = "failed"
+
+	// RejectReasonEventRemoved closes uncredited candidate work when the
+	// provider retracts its owning event. It is shared by observation,
+	// terminal-outcome, placement, replay, and removal transactions.
+	RejectReasonEventRemoved = "event_removed"
 )
 
 // Terminal reports whether o is a schema-valid terminal candidate outcome.

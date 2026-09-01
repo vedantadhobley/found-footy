@@ -126,6 +126,16 @@ prevents a false successful parent. A failed observation insert does not block
 the already-dispatched clip; it keeps the search attempt uncheckpointed so a
 replacement execution cannot skip evidence that never became durable.
 
+FF-084 extends that ownership contract through event removal. Candidate
+observation, terminal persistence, replay preparation, accepted placement, and
+VAR removal all lock the event row before changing candidate state. Removal
+terminalizes every pending candidate as `rejected/event_removed` before it
+closes the downstream checklist. A writer already dispatched by Temporal then
+waits for that transaction, retains any new immutable observation evidence,
+and commits terminal rather than recreating `pending`. Removal does not rewrite
+a candidate whose terminal verdict committed first. Historical replay refuses
+to reopen a removed event.
+
 **Critical-path measurement contract (FF-050).** EventWorkflow records the
 vendor-first-seen to workflow-start interval, every search attempt, and the
 workflow-observed latency of observation persistence, download, dense hash,
@@ -268,8 +278,10 @@ dense hashing, then two dedup stages straddle vision (#171 shipped 2026-08-09):
   loses to VAR records uncredited cluster members as
   `rejected/event_removed`, creates no asset/share/popularity change, deletes
   both its deterministic destination and staging key, and returns a typed
-  non-public result. A placement that commits first remains owned by the
-  monitor's subsequent `DestroyEvent` teardown.
+  non-public result. It changes only new or pending observations; an earlier
+  terminal verdict remains durable even when it has no asset credit. A
+  placement that commits first remains owned by the monitor's subsequent
+  `DestroyEvent` teardown.
 - **Compatibility:** `ff-066-atomic-clip-placement` version 1 selects that path.
   Older histories retain independent `PromoteAndPersist`,
   `BumpAssetPopularity`, `SupersedeAssets`, terminal-outcome, and
@@ -337,6 +349,11 @@ mismatched row fails instead of masquerading as success. `AssetsKept` is the LIV
 promotion retry and cleanup contract in
 [`2026-08-16-promotion-retries-complete-durable-tail.md`](../decisions/2026-08-16-promotion-retries-complete-durable-tail.md);
 history in [audit-2026-08-05](../design/audits/audit-2026-08-05.md) Tier-1 #1.
+
+VAR removal is the only alternate checklist owner. Its Postgres transaction
+first terminalizes pending candidates, then closes the checklist as
+`event_removed`; asynchronous Temporal cancellation is resource cleanup, not
+the database correctness boundary.
 
 **Per-event Firefox fleet binding (#160, gated on `FleetEnabled`; live in prod).**
 When `GetDiscoveryConfig` returns `FleetEnabled=true`, the producer derives
