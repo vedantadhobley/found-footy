@@ -37,10 +37,60 @@ The total-order scores are comparisons, not accepted production policy. The
 focused [2026-08-31 audit](../../docs/design/audits/video-quality-2026-08-31.md)
 records the interpretation and rejected transitive-cluster direction.
 
+The report also replays an experimental substitution rule. `BestAlignment`
+returns the strongest qualifying primary or sustained dHash span, including
+both source offsets and tolerated gaps. The command divides that span by each
+stored hash-sequence length and classifies the edge as `equivalent`,
+`left_contains_right`, `right_contains_left`, or `partial_overlap`. A covered
+clip requires 90% contiguous aligned coverage. A proposed replacement must
+also retain at least 90% of every available technical dimension: pixel area,
+frame rate, and per-frame compression budget (or spatial bitrate density when
+cadence is unknown).
+
+Those percentages are diagnostic, not production thresholds. The corpus
+replay showed that longest contiguous alignment is not whole-video
+substitutability: it would keep both sides on most current edges and also keeps
+both sides of an accepted reviewed duplicate. The output therefore measures a
+failed conservative baseline and guides the next segmented/aggregate overlap
+experiment; it does not authorize a matcher or keeper change.
+
+The second experiment aggregates all frame comparisons at an offset already
+anchored by a qualifying primary or sustained window. It requires at least 75%
+similarity over the complete aligned timeline and selects the widest qualifying
+anchored overlap; if neither route qualifies, it retains the stronger negative
+evidence. An 80% overlap covers a clip. This
+recovers matches fragmented by intermittent overlays without combining
+different offsets or changing the production match set. The report and review
+CSV prefix these fields with `stable_`.
+
+This stable-offset baseline also remains diagnostic. It recovers the reviewed
+Mbappé containment relationship, but the independent per-frame compression
+floor rejects the human-preferred 1080p50 winner. Across the full corpus it
+also makes more components arrival-sensitive. The evidence separates a
+coverage improvement from two unresolved policy questions: technical-quality
+tradeoffs and set-level public visibility.
+
+The cadence-aware comparison keeps pixel area, reported frame rate, and spatial
+bitrate density independent. It deliberately does not divide spatial density
+by frame rate: encoded frames share inter-frame information, and the reviewed
+1080p50 Mbappé winner has a lower per-frame density than the inferior 720p30
+cut. Historical rows without cadence cannot distinguish this experiment from
+the stable-offset baseline.
+
+The direct-cover experiment builds directional edges only from those pairwise
+decisions and solves the smallest visible set for which every hidden node has a
+selected direct substitute. A path through another hidden node never counts.
+Components through twenty assets are exhaustive; a larger component fails
+visible by retaining every asset. Equal minima prefer the sum of immutable
+exact-variant observations and then asset ID, solely to make audit output
+repeatable. That tiebreak is not accepted public behavior.
+
 ## Human review manifest
 
 Pass `-review-csv` to emit one stable row per direct perceptual match instead
-of the text report. The command fills evidence through `current_preference` and
+of the text report. It includes both route windows, the selected route, aligned
+offsets and gaps, bilateral coverage, coverage class, and experimental action.
+The command fills reproducible evidence through `current_preference` and
 leaves four reviewer-owned columns blank:
 
 - `dedup_decision`: `collapse`, `keep_both`, or `uncertain`.

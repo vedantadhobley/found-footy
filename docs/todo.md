@@ -359,10 +359,51 @@ the current branch.
   form an executable non-media corpus with full derived dHash sequences,
   retained metadata, human labels, and snapshots of current behavior. Tests
   replay current behavior without redefining it as the desired result.
+- **Coverage-policy checkpoint (2026-08-31):** `Match` now delegates to a
+  behavior-preserving `BestAlignment` primitive that also returns left/right
+  offsets, aligned frames, and tolerated gaps. The offline audit reports each
+  side's contiguous aligned coverage and replays an explicitly experimental
+  rule: 90% coverage is required to treat a presentation as covered, and a
+  replacement may lose at most 10% in every available technical dimension.
+  On the retained corpus, 538 of 1,051 direct edges are partial overlaps and
+  the experiment keeps both sides on 674 edges. It rejects 454 of 661 prior
+  supersessions that still match. The reviewed Mbappé 80′ collapse also
+  appears partial under this measurement. This falsifies longest contiguous
+  match coverage as a sufficient production substitution rule; no runtime
+  behavior changed.
+- **Stable-offset checkpoint (2026-08-31):** Aggregating every similar frame
+  along the primary or sustained route's qualified offset recovers 237 former
+  partial edges. With an experimental 80% bilateral coverage boundary and 75%
+  full-overlap similarity floor, the corpus has 73 equivalent, 75
+  left-containing, 602 right-containing, and 301 partial edges. The rule keeps
+  both sides on 490 edges and rejects 329 of 661 still-matching historical
+  supersessions. It also increases arrival-sensitive components from twelve
+  to twenty, so directional pairwise substitution remains unsuitable as the
+  public-set reducer. The reviewed Mbappé pair now classifies correctly as
+  right-containing (84.2% of the short cut at 85.9% similarity). With its
+  retained 30/50 fps evidence, the independent 90% per-frame compression floor
+  still keeps both even though human review prefers the 1080p50 clip. Coverage
+  and technical preference are now separate measured failures.
+- **Cadence/direct-cover checkpoint (2026-08-31):** A second technical relation
+  treats pixel area, reported cadence, and spatial bitrate density as
+  independent evidence. It does not divide density by cadence. This changes
+  the reviewed Mbappé outcome from `keep_both` to the accepted longer 1080p50
+  winner. The historical production export cannot measure the wider effect
+  because its frame-rate column is uniformly unknown; its pair counts remain
+  identical to the stable-offset baseline. An exact direct-cover experiment
+  then selected the smallest set for which every hidden asset has a selected
+  direct substitute. It follows no transitive paths and solved every retained
+  component exactly (largest size nine). The result selected 672 assets versus
+  400 historical terminal assets, changed 223 of 376 components, and had 17
+  equally small covers before the experimental exact-observation/asset-ID
+  tiebreak. The solver removes arrival order, but the current evidence relation
+  would expose far too many historical variants and its tiebreak is not an
+  accepted product rule.
 - **Next work:** After FF-083 release, review natural post-FF-082 pairs while
   every accepted variant remains inside the ordinary public media window, then
-  evaluate any policy proposal against the accepted corpus. Do not change
-  `IsUpgrade` until reliable presentation evidence
+  evaluate the cadence-aware relation on rows that actually retain cadence and
+  label presentation defects that metadata cannot express. Do not change
+  `IsUpgrade` or adopt direct-cover visibility until reliable presentation evidence
   resolves the FF-052 screen-detection gap. Any replacement must be a
   documented product policy, not fitted metadata weights. Separately repair
   the three legacy Danso edges onto the clear 62.159 s active winner after

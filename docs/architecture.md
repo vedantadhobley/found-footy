@@ -263,8 +263,9 @@ Storage still enforces only md5 exact-match through `UNIQUE(event_id, md5)`;
 the old whole-clip `perceptual_hash` UNIQUE is retired.
 
 Beyond the model, the package owns the dedup + quality logic (pure, table-
-tested): `hash.go` (`DHash`/`DHashPNG`), `match.go` (`Match` — the
-offset-tolerant sliding window), `filter.go` (`HardFilter` pre-download gate;
+tested): `hash.go` (`DHash`/`DHashPNG`), `match.go` (`Match` plus
+`BestAlignment` — the offset-tolerant gate and its aligned-span evidence),
+`filter.go` (`HardFilter` pre-download gate;
 the live-calibrated landscape aspect band is 1.73–1.82),
 `quality.go` (`IsUpgrade`/`ClipQuality` winner-selection — wired post-vision #171),
 and `rank.go` (`CompareShares` — verified, popularity, size, age, then share-ID
@@ -275,7 +276,16 @@ for new versioned workflow histories. Existing rows remain unknown. Cadence is
 independent evidence beside spatial bitrate density and derived per-frame
 compression budget; it does not yet change `IsUpgrade`. The read-only
 `scripts/audit_video_quality` command reconstructs direct match graphs and can
-emit a stable human-review manifest for FF-081 policy work.
+emit a stable human-review manifest for FF-081 policy work. Its experimental
+substitution replay separates bilateral aligned coverage from technical
+quality and never changes the production matcher or `IsUpgrade` policy. A
+second stable-offset experiment aggregates intermittent matching regions only
+along an offset already anchored by a production-qualified window; it does not
+join unrelated offsets or enlarge the production match set.
+The audit also carries a cadence-aware quality experiment and an exact minimum
+direct-cover solver for components up to twenty assets. The solver requires
+every hidden node to have a selected direct substitute, never a transitive
+path. Both remain research surfaces, not runtime policy.
 
 FF-066 adds `ClipPlacement` and `PlacementRepo` as the accepted-candidate write
 boundary. The Postgres adapter locks the event and commits candidate

@@ -123,7 +123,7 @@ disagreement and Havertz uncertainty. New post-FF-082/FF-083 matches must
 supply retained cadence and be reviewed inside the ordinary public media
 window before retention reclaims their bytes.
 
-## Conclusion
+## Initial conclusion
 
 Do not add a durable perceptual `cluster_id` or treat dHash connected
 components as one clip. That would make the current safe failure—an occasional
@@ -147,3 +147,92 @@ The follow-up FF-082 implementation retains nullable cadence for new assets and
 adds a direct-pair review-manifest mode to the audit command. It deliberately
 does not alter `IsUpgrade`; historical rows from this checkpoint remain cadence
 unknown.
+
+## Contiguous-coverage substitution experiment
+
+A follow-up read-only replay separated shared-footage coverage from technical
+quality. The production matcher now exposes its strongest aligned span without
+changing the boolean match result. The audit classified each direct edge using
+the aligned span as a fraction of both hash sequences. Its conservative
+baseline required 90% contiguous coverage before calling one presentation
+covered and allowed no more than a 10% loss in each available technical signal.
+
+The 1,051 current direct edges classified as 20 equivalent, 58 left-containing,
+435 right-containing, and 538 partial overlaps. Technical guards reduced those
+to 377 directed or equivalent collapses; 674 edges kept both. When replayed
+against history, the experiment rejected 454 of the 661 persisted
+supersessions that still satisfy the current matcher. It reduced component
+arrival sensitivity from twelve to four but did so by retaining many more
+presentations, not by resolving their quality order.
+
+This baseline is not suitable for production. In particular, the accepted
+Mbappé 80′ duplicate pair exposes only a partial strongest contiguous span even
+though human review says to collapse it and keep the longer 1080p50 sequence.
+Periodic mismatches, overlays, edits, and repeated shared segments can divide a
+true duplicate into several aligned regions. Longest-window coverage is useful
+review evidence but is not whole-video equivalence. The next experiment must
+measure segmented or aggregate aligned coverage while preserving offsets and
+must still keep quality tradeoffs visible. Production `Match`, `IsUpgrade`, and
+placement behavior remain unchanged.
+
+## Stable-offset aggregate experiment
+
+The next replay aggregated every frame comparison across an offset already
+anchored by a production-qualified primary or sustained window. It required
+75% similarity over the complete aligned timeline, selected the widest
+qualifying anchored overlap, and used 80% overlap as the covered-clip
+boundary. It did not consider new pairs, combine offsets, or change production
+matching.
+
+This recovered 237 edges from the contiguous baseline. The 1,051 edges became
+73 equivalent, 75 left-containing, 602 right-containing, and 301 partial. The
+technical guard permitted 561 directed or equivalent collapses and kept both
+on 490. It rejected 329 of 661 still-matching historical supersessions. Unlike
+the contiguous baseline, however, it increased order-sensitive components from
+twelve to twenty. Pairwise directional substitution can still hide an asset
+that would have dominated a different neighbor, so richer evidence alone does
+not produce an order-independent public set.
+
+The reviewed Mbappé 80′ pair demonstrates both progress and the next failure.
+Stable-offset evidence covers 84.2% of the short cut with 85.9% similar frames,
+correctly classifying the longer 1080p50 clip as containing the 720p30 cut.
+When cadence is retained, the experimental independent-dimension quality floor
+still keeps both: the higher resolution and cadence lower its derived bits per
+pixel per frame by more than 10%. Human review prefers that longer 1080p50
+presentation. Per-frame compression budget is useful evidence but is not a
+safe hard veto independent of resolution and cadence.
+
+The stable-offset measurement is worth retaining in the audit manifest, but
+the policy is not ready for production. The next proposal must address public
+set selection without transitive perceptual identity and must express cadence,
+resolution, and compression as a documented presentation-quality policy rather
+than independent hard floors. Production behavior remains unchanged.
+
+## Cadence-aware quality and direct-cover experiment
+
+A follow-up quality relation retained pixel area, reported cadence, and spatial
+bitrate density as independent dimensions. It removed bits per pixel per frame
+from the hard veto. This is not a weighted score: a replacement must still
+retain at least 90% of every available signal. It changes the reviewed Mbappé
+pair to the accepted longer 1080p50 winner because that clip has more pixels,
+higher cadence, and higher spatial bitrate density. The historical export has
+no retained cadence, so its aggregate pair actions remain identical to the
+stable-offset result. Natural FF-082/FF-083 evidence is required to evaluate
+the wider effect.
+
+The same pass tested order-independent public-set selection. For each retained
+component it built only direct directional substitution edges, then exhaustively
+selected the smallest set for which every hidden asset had a selected direct
+substitute. Transitive reachability never counted. All 376 components were
+within the exact bound; the largest had nine assets. The solver selected 672
+assets compared with 400 historical terminal assets and changed 223 components.
+Seventeen components had more than one minimum cover before the audit-only
+exact-observation and asset-ID tiebreak.
+
+This separates algorithm correctness from policy readiness. Minimum direct
+cover removes arrival order and does not invent transitive identity, but the
+current conservative relation leaves too many variants visible. The tiebreak
+also remains a product decision, and metadata still cannot detect screen
+recordings, editorial chrome, crop quality, or semantic memes. Keep the solver
+as an audit candidate; do not wire it into placement or public reads before
+natural cadence-bearing variants and presentation labels exist.

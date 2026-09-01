@@ -21,9 +21,42 @@ func printReport(w io.Writer, result auditResult, detailLimit int) {
 	fmt.Fprintf(w, "quality_cycle_components=%d quality_cycle_triples=%d order_sensitive_components=%d anchored_order_sensitive_components=%d\n",
 		result.qualityCycleComponentCount, result.qualityCycleTripleCount,
 		result.orderSensitiveComponentCount, result.anchoredOrderSensitiveCount)
+	fmt.Fprintf(w, "experimental_coverage threshold=%.2f quality_floor=%.2f equivalent=%d left_contains_right=%d right_contains_left=%d partial_overlap=%d\n",
+		wholeClipCoverage, qualityRetentionFloor,
+		result.coverageClasses[string(coverageEquivalent)],
+		result.coverageClasses[string(coverageLeftContainsRight)],
+		result.coverageClasses[string(coverageRightContainsLeft)],
+		result.coverageClasses[string(coveragePartial)])
+	fmt.Fprintf(w, "experimental_actions collapse_equivalent=%d collapse_left=%d collapse_right=%d keep_both=%d order_sensitive_components=%d\n",
+		result.experimentalActions["collapse_equivalent"], result.experimentalActions["collapse_left"],
+		result.experimentalActions["collapse_right"], result.experimentalActions["keep_both"],
+		result.experimentalOrderSensitive)
+	fmt.Fprintf(w, "stable_offset_coverage coverage_threshold=%.2f similarity_threshold=%.2f quality_floor=%.2f equivalent=%d left_contains_right=%d right_contains_left=%d partial_overlap=%d\n",
+		stableOffsetCoverage, stableOffsetSimilarity, qualityRetentionFloor,
+		result.stableCoverageClasses[string(coverageEquivalent)],
+		result.stableCoverageClasses[string(coverageLeftContainsRight)],
+		result.stableCoverageClasses[string(coverageRightContainsLeft)],
+		result.stableCoverageClasses[string(coveragePartial)])
+	fmt.Fprintf(w, "stable_offset_actions collapse_equivalent=%d collapse_left=%d collapse_right=%d keep_both=%d order_sensitive_components=%d\n",
+		result.stableActions["collapse_equivalent"], result.stableActions["collapse_left"],
+		result.stableActions["collapse_right"], result.stableActions["keep_both"],
+		result.stableOrderSensitive)
+	fmt.Fprintf(w, "cadence_aware_actions collapse_equivalent=%d collapse_left=%d collapse_right=%d keep_both=%d\n",
+		result.cadenceActions["collapse_equivalent"], result.cadenceActions["collapse_left"],
+		result.cadenceActions["collapse_right"], result.cadenceActions["keep_both"])
+	fmt.Fprintf(w, "direct_cover selected_assets=%d historical_terminal_assets=%d different_components=%d ambiguous_minima=%d inexact_components=%d\n",
+		result.directCoverSelectedAssets, result.directCoverTerminalAssets,
+		result.directCoverDifferentComponents, result.directCoverAmbiguousComponents,
+		result.directCoverInexactComponents)
 	fmt.Fprintf(w, "supersession_edges=%d edges_not_current_match=%d edges_across_pool=%d persisted_cycles=%d\n",
 		result.historicalSupersessionEdges, result.historicalEdgesNotCurrent,
 		result.historicalEdgesAcrossPools, len(result.supersessionCycles))
+	fmt.Fprintf(w, "experimental_historical current_match_edges=%d prior_supersessions_rejected=%d\n",
+		result.historicalPolicyEvaluated, result.historicalPolicyChanges)
+	fmt.Fprintf(w, "stable_offset_historical current_match_edges=%d prior_supersessions_rejected=%d\n",
+		result.historicalPolicyEvaluated, result.stableHistoricalChanges)
+	fmt.Fprintf(w, "cadence_aware_historical current_match_edges=%d prior_supersessions_rejected=%d\n",
+		result.historicalPolicyEvaluated, result.cadenceHistoricalChanges)
 	fmt.Fprintf(w, "policy_differences strict_vs_band=%d bucket_vs_band=%d strict_not_terminal=%d band_not_terminal=%d\n",
 		result.strictDiffersFromBandCount, result.bucketDiffersFromBandCount,
 		result.strictDiffersFromTerminalCount, result.bandDiffersFromTerminalCount)
@@ -66,9 +99,12 @@ func printFinding(w io.Writer, number int, finding componentFinding) {
 	fmt.Fprintf(w, "size=%d current_edges=%d historical_edges=%d bridge_nodes=%d quality_cycles=%d permutations=%d exhaustive=%t outcomes=%d\n",
 		len(finding.assets), finding.edges, finding.historicalEdges, finding.bridgeNodes, finding.qualityCycles,
 		finding.permutations, finding.exhaustive, len(finding.outcomes))
-	fmt.Fprintf(w, "terminal=%s chronological=%s anchored_chronological=%s strict=%s bucket=%s anchored_band=%s best_grid=%s\n",
+	fmt.Fprintf(w, "terminal=%s chronological=%s anchored_chronological=%s experimental_chronological=%s stable_chronological=%s strict=%s bucket=%s anchored_band=%s best_grid=%s\n",
 		shortIDs(finding.terminalIDs), outcomeLabel(finding.chronologicalResult), outcomeLabel(finding.anchoredChronologicalResult),
-		shortID(finding.strictWinnerID), shortID(finding.bucketWinnerID), shortID(finding.bandWinnerID), shortID(finding.bestGridWinnerID))
+		outcomeLabel(finding.experimentalChronological), outcomeLabel(finding.stableChronological), shortID(finding.strictWinnerID),
+		shortID(finding.bucketWinnerID), shortID(finding.bandWinnerID), shortID(finding.bestGridWinnerID))
+	fmt.Fprintf(w, "direct_cover=%s alternatives=%d exact=%t\n",
+		shortIDs(finding.directCoverIDs), finding.directCoverAlternatives, finding.directCoverExact)
 
 	type outcomeCount struct {
 		outcome string
@@ -100,11 +136,56 @@ func printFinding(w io.Writer, number int, finding componentFinding) {
 	for _, outcome := range anchoredOutcomes {
 		fmt.Fprintf(w, "anchored_outcome count=%d live=%s\n", outcome.count, outcomeLabel(outcome.outcome))
 	}
-	if len(finding.outcomes) > 1 || finding.qualityCycles > 0 {
-		for _, edge := range finding.matchEdges {
-			fmt.Fprintf(w, "edge=%s-%s primary_window=%d long_window=%d\n",
-				shortID(edge.leftID), shortID(edge.rightID), edge.primaryWindow, edge.longWindow)
+	experimentalOutcomes := make([]outcomeCount, 0, len(finding.experimentalOutcomes))
+	for outcome, count := range finding.experimentalOutcomes {
+		experimentalOutcomes = append(experimentalOutcomes, outcomeCount{outcome: outcome, count: count})
+	}
+	sort.Slice(experimentalOutcomes, func(i, j int) bool {
+		if experimentalOutcomes[i].count != experimentalOutcomes[j].count {
+			return experimentalOutcomes[i].count > experimentalOutcomes[j].count
 		}
+		return experimentalOutcomes[i].outcome < experimentalOutcomes[j].outcome
+	})
+	for _, outcome := range experimentalOutcomes {
+		fmt.Fprintf(w, "experimental_outcome count=%d live=%s\n", outcome.count, outcomeLabel(outcome.outcome))
+	}
+	stableOutcomes := make([]outcomeCount, 0, len(finding.stableOutcomes))
+	for outcome, count := range finding.stableOutcomes {
+		stableOutcomes = append(stableOutcomes, outcomeCount{outcome: outcome, count: count})
+	}
+	sort.Slice(stableOutcomes, func(i, j int) bool {
+		if stableOutcomes[i].count != stableOutcomes[j].count {
+			return stableOutcomes[i].count > stableOutcomes[j].count
+		}
+		return stableOutcomes[i].outcome < stableOutcomes[j].outcome
+	})
+	for _, outcome := range stableOutcomes {
+		fmt.Fprintf(w, "stable_outcome count=%d live=%s\n", outcome.count, outcomeLabel(outcome.outcome))
+	}
+	assets := make(map[string]asset, len(finding.assets))
+	for _, item := range finding.assets {
+		assets[item.id] = item
+	}
+	for _, edge := range finding.matchEdges {
+		route, alignment := edge.evidence.strongest()
+		decision := evaluateSubstitution(assets[edge.leftID], assets[edge.rightID], edge.evidence)
+		stable := measureStableOffset(assets[edge.leftID], assets[edge.rightID], edge.evidence)
+		stableDecision := evaluateStableOffsetSubstitution(
+			assets[edge.leftID], assets[edge.rightID], edge.evidence,
+		)
+		cadenceDecision := evaluateCadenceAwareSubstitution(
+			assets[edge.leftID], assets[edge.rightID], edge.evidence,
+		)
+		fmt.Fprintf(w, "edge=%s-%s primary_window=%d long_window=%d route=%s aligned=%d starts=%d/%d gaps=%d coverage=%.3f/%.3f class=%s action=%s stable_route=%s stable_starts=%d/%d stable_overlap=%d stable_similar=%d stable_similarity=%.3f stable_coverage=%.3f/%.3f stable_class=%s stable_action=%s\n",
+			shortID(edge.leftID), shortID(edge.rightID), edge.evidence.primary.Frames,
+			edge.evidence.long.Frames, route, alignment.Frames, alignment.LeftStart,
+			alignment.RightStart, alignment.Gaps, decision.leftCoverage,
+			decision.rightCoverage, decision.coverageClass, decision.action(), stable.route,
+			stable.leftStart, stable.rightStart, stable.overlapFrames, stable.similarFrames,
+			stable.similarity, stableDecision.leftCoverage, stableDecision.rightCoverage,
+			stableDecision.coverageClass, stableDecision.action())
+		fmt.Fprintf(w, "edge_cadence=%s-%s action=%s\n",
+			shortID(edge.leftID), shortID(edge.rightID), cadenceDecision.action())
 	}
 	for _, item := range finding.assets {
 		target := "terminal"

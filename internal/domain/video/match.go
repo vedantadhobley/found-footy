@@ -13,6 +13,17 @@ package video
 
 import "math/bits"
 
+// AlignmentEvidence is the strongest aligned dHash window found for one
+// matcher route. Frame indexes address the original left and right sequences;
+// Frames includes tolerated gaps because those frames remain inside the
+// aligned span.
+type AlignmentEvidence struct {
+	LeftStart  int
+	RightStart int
+	Frames     int
+	Gaps       int
+}
+
 // Hamming returns the bit-difference (0..64) between two dHashes.
 func Hamming(a, b uint64) int { return bits.OnesCount64(a ^ b) }
 
@@ -27,40 +38,68 @@ func Match(a, b []uint64, maxHamming, minRun, maxGaps int) bool {
 	if len(a) < minRun || len(b) < minRun {
 		return false
 	}
-	return longestToleratedWindow(a, b, maxHamming, maxGaps) >= minRun
+	return BestAlignment(a, b, maxHamming, maxGaps).Frames >= minRun
 }
 
-// longestToleratedWindow returns the longest aligned window, across all integer
-// offsets, that contains at most maxGaps mismatched frames. A two-pointer scan
-// per offset keeps it O((len(a)+len(b))·len(a)).
-func longestToleratedWindow(a, b []uint64, maxHamming, maxGaps int) int {
-	best := 0
+// BestAlignment returns the longest aligned window, across all integer
+// offsets, that contains at most maxGaps over-threshold frames. Ties prefer
+// fewer gaps and then the earliest stable positions. A two-pointer scan per
+// offset keeps it O((len(a)+len(b))·len(a)). Match remains the policy gate;
+// this function exposes evidence without deciding whether the run is long
+// enough to identify shared footage.
+func BestAlignment(a, b []uint64, maxHamming, maxGaps int) AlignmentEvidence {
+	if len(a) == 0 || len(b) == 0 {
+		return AlignmentEvidence{}
+	}
+	if maxGaps < 0 {
+		maxGaps = 0
+	}
+	best := AlignmentEvidence{}
 	for d := -(len(a) - 1); d <= len(b)-1; d++ {
-		// match/miss sequence for this offset's aligned overlap
-		var m []bool
-		for i := 0; i < len(a); i++ {
-			j := i + d
-			if j < 0 || j >= len(b) {
-				continue
-			}
-			m = append(m, Hamming(a[i], b[j]) <= maxHamming)
-		}
+		leftStart := max(0, -d)
+		leftEnd := min(len(a), len(b)-d)
 		// longest window with <= maxGaps misses
 		lo, misses := 0, 0
-		for hi := 0; hi < len(m); hi++ {
-			if !m[hi] {
+		for hi := 0; hi < leftEnd-leftStart; hi++ {
+			leftIndex := leftStart + hi
+			if Hamming(a[leftIndex], b[leftIndex+d]) > maxHamming {
 				misses++
 			}
 			for misses > maxGaps {
-				if !m[lo] {
+				oldLeftIndex := leftStart + lo
+				if Hamming(a[oldLeftIndex], b[oldLeftIndex+d]) > maxHamming {
 					misses--
 				}
 				lo++
 			}
-			if w := hi - lo + 1; w > best {
-				best = w
+			candidate := AlignmentEvidence{
+				LeftStart:  leftStart + lo,
+				RightStart: leftStart + lo + d,
+				Frames:     hi - lo + 1,
+				Gaps:       misses,
+			}
+			if strongerAlignment(candidate, best) {
+				best = candidate
 			}
 		}
 	}
 	return best
+}
+
+// strongerAlignment gives diagnostic output a deterministic representative
+// when repeated footage produces several equal-length tolerated windows.
+func strongerAlignment(candidate, incumbent AlignmentEvidence) bool {
+	if candidate.Frames != incumbent.Frames {
+		return candidate.Frames > incumbent.Frames
+	}
+	if candidate.Gaps != incumbent.Gaps {
+		return candidate.Gaps < incumbent.Gaps
+	}
+	if candidate.LeftStart+candidate.RightStart != incumbent.LeftStart+incumbent.RightStart {
+		return candidate.LeftStart+candidate.RightStart < incumbent.LeftStart+incumbent.RightStart
+	}
+	if candidate.LeftStart != incumbent.LeftStart {
+		return candidate.LeftStart < incumbent.LeftStart
+	}
+	return candidate.RightStart < incumbent.RightStart
 }
