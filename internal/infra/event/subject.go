@@ -1,6 +1,6 @@
 // subject.go — the topic/subject model for the found-footy live-feed producer.
 // A Topic is the env-agnostic message kind (fixture.status, fixture.update,
-// event.video); the full NATS subject on the wire is found-footy.<env>.<topic>.
+// event.update); the full NATS subject on the wire is found-footy.<env>.<topic>.
 //
 // Env is a SUBJECT token, not merely the envelope `source` field — so a consumer
 // filters by environment at subscription time (a prod bridge subscribes
@@ -32,11 +32,11 @@ const (
 	// Payload: FixtureUpdatePayload. The consumer bulk-refetches GET /fixtures?ids=.
 	TopicFixtureUpdate Topic = "fixture.update"
 
-	// TopicEventVideo — one event's surfaced clip set / rank changed. Payload:
-	// EventVideoPayload. Emitted per-event by the async downstream (not batched
-	// with the monitor cycle); fires regardless of fixture state (a clip can land
-	// after the final whistle).
-	TopicEventVideo Topic = "event.video"
+	// TopicEventUpdate — one event's authoritative public projection changed.
+	// Payload: EventUpdatePayload. Emitted per-event by the async downstream
+	// (not batched with the monitor cycle) after video/ranking mutations and
+	// discovery completion; fires regardless of fixture state.
+	TopicEventUpdate Topic = "event.update"
 )
 
 // Wire renders the fully-qualified NATS subject this topic publishes on in the
@@ -53,7 +53,7 @@ func (t Topic) String() string { return string(t) }
 // publisher against a typo before a message reaches the bus.
 func (t Topic) Valid() bool {
 	switch t {
-	case TopicFixtureStatus, TopicFixtureUpdate, TopicEventVideo:
+	case TopicFixtureStatus, TopicFixtureUpdate, TopicEventUpdate:
 		return true
 	default:
 		return false

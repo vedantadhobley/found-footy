@@ -63,3 +63,8 @@ status-is-structural classification in the
 [2026-08-14 three-subject decision](./archive-through-2026-08-16.md#2026-08-14--nats-producer-rebuild-the-3-subject-live-feed-model-supersedes-the-2026-08-04-eventing-shape).
 The environment-scoped Core NATS envelope, targeted `fixture.update`,
 `event.video`, and full-snapshot reconnect rules remain in force.
+
+FF-085 later renamed and broadened that event-scoped invalidation. See
+[event updates own the asynchronous event projection](./2026-09-04-event-updates-own-async-projection.md).
+The fixture presentation and targeted `fixture.update` contract remains in
+force.

@@ -41,6 +41,7 @@ const (
 	ff080CanonicalAliasIDForTest     = "ff-080-canonical-exact-alias"
 	ff082CadenceMetadataIDForTest    = "ff-082-cadence-metadata"
 	ff083VariantEvidenceIDForTest    = "ff-083-accepted-variant-evidence"
+	ff085EventUpdateIDForTest        = "ff-085-event-update"
 	discoveryPGRetryAttemptsForTest  = 5
 )
 
@@ -104,7 +105,7 @@ func baseEventEnvWithRecovery(
 	assets videoactivity.LoadEventAssetsOutput,
 	discoveryConfig ...discoveryactivity.GetDiscoveryConfigOutput,
 ) *testsuite.TestWorkflowEnvironment {
-	return baseEventEnvWithOptions(s, recovery, assets, false, false, false, false, false, discoveryConfig...)
+	return baseEventEnvWithOptions(s, recovery, assets, false, false, false, false, false, false, discoveryConfig...)
 }
 
 // preHashEventEnv activates FF-022 for tests that exercise parent-owned
@@ -116,6 +117,7 @@ func preHashEventEnv(s *testsuite.WorkflowTestSuite) *testsuite.TestWorkflowEnvi
 		videoactivity.LoadEventAssetsOutput{},
 		true,
 		true,
+		false,
 		false,
 		false,
 		false,
@@ -134,6 +136,7 @@ func preFF065PreHashEventEnv(s *testsuite.WorkflowTestSuite) *testsuite.TestWork
 		false,
 		false,
 		false,
+		false,
 	)
 }
 
@@ -146,6 +149,7 @@ func baseEventEnvWithOptions(
 	atomicPlacement bool,
 	canonicalExactAliases bool,
 	variantEvidence bool,
+	eventUpdateContract bool,
 	discoveryConfig ...discoveryactivity.GetDiscoveryConfigOutput,
 ) *testsuite.TestWorkflowEnvironment {
 	env := s.NewTestWorkflowEnvironment()
@@ -188,6 +192,12 @@ func baseEventEnvWithOptions(
 	}
 	env.OnGetVersion(ff083VariantEvidenceIDForTest, sdkworkflow.DefaultVersion, sdkworkflow.Version(1)).
 		Return(variantEvidenceVersion).Maybe()
+	eventUpdateVersion := sdkworkflow.DefaultVersion
+	if eventUpdateContract {
+		eventUpdateVersion = sdkworkflow.Version(1)
+	}
+	env.OnGetVersion(ff085EventUpdateIDForTest, sdkworkflow.DefaultVersion, sdkworkflow.Version(1)).
+		Return(eventUpdateVersion).Maybe()
 	// Default GetDiscoveryConfig stub. MaxAttempts=10 matches the
 	// pre-#162 hardcoded value that existing tests were written
 	// against (`want 10` assertions in AttemptsRun tests). Tests that need a
@@ -221,9 +231,10 @@ func baseEventEnvWithOptions(
 		Return(nil).Maybe()
 	env.OnActivity("LoadEventAssets", mock.Anything, mock.Anything).
 		Return(assets, nil).Maybe()
-	// Default event.video publish stub — the pipeline fires it after a
-	// promote/supersede changes the clip set; .Maybe() so tests that never
-	// promote don't need it. Tests asserting the ping override explicitly.
+	// Both activity names remain registered during FF-085's Temporal
+	// compatibility window. New histories use PublishEventUpdate; old histories
+	// replay PublishEventVideo. .Maybe() keeps unrelated tests focused.
+	env.OnActivity("PublishEventUpdate", mock.Anything, mock.Anything).Return(nil).Maybe()
 	env.OnActivity("PublishEventVideo", mock.Anything, mock.Anything).Return(nil).Maybe()
 	return env
 }

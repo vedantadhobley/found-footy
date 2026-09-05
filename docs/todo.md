@@ -195,7 +195,7 @@ the current branch.
   unverified popularity-one alternative remained durable but absent from the
   projection.
 - **Completion condition:** Verify that the next natural threshold-crossing
-  popularity bump emits `event.video` and causes an already-open consumer to
+  popularity bump emits `event.update` and causes an already-open consumer to
   replace the event with the newly pruned, contiguous list.
 
 ### FF-079 — shareless fixture retention destroys failure evidence
@@ -299,7 +299,7 @@ the current branch.
   EventWorkflow histories restore that map and redirect all aliases whenever
   placement supersedes a loser. A known variant skips repeated hash/vision but
   still commits candidate attribution, popularity, derived rank, cleanup, and
-  `event.video` invalidation against the live root. The Postgres live-winner
+  `event.update` invalidation against the live root. The Postgres live-winner
   guard remains defense in depth. The command change is gated by
   `ff-080-canonical-exact-alias`.
 - **Regressions:** Activity tests cover live-root restoration through a retired
@@ -480,6 +480,59 @@ the current branch.
   export and review natural post-FF-082/FF-083 direct pairs before the ordinary
   media cutoff. Historical first-loss variants cannot be backfilled.
 - **Decision:** [Accepted variants form direct lineage, not perceptual clusters](./decisions/2026-08-31-accepted-variants-form-direct-lineage.md).
+
+### FF-085 — asynchronous event completion has no live invalidation
+
+- **Status:** `in_progress`
+- **Severity:** P1
+- **Observed:** Mbappe's 90+4′ missed-penalty workflow for Real Betis–Real
+  Madrid on 2026-09-04 committed its final video update about 12 seconds before
+  `MarkDownstreamComplete`. The API subsequently derived `phase=complete`, but
+  no NATS message represented that last public projection change. More
+  generally, a no-candidate event can remain `searching` until a full REST
+  snapshot.
+- **Cause:** `event.video` was named and invoked as a clip-set dirty signal even
+  though it was the only asynchronous event-level invalidation lane. Workflow
+  completion writes `event_downstream_workflows.completed_at` outside fixture
+  reconciliation, so no later `fixture.update` is guaranteed.
+- **Accepted contract:** Replace `event.video` with `event.update`, retain its
+  `{event_id, fixture_id}` payload, and emit after both accepted placements and
+  durable workflow completion. The consumer refetches and upserts the event;
+  it recovers the parent fixture through a targeted fetch when absent.
+  Provider-owned event additions, removals, and corrections remain
+  `fixture.update`.
+- **Implementation:** New histories use the `ff-085-event-update` Temporal
+  marker and `PublishEventUpdate` for placement and completion. Existing
+  histories preserve their command graph through the registered
+  `PublishEventVideo` compatibility activity, which forwards to the current
+  wire subject. Shared schemas and producer goldens use `event.update`.
+- **Completion condition:** Commit the shared schema and Found Footy changes;
+  deploy a Vedanta Systems consumer that temporarily accepts both subjects,
+  upserts the returned event, and recovers an absent fixture; then deploy the
+  worker. Prove a natural no-candidate event changes from `searching` to
+  `complete` without a page refresh.
+- **Decision:** [Event updates own the asynchronous event projection](./decisions/2026-09-04-event-updates-own-async-projection.md).
+
+### FF-086 — live event delivery cannot identify or recover a silent no-op
+
+- **Status:** `confirmed`
+- **Severity:** P1
+- **Observed:** The same Mbappe event received many successful Found Footy
+  `event.video` publications while the production BFF retained its wildcard
+  NATS subscription, but the browser exposed the videos only after a date
+  toggle forced a REST snapshot. Durable data and the API were correct.
+- **Unknown boundary:** Neither the BFF nor browser records the successful
+  NATS-receive, targeted-fetch, SSE-write, browser-receive, and React-apply
+  sequence. The incident therefore cannot be assigned to one exact hop.
+- **Known consumer defect:** The current React handler replaces only an event
+  already present in its fixture. If an earlier fixture hint was missed, every
+  later event notification is silently discarded. Core NATS and SSE do not
+  replay that missing hint.
+- **Required work:** Vedanta Systems must upsert an event update, recover an
+  absent parent fixture, and expose bounded counters or logs for each live-feed
+  hop plus rejected/no-op client patches. Preserve full REST recovery on
+  initial connection and reconnect. Do not infer that FF-085's completion
+  signal alone explains or fixes this incident.
 
 ### FF-084 — event removal can leave or recreate pending candidates
 
@@ -730,7 +783,7 @@ the current branch.
 | FF-063 | P1 | `validating` | A played terminal fixture whose provider event inventory remains permanently inconsistent had no bounded exit from active polling. The additive terminal observation field, one-hour grace, settled event/downstream gates, completion audit evidence, and stable recency shipped in release `5c105af`. | Verify one coherent and one incomplete natural terminal fixture. Do not remove the rollback-compatible `completion_counter` column until FF-013. |
 | FF-064 | P3 | `implemented` | Production uses Control's canonical `control-joi.luv` identity with `gemma-4-12b` pinned. Found Footy release `e4ae2d7` passed its exact three-image request against Control contract-v3 digest `0fc304bc…`; the typed catalog, constrained response, and strict rejection checks all matched the application contract. | Control retains `joi.luv` as a rollback route until observed legacy use reaches zero; no Found Footy work remains. |
 | FF-065 | P2 | `implemented` | Exact-byte followers became terminal `duplicate` while their representative still awaited vision, so a later content rejection left duplicate rows without an asset winner. New histories retain followers until the representative terminates and share its rejection/failure unless an asset actually wins. | Release the worker change and verify a natural rejected exact-byte cluster contains no duplicate outcome, while a promoted cluster retains one validation path and its full popularity. |
-| FF-066 | P2 | `implemented` | Popularity-only duplicate placements changed a public ranking input without rank repair or `event.video`; ten shares across five production events were stale. Accepted clusters now commit attribution, retry-safe popularity, share identity, supersession, and candidate outcome in one transaction; the API derives rank on every read and every successful placement invalidates consumers. | Apply `20260828_01_add_atomic_clip_placement.sql`, release worker/API together, verify schema identity, then prove a natural duplicate changes popularity/order once and emits `event.video`. Remove stored rank only after old Temporal histories age out. |
+| FF-066 | P2 | `implemented` | Popularity-only duplicate placements changed a public ranking input without rank repair or an event invalidation; ten shares across five production events were stale. Accepted clusters now commit attribution, retry-safe popularity, share identity, supersession, and candidate outcome in one transaction; the API derives rank on every read and every successful placement invalidates consumers. | Apply `20260828_01_add_atomic_clip_placement.sql`, release worker/API together, verify schema identity, then prove a natural duplicate changes popularity/order once and emits `event.update`. Remove stored rank only after old Temporal histories age out. |
 | FF-067 | P1 | `implemented` | VAR removal and accepted-clip placement raced through independent operations. The shared event-row lock now makes removal authoritative: a late placement terminalizes uncredited candidates as `rejected/event_removed`, creates no public rows, reclaims destination plus staging bytes, and emits no invalidation. | Release the worker change, then verify a natural VAR cancellation leaves no post-removal active share or Garage object. |
 | FF-068 | P2 | `implemented` | `DestroyEvent` revokes shares, attempts every unreclaimed key, stamps each successful delete, and aggregates failures. Temporal retries only unstamped assets, and later FF-079 ingests retain the same durable worklist after exhaustion. | Release worker/schema together and induce or observe one partial delete failure followed by a successful retry. |
 | FF-069 | P2 | `implemented` | Downstream completion previously treated zero updated rows as success. The event repository now locks and classifies the exact checklist identity as `completed_now`, `already_completed`, or typed not-found; only the first two succeed. | Release the worker change and verify a natural completion reports its stored outcome; no schema, API, or frontend change is required. |
@@ -894,7 +947,7 @@ the current branch.
   candidate terminal state plus `credited_asset_id`, newly credited popularity,
   conflict-safe asset/share creation, and optional loser supersession. Candidate
   identity makes retry a no-op for vote count. Every success emits
-  `event.video` after the S3 cleanup tail.
+  `event.update` after the S3 cleanup tail.
 - **Derived view:** `ListLiveForEvent` assigns `ROW_NUMBER()` from current
   ranking evidence. The old `rank` column remains only for histories selected
   by Temporal's default version, so existing stale values stop affecting the
@@ -931,7 +984,8 @@ the current branch.
   that already committed, but terminalizes every uncredited cluster member as
   `rejected/event_removed`. The activity deletes both the deterministic final
   key and staging key before returning `EventRemoved`; the workflow treats that
-  result as terminal but neither mutates its keeper set nor emits `event.video`.
+  result as terminal but neither mutates its keeper set nor emits a
+  placement-caused `event.update`.
   No schema, API, or frontend change is required.
 - **Proof:** A real-Postgres concurrency test holds the removal update open and
   proves placement blocks until its commit, then observes removal with zero

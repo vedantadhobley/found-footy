@@ -58,10 +58,10 @@ func (p *NatsPublisher) PublishFixtureUpdate(fixtureIDs []int64) error {
 	return p.publish(TopicFixtureUpdate, FixtureUpdatePayload{FixtureIDs: ids})
 }
 
-// PublishEventVideo emits TopicEventVideo for one event whose clip set
-// / rank changed. fixtureID routes the consumer to the parent fixture.
-func (p *NatsPublisher) PublishEventVideo(eventID uuid.UUID, fixtureID int64) error {
-	return p.publish(TopicEventVideo, EventVideoPayload{EventID: eventID, FixtureID: fixtureID})
+// PublishEventUpdate emits TopicEventUpdate after one event's authoritative
+// public projection changes. fixtureID routes the consumer to the parent.
+func (p *NatsPublisher) PublishEventUpdate(eventID uuid.UUID, fixtureID int64) error {
+	return p.publish(TopicEventUpdate, EventUpdatePayload{EventID: eventID, FixtureID: fixtureID})
 }
 
 // publish stamps the envelope, marshals it, and ships it on the bus.

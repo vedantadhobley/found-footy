@@ -4,8 +4,10 @@ package workflow
 import (
 	"encoding/json"
 	"fmt"
+	"time"
 
 	"github.com/google/uuid"
+	"go.temporal.io/sdk/log"
 	"go.temporal.io/sdk/temporal"
 	"go.temporal.io/sdk/workflow"
 
@@ -69,7 +71,7 @@ func (p *pipeline) promote(c clip, vout visionactivity.ValidateClipOutput) (uuid
 	// includes a retry that found the share created by its failed prior attempt:
 	// the workflow never observed that attempt and still owes the dirty signal.
 	if pout.Minted {
-		p.publishEventVideo(c.tweetURL, "promotion")
+		p.publishEventUpdate(c.tweetURL, "promotion")
 	}
 	return pout.AssetID, true
 }
@@ -135,7 +137,7 @@ func (p *pipeline) supersede(winnerID uuid.UUID, loserIDs []uuid.UUID) {
 	p.superseded += len(loserIDs)
 	p.redirectExactRoots(loserIDs, winnerID)
 	// The winner-select collapse changed this event's surfaced set → announce.
-	p.publishEventVideo("", "supersede")
+	p.publishEventUpdate("", "supersede")
 
 	lose := make(map[uuid.UUID]bool, len(loserIDs))
 	for _, id := range loserIDs {
@@ -187,34 +189,61 @@ func (p *pipeline) deleteStaging(key string) {
 		videoactivity.DeleteStagingInput{StagingKey: key}).Get(p.persistCtx, nil)
 }
 
-// publishEventVideo fires the event.video dirty-signal for this event
+// publishEventUpdate fires the event-scoped dirty signal after a public
+// projection mutation. Pre-FF-085 histories retain the old Temporal activity
+// name but the compatibility activity publishes the current wire subject.
 // (best-effort: a lost ping heals on the frontend's next refetch, so failure
 // is swallowed, never propagated). Called only after a compatibility
 // promote/supersede or an FF-066 placement has durably committed its public
-// mutation. A consumer that refetches on the signal therefore sees the new
-// state. See decisions.md 2026-08-14 (N3).
-func (p *pipeline) publishEventVideo(tweetURL, cause string) {
+// mutation, and by finalizeEvent after durable workflow completion.
+func (p *pipeline) publishEventUpdate(tweetURL, cause string) {
 	if p.canceled() {
 		return
 	}
-	startedAt := workflow.Now(p.ctx)
-	err := workflow.ExecuteActivity(p.persistCtx,
-		(*livefeedactivity.Activities).PublishEventVideo,
-		livefeedactivity.EventVideoInput{EventID: p.in.EventID, FixtureID: p.in.FixtureID}).Get(p.persistCtx, nil)
-	now := workflow.Now(p.ctx)
+	publishEventUpdate(
+		p.ctx, p.persistCtx, p.log, p.in, tweetURL, cause, p.startedAt,
+		p.eventUpdateContract,
+	)
+}
+
+// publishEventUpdate executes the replay-compatible live-feed activity and
+// records one workflow-observed publication measurement.
+func publishEventUpdate(
+	ctx workflow.Context,
+	activityCtx workflow.Context,
+	logger log.Logger,
+	in EventWorkflowInput,
+	tweetURL, cause string,
+	startedAt time.Time,
+	currentContract bool,
+) {
+	publishStartedAt := workflow.Now(ctx)
+	var err error
+	if currentContract {
+		err = workflow.ExecuteActivity(activityCtx,
+			(*livefeedactivity.Activities).PublishEventUpdate,
+			livefeedactivity.EventUpdateInput{EventID: in.EventID, FixtureID: in.FixtureID},
+		).Get(activityCtx, nil)
+	} else {
+		err = workflow.ExecuteActivity(activityCtx,
+			(*livefeedactivity.Activities).PublishEventVideo,
+			livefeedactivity.EventVideoInput{EventID: in.EventID, FixtureID: in.FixtureID},
+		).Get(activityCtx, nil)
+	}
+	now := workflow.Now(ctx)
 	outcome := "passed"
 	if err != nil {
 		outcome = "failed"
 	}
-	emitWorkflowMeasurement(p.log, vocabulary.ActionEventPublishMeasured,
-		"event video publication measured",
-		"event_id", p.in.EventID,
-		"fixture_id", p.in.FixtureID,
+	emitWorkflowMeasurement(logger, vocabulary.ActionEventPublishMeasured,
+		"event update publication measured",
+		"event_id", in.EventID,
+		"fixture_id", in.FixtureID,
 		"tweet_url", tweetURL,
 		"cause", cause,
 		"outcome", outcome,
-		"duration_ms", elapsedMilliseconds(startedAt, now),
-		"event_elapsed_ms", elapsedMilliseconds(p.startedAt, now))
+		"duration_ms", elapsedMilliseconds(publishStartedAt, now),
+		"event_elapsed_ms", elapsedMilliseconds(startedAt, now))
 }
 
 // recordOutcome persists a candidate's terminal fate. FF-034 histories use one

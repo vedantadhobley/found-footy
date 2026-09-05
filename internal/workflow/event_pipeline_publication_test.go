@@ -36,6 +36,7 @@ func TestEventWorkflow_RecurringSupersededMD5CreditsLiveCanonicalAsset(t *testin
 		true,
 		true,
 		true,
+		true,
 		discoveryactivity.GetDiscoveryConfigOutput{
 			MaxAttempts: 1, AttemptSpacing: time.Minute,
 			MaxAgeMinutes: 3, QueryTimeout: 2 * time.Minute,
@@ -74,14 +75,15 @@ func TestEventWorkflow_RecurringSupersededMD5CreditsLiveCanonicalAsset(t *testin
 		t.Errorf("candidate placement = %+v, want attributed duplicate", committed.Candidates[0])
 	}
 	env.AssertNumberOfCalls(t, "CommitClipPlacement", 1)
-	env.AssertNumberOfCalls(t, "PublishEventVideo", 1)
+	env.AssertNumberOfCalls(t, "PublishEventUpdate", 2)
+	env.AssertNumberOfCalls(t, "PublishEventVideo", 0)
 	env.AssertNumberOfCalls(t, "HashVideo", 0)
 	env.AssertNumberOfCalls(t, "ValidateClip", 0)
 	env.AssertNumberOfCalls(t, "BumpAssetPopularity", 0)
 	env.AssertNumberOfCalls(t, "UpsertCandidateOutcome", 0)
 }
 
-func TestEventWorkflow_RemovedPlacementDoesNotPublish(t *testing.T) {
+func TestEventWorkflow_RemovedPlacementPublishesOnlyCompletion(t *testing.T) {
 	var s testsuite.WorkflowTestSuite
 	assetID := uuid.New()
 	env := baseEventEnvWithOptions(&s,
@@ -92,6 +94,7 @@ func TestEventWorkflow_RemovedPlacementDoesNotPublish(t *testing.T) {
 			FrameHashes: []uint64{1, 2, 3}, Width: 1280, Height: 720,
 			DurationMS: 7000, FileSizeBytes: 900_000, Popularity: 1, Verified: true,
 		}}},
+		true,
 		true,
 		true,
 		true,
@@ -122,6 +125,9 @@ func TestEventWorkflow_RemovedPlacementDoesNotPublish(t *testing.T) {
 	env.ExecuteWorkflow(workflow.EventWorkflow, stdDiscoveryInput())
 	requireDone(t, env)
 	env.AssertNumberOfCalls(t, "CommitClipPlacement", 1)
+	// The removed placement itself emits nothing; the durable downstream
+	// completion still emits the one terminal event projection update.
+	env.AssertNumberOfCalls(t, "PublishEventUpdate", 1)
 	env.AssertNumberOfCalls(t, "PublishEventVideo", 0)
 	env.AssertNumberOfCalls(t, "HashVideo", 0)
 	env.AssertNumberOfCalls(t, "ValidateClip", 0)
@@ -201,11 +207,10 @@ func TestEventWorkflow_Pipeline_VerifyAndDedup(t *testing.T) {
 	}
 }
 
-// TestEventWorkflow_Pipeline_PromotePingsEventVideo — N3: a newly-minted clip
-// (PromoteAndPersist → Minted=true) fires the event.video dirty-signal exactly
-// once. Other pipeline tests deliberately leave Minted unset because their
-// assertions do not exercise publication; this test owns the guard contract.
-func TestEventWorkflow_Pipeline_PromotePingsEventVideo(t *testing.T) {
+// TestEventWorkflow_DefaultVersionPreservesEventVideoActivity proves an
+// existing history retains its historical activity command and does not gain
+// the FF-085 completion command during replay.
+func TestEventWorkflow_DefaultVersionPreservesEventVideoActivity(t *testing.T) {
 	var s testsuite.WorkflowTestSuite
 	env := baseEventEnv(&s)
 	env.OnActivity("DeleteStaging", mock.Anything, mock.Anything).Return(nil).Maybe()
@@ -233,6 +238,29 @@ func TestEventWorkflow_Pipeline_PromotePingsEventVideo(t *testing.T) {
 	env.ExecuteWorkflow(workflow.EventWorkflow, stdDiscoveryInput())
 	requireDone(t, env)
 	env.AssertNumberOfCalls(t, "PublishEventVideo", 1)
+	env.AssertNumberOfCalls(t, "PublishEventUpdate", 0)
+}
+
+// TestEventWorkflow_CompletionPublishesEventUpdate proves a no-candidate run
+// still invalidates its event after the durable searching→complete change.
+func TestEventWorkflow_CompletionPublishesEventUpdate(t *testing.T) {
+	var s testsuite.WorkflowTestSuite
+	env := baseEventEnvWithOptions(&s,
+		discoveryactivity.LoadEventRecoveryStateOutput{},
+		videoactivity.LoadEventAssetsOutput{},
+		false, false, false, false, false, true,
+		discoveryactivity.GetDiscoveryConfigOutput{
+			MaxAttempts: 1, AttemptSpacing: time.Minute,
+			MaxAgeMinutes: 3, QueryTimeout: 2 * time.Minute,
+		},
+	)
+	env.OnActivity("SearchTweets", mock.Anything, mock.Anything).
+		Return(discoveryactivity.SearchTweetsOutput{Count: 0, StopReason: "age"}, nil)
+
+	env.ExecuteWorkflow(workflow.EventWorkflow, stdDiscoveryInput())
+	requireDone(t, env)
+	env.AssertNumberOfCalls(t, "PublishEventUpdate", 1)
+	env.AssertNumberOfCalls(t, "PublishEventVideo", 0)
 }
 
 // TestEventWorkflow_EmitsCriticalPathMeasurements pins FF-050's current
@@ -249,6 +277,7 @@ func TestEventWorkflow_EmitsCriticalPathMeasurements(t *testing.T) {
 		false,
 		false,
 		false,
+		true,
 		discoveryactivity.GetDiscoveryConfigOutput{
 			MaxAttempts: 1, AttemptSpacing: time.Minute,
 			MaxAgeMinutes: 3, QueryTimeout: 2 * time.Minute,
@@ -274,7 +303,7 @@ func TestEventWorkflow_EmitsCriticalPathMeasurements(t *testing.T) {
 	env.OnActivity("PromoteAndPersist", mock.Anything, mock.Anything).
 		Return(videoactivity.PromoteAndPersistOutput{AssetID: uuid.New(), ShareID: "s_x", Inserted: true, Minted: true}, nil)
 	env.OnActivity("UpsertCandidateOutcome", mock.Anything, mock.Anything).Return(nil)
-	env.OnActivity("PublishEventVideo", mock.Anything, mock.Anything).Return(nil)
+	env.OnActivity("PublishEventUpdate", mock.Anything, mock.Anything).Return(nil)
 
 	env.ExecuteWorkflow(workflow.EventWorkflow, stdDiscoveryInput())
 	requireDone(t, env)

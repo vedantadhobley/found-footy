@@ -21,7 +21,7 @@ import (
 var goldenFiles = []string{
 	"found-footy.fixture.status.json",
 	"found-footy.fixture.update.json",
-	"found-footy.event.video.json",
+	"found-footy.event.update.json",
 }
 
 // readGolden loads a committed golden envelope from testdata.
@@ -77,7 +77,7 @@ func TestPayloadStructsRoundTripGoldens(t *testing.T) {
 	}{
 		{"found-footy.fixture.status.json", func() any { return &FixtureStatusPayload{} }},
 		{"found-footy.fixture.update.json", func() any { return &FixtureUpdatePayload{} }},
-		{"found-footy.event.video.json", func() any { return &EventVideoPayload{} }},
+		{"found-footy.event.update.json", func() any { return &EventUpdatePayload{} }},
 	}
 	for _, c := range cases {
 		golden := readGolden(t, c.file)
@@ -105,8 +105,8 @@ func TestPayloadStructsRoundTripGoldens(t *testing.T) {
 // envelope: a parseable uuid id, an RFC3339 ts, the configured source,
 // version 1, the right subject, and the payload nested under "payload".
 func TestEncodeEnvelope(t *testing.T) {
-	b, err := encodeEnvelope("found-footy-prod", TopicEventVideo.Wire("prod"),
-		EventVideoPayload{EventID: uuid.New(), FixtureID: 1530158})
+	b, err := encodeEnvelope("found-footy-prod", TopicEventUpdate.Wire("prod"),
+		EventUpdatePayload{EventID: uuid.New(), FixtureID: 1530158})
 	if err != nil {
 		t.Fatalf("encodeEnvelope: %v", err)
 	}
@@ -124,8 +124,8 @@ func TestEncodeEnvelope(t *testing.T) {
 	if m["version"] != float64(1) {
 		t.Errorf("version = %v, want 1", m["version"])
 	}
-	if m["subject"] != "found-footy.prod.event.video" {
-		t.Errorf("subject = %v, want found-footy.prod.event.video", m["subject"])
+	if m["subject"] != "found-footy.prod.event.update" {
+		t.Errorf("subject = %v, want found-footy.prod.event.update", m["subject"])
 	}
 	if _, ok := m["payload"].(map[string]any); !ok {
 		t.Errorf("payload not an object: %v", m["payload"])
@@ -138,10 +138,10 @@ func TestTopicWireAndValid(t *testing.T) {
 	if got := TopicFixtureUpdate.Wire("prod"); got != "found-footy.prod.fixture.update" {
 		t.Errorf("Wire(prod) = %q, want found-footy.prod.fixture.update", got)
 	}
-	if got := TopicEventVideo.Wire("dev"); got != "found-footy.dev.event.video" {
-		t.Errorf("Wire(dev) = %q, want found-footy.dev.event.video", got)
+	if got := TopicEventUpdate.Wire("dev"); got != "found-footy.dev.event.update" {
+		t.Errorf("Wire(dev) = %q, want found-footy.dev.event.update", got)
 	}
-	if !TopicFixtureStatus.Valid() || !TopicFixtureUpdate.Valid() || !TopicEventVideo.Valid() {
+	if !TopicFixtureStatus.Valid() || !TopicFixtureUpdate.Valid() || !TopicEventUpdate.Valid() {
 		t.Error("registered topics must be Valid")
 	}
 	if Topic("bogus").Valid() {

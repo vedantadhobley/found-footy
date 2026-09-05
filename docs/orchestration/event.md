@@ -301,16 +301,24 @@ dense hashing, then two dedup stages straddle vision (#171 shipped 2026-08-09):
   timestamp verification, popularity, file size, creation time, and lexical
   share ID. New-history writes never rebalance stored rank. The compatibility
   column remains only because older Temporal histories still write it.
-- **Emit** (N3): after every successful placement, including a
-  popularity-only duplicate, the pipeline fires the `event.video` dirty signal
-  through `livefeed.PublishEventVideo`. Publication waits for the activity's
+- **Emit** (FF-085): after every successful placement, including a
+  popularity-only duplicate, the pipeline fires the `event.update` dirty
+  signal through `livefeed.PublishEventUpdate`. Publication waits for the activity's
   persistence and cleanup tail. A retry that observes an already committed
   placement still returns `Announce=true`, because the workflow never observed
   the failed activity completion and still owes invalidation. Consumers refetch
   current state, so an extra signal from an external re-drive is harmless. A
-  placement rejected by the FF-067 removal gate does not emit. VAR
+  placement rejected by the FF-067 removal gate does not emit for that
+  placement. After `MarkDownstreamComplete` durably closes the checklist, new
+  histories emit one more `event.update` so `phase` moves from `searching` to
+  `complete` without waiting for a snapshot. VAR
   `DestroyEvent` also does not emit; the event disappears through the parent's
   `fixture.update` refetch.
+- **Temporal compatibility:** `ff-085-event-update` preserves the historical
+  `PublishEventVideo` activity command and omits the new completion command for
+  old histories. The registered compatibility activity forwards those calls to
+  the current `event.update` wire subject. New histories use
+  `PublishEventUpdate` for placement and completion.
 
 ### Dedup keeper selection, public visibility, and ranking
 

@@ -113,7 +113,7 @@ func RegisterMetrics(reg *metrics.Registry, log logging.Emitter) *Instruments {
 //
 // Subjects the found-footy producer uses (per decisions.md 2026-08-14):
 //
-//	found-footy.event.video                               → "event"
+//	found-footy.event.update                              → "event"
 //	found-footy.fixture.status, found-footy.fixture.update → "fixture"
 //
 // Legacy unprefixed subjects (event.*, fixture.*) still classify during

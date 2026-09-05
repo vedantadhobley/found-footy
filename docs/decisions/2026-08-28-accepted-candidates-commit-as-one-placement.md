@@ -75,3 +75,9 @@ This decision restores the public-ranking contract from the frozen
 and supersedes the rank-rebalance portion of
 [promotion retry repair](./2026-08-16-promotion-retries-complete-durable-tail.md)
 for new histories. It leaves that older path intact only for replay.
+
+FF-085 later replaced the `event.video` subject with the broader event-local
+invalidation described in
+[event updates own the asynchronous event projection](./2026-09-04-event-updates-own-async-projection.md).
+The atomic placement and retry-idempotent publication decision remains in
+force.

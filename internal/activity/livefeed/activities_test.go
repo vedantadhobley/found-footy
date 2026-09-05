@@ -16,14 +16,14 @@ import (
 
 // fakePublisher records calls + returns a configurable error.
 type fakePublisher struct {
-	calls         []EventVideoInput
+	calls         []EventUpdateInput
 	statusBatches [][]event.FixtureStatus
 	updateBatches [][]int64
 	err           error
 }
 
-func (f *fakePublisher) PublishEventVideo(eventID uuid.UUID, fixtureID int64) error {
-	f.calls = append(f.calls, EventVideoInput{EventID: eventID, FixtureID: fixtureID})
+func (f *fakePublisher) PublishEventUpdate(eventID uuid.UUID, fixtureID int64) error {
+	f.calls = append(f.calls, EventUpdateInput{EventID: eventID, FixtureID: fixtureID})
 	return f.err
 }
 
@@ -37,9 +37,35 @@ func (f *fakePublisher) PublishFixtureUpdate(ids []int64) error {
 	return f.err
 }
 
-// TestPublishEventVideoForwards confirms the activity passes event + fixture
+// TestPublishEventUpdateForwards confirms the activity passes event + fixture
 // straight through to the publisher.
-func TestPublishEventVideoForwards(t *testing.T) {
+func TestPublishEventUpdateForwards(t *testing.T) {
+	f := &fakePublisher{}
+	a := &Activities{Pub: f}
+	eid := uuid.New()
+
+	if err := a.PublishEventUpdate(context.Background(), EventUpdateInput{EventID: eid, FixtureID: 1530158}); err != nil {
+		t.Fatalf("PublishEventUpdate: %v", err)
+	}
+	if len(f.calls) != 1 || f.calls[0].EventID != eid || f.calls[0].FixtureID != 1530158 {
+		t.Fatalf("forwarded call = %+v, want one {%s, 1530158}", f.calls, eid)
+	}
+}
+
+// TestPublishEventUpdateSurfacesError confirms a publisher error propagates (so
+// Temporal's retry policy can act on it before the caller drops the signal).
+func TestPublishEventUpdateSurfacesError(t *testing.T) {
+	f := &fakePublisher{err: errors.New("bus down")}
+	a := &Activities{Pub: f}
+
+	if err := a.PublishEventUpdate(context.Background(), EventUpdateInput{EventID: uuid.New(), FixtureID: 42}); err == nil {
+		t.Fatal("want error from publisher, got nil")
+	}
+}
+
+// TestPublishEventVideoCompatibility forwards the historical Temporal
+// activity name onto the current event.update publisher contract.
+func TestPublishEventVideoCompatibility(t *testing.T) {
 	f := &fakePublisher{}
 	a := &Activities{Pub: f}
 	eid := uuid.New()
@@ -48,18 +74,7 @@ func TestPublishEventVideoForwards(t *testing.T) {
 		t.Fatalf("PublishEventVideo: %v", err)
 	}
 	if len(f.calls) != 1 || f.calls[0].EventID != eid || f.calls[0].FixtureID != 1530158 {
-		t.Fatalf("forwarded call = %+v, want one {%s, 1530158}", f.calls, eid)
-	}
-}
-
-// TestPublishEventVideoSurfacesError confirms a publisher error propagates (so
-// Temporal's retry policy can act on it before the caller drops the signal).
-func TestPublishEventVideoSurfacesError(t *testing.T) {
-	f := &fakePublisher{err: errors.New("bus down")}
-	a := &Activities{Pub: f}
-
-	if err := a.PublishEventVideo(context.Background(), EventVideoInput{EventID: uuid.New(), FixtureID: 42}); err == nil {
-		t.Fatal("want error from publisher, got nil")
+		t.Fatalf("compatibility call = %+v, want one {%s, 1530158}", f.calls, eid)
 	}
 }
 

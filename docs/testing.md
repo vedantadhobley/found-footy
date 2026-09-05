@@ -267,14 +267,17 @@ still fails closed.
 
 The FF-080 EventWorkflow test rediscovers the MD5 of a superseded asset and
 requires one `CommitClipPlacement` against its restored live root, one
-`event.video`, and zero hash, vision, popularity-bump, or separate
+placement `event.update` plus one completion `event.update`, and zero hash,
+vision, popularity-bump, or separate
 terminal-outcome calls. Activity tests require recovery to retain both live and
 retired MD5 aliases, including accepted variants with no public share, and
 reject a three-node supersession cycle explicitly. A
 production-derived domain regression preserves FF-081's non-transitive
 pairwise quality evidence until a total cluster order is designed. The default
 versions used by the existing suite continue to prove replay of the old
-command graph.
+command graph. FF-085 separately proves a no-candidate workflow publishes its
+durable `searching -> complete` transition, while its default-version test
+retains the historical `PublishEventVideo` activity name and command count.
 
 ## Tier 2 — adapter integration (testcontainers)
 

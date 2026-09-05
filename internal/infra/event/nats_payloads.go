@@ -1,6 +1,6 @@
 // Payload structs for the 3 live-feed subjects — the Go mirrors of the
 // per-subject schemas under nats/schemas/. Field names are snake_case to
-// match the JSON contract + the frontend consumer. fixture.update / event.video
+// match the JSON contract + the frontend consumer. fixture.update / event.update
 // remain thin dirty-signals; fixture.status embeds the same projection
 // as the REST fixture so the frontend patches without interpreting status codes.
 package event
@@ -31,10 +31,9 @@ type FixtureUpdatePayload struct {
 	FixtureIDs []int64 `json:"fixture_ids"`
 }
 
-// EventVideoPayload — TopicEventVideo body. EventID is the event whose
-// clip set changed; FixtureID is routing so the consumer knows which
-// fixture to splice it into.
-type EventVideoPayload struct {
+// EventUpdatePayload — TopicEventUpdate body. EventID is the event whose
+// public projection changed; FixtureID routes the consumer to its parent.
+type EventUpdatePayload struct {
 	EventID   uuid.UUID `json:"event_id"`
 	FixtureID int64     `json:"fixture_id"`
 }
