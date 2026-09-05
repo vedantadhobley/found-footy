@@ -172,7 +172,7 @@ environment, such as `found-footy.prod.>`, rather than mixing dev and prod.
 |---|---|---|
 | `found-footy.<env>.fixture.status` | `{"fixtures":[{"fixture_id":1530158,"presentation_state":"playing","clock":{"minute":62,"extra":null},"status":{"short":"2H","long":"Second Half"},"display":"clock"}]}` | Replace the fixture's complete status/time presentation projection in place. Do not fetch. |
 | `found-footy.<env>.fixture.update` | `{"fixture_ids":[1530158,1530163]}` | Fetch `/api/v1/fixtures?ids=1530158,1530163`; replace by fixture ID and re-bucket by `presentation_state`. |
-| `found-footy.<env>.event.video` | `{"event_id":"<uuid>","fixture_id":1530158}` | Fetch `/api/v1/events?ids=<uuid>`; replace the event inside its fixture. Emitted after any accepted placement changes membership or a ranking input, including popularity-only duplicates. |
+| `found-footy.<env>.event.update` | `{"event_id":"<uuid>","fixture_id":1530158}` | Fetch `/api/v1/events?ids=<uuid>` and upsert it inside its fixture. Emitted after an accepted placement changes video membership/ranking and after durable discovery completion changes `phase`. If the fixture is absent, recover it through `/api/v1/fixtures?ids=1530158`. |
 
 Every payload is wrapped in the version-1 workspace envelope:
 
@@ -188,12 +188,14 @@ Every payload is wrapped in the version-1 workspace envelope:
 ```
 
 Within one monitor cycle, `fixture.status` and `fixture.update` are
-disjoint. A presentation-state boundary or any score, event, winner, penalty,
-metadata, or completion change selects `fixture.update`. A minute change or a
+disjoint. A presentation-state boundary or any score, event membership,
+winner, penalty, metadata, or fixture-completion change selects
+`fixture.update`. A minute change or a
 status change that remains in one presentation state selects
 `fixture.status`; this includes `1H -> HT -> 2H` and `ET -> BT -> ET`.
-An identical frozen projection emits nothing. `event.video` is asynchronous
-and can arrive after the fixture completes.
+An identical frozen projection emits nothing. `event.update` is asynchronous
+and can arrive after the fixture completes. It is independent of the monitor
+cycle because EventWorkflow owns both clip placement and discovery completion.
 
 The publisher uses core NATS, not a durable JetStream consumer contract. A
 consumer must take a full `GET /api/v1/fixtures` snapshot on initial connection,
@@ -204,6 +206,9 @@ REST. Applying the same refetch more than once must be harmless.
 
 - A `fixture.update` response replaces the fixture's event list. An event that
   disappears was removed; revoke it and its displayed clips.
+- An `event.update` response upserts the requested event. A missing parent
+  fixture requires one targeted fixture fetch; silently discarding the event
+  is invalid because Core NATS does not replay an earlier fixture hint.
 - `phase` and `videos` render independently. Do not derive workflow state from
   clip count.
 - `player: null` is a valid unknown-player event. It is not searched until the
@@ -229,7 +234,9 @@ BFF and React. The consumer change must:
    `/api/v1/fixtures?ids=...`, then replace and re-order only those fixtures;
 4. use `presentation_state` for grouping, live badges, and finished winner
    highlighting; use non-null `penalty` for shootout score formatting; and
-5. retain a full fixture snapshot on initial load and every browser or NATS
+5. consume `event.update`, refetch and upsert the event, and recover its parent
+   fixture through a targeted fetch when absent; and
+6. retain a full fixture snapshot on initial load and every browser or NATS
    reconnect because Core NATS and SSE do not replay missed hints.
 
 The deployed BFF preserves targeted fixture and event identity instead of
@@ -238,3 +245,10 @@ turning either signal into a generic full-window refresh. Shared schema commit
 `fixture.status`; Vedanta Systems commit `81db099` landed the matching consumer
 in the coordinated 2026-08-30 rollout. Found Footy's committed golden is
 `internal/infra/event/testdata/found-footy.fixture.status.json`.
+
+FF-085 replaces `event.video` with `event.update` without changing its payload.
+The broader name reflects the existing asynchronous event-level ownership and
+adds a terminal dirty signal after `event_downstream_workflows.completed_at`
+commits. The Vedanta Systems consumer must accept the new subject before the
+worker rolls out; accepting the legacy subject during that deployment window
+keeps already-running pre-FF-085 histories harmless.

@@ -97,10 +97,11 @@ metrics.
 
 FF-050 emits correlated workflow-observed timings for lifecycle, each Twitter
 search, candidate observation persistence, download, dense hash, vision,
-promotion, terminal persistence, and `event.video` publication. Candidate
+promotion, terminal persistence, and `event.update` publication. Candidate
 lines carry `event_id`, `fixture_id`, `tweet_url`, `search_attempt`,
 `recovered`, `phase`, `outcome`, `duration_ms`, and `event_elapsed_ms`.
-Publication lines carry the promotion or supersede cause. Durations include
+Publication lines carry the promotion, supersede, placement, or completion
+cause. Durations include
 Temporal queueing and retries; they are not activity CPU timers. They use
 `workflow.Now`, feed logs only, and never affect commands or acceptance. No
 event or tweet identifier is a Prometheus label.
@@ -242,9 +243,11 @@ for forensic diagnosis; score quality no longer gates completion after grace.
 
 The independent `NatsPublisher` owns the live fan-out plane. It emits the three
 environment-scoped topics `fixture.status`, `fixture.update`, and
-`event.video` inside the workspace envelope. FF-077 replaces the clock-only
+`event.update` inside the workspace envelope. FF-077 replaces the clock-only
 topic with the shared REST/NATS presentation projection; payloads and consumer
-recovery rules live in [`api.md`](./api.md).
+recovery rules live in [`api.md`](./api.md). FF-085 broadens the asynchronous
+event hint from video-only mutations to every downstream-owned public event
+change and records `cause=completion` on the terminal publication.
 
 The former standalone Composer and `found_footy_event_composer_*` metrics were
 removed with FF-070 because they allowed a split write. Audit inserts now ride

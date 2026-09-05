@@ -152,7 +152,7 @@ func (p *pipeline) commitClipPlacement(
 	p.rememberExactRoot(c.md5, out.WinnerAssetID)
 	p.redirectExactRoots(loserIDs, out.WinnerAssetID)
 	if out.Announce {
-		p.publishEventVideo(c.tweetURL, "placement")
+		p.publishEventUpdate(c.tweetURL, "placement")
 	}
 	return out, true
 }

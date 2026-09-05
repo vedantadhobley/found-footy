@@ -2,7 +2,7 @@
 // live-feed NATS messages — the single "announce" boundary the workflows call
 // AFTER a durable change commits. Workflows can't do NATS I/O directly (no
 // side-effects in workflow code), so every emit of the 3 subjects goes through
-// an activity here: PublishEventVideo (this file, N3) and PublishFixtureBatch
+// an activity here: PublishEventUpdate (this file) and PublishFixtureBatch
 // (N5). Keeping them in one struct means the NatsPublisher has exactly one
 // caller boundary. See decisions.md 2026-08-14.
 package livefeed
@@ -20,7 +20,7 @@ import (
 // publisher is the NATS-producer subset these activities need. Satisfied by
 // *event.NatsPublisher; an interface so tests inject a fake without a bus.
 type publisher interface {
-	PublishEventVideo(eventID uuid.UUID, fixtureID int64) error
+	PublishEventUpdate(eventID uuid.UUID, fixtureID int64) error
 	PublishFixtureStatus(fixtures []event.FixtureStatus) error
 	PublishFixtureUpdate(fixtureIDs []int64) error
 }
@@ -32,22 +32,28 @@ type Activities struct {
 	Pub publisher
 }
 
-// EventVideoInput names the event whose surfaced clip set changed + its parent
-// fixture (routing, so the consumer knows which fixture to splice it into).
-type EventVideoInput struct {
+// EventUpdateInput names the event whose public projection changed plus its
+// parent fixture, which the consumer uses for routing.
+type EventUpdateInput struct {
 	EventID   uuid.UUID
 	FixtureID int64
 }
 
-// PublishEventVideo emits the event.video dirty-signal for one event. The
-// EventWorkflow pipeline calls it AFTER a promote/supersede has durably
-// committed a clip-set change, so a consumer that refetches on the signal
-// always sees the new state. Best-effort by design — the caller ignores the
-// result — but the activity still returns the publish error so Temporal's
-// retry policy gets a couple of cheap attempts before the signal is dropped
-// (a dropped event.video heals on the frontend's next refetch).
-func (a *Activities) PublishEventVideo(_ context.Context, in EventVideoInput) error {
-	return a.Pub.PublishEventVideo(in.EventID, in.FixtureID)
+// EventVideoInput preserves the historical Temporal activity payload type.
+// Existing histories still schedule PublishEventVideo during replay.
+type EventVideoInput = EventUpdateInput
+
+// PublishEventUpdate emits the event.update dirty signal after a durable
+// event-local mutation. The consumer refetches the authoritative event.
+func (a *Activities) PublishEventUpdate(_ context.Context, in EventUpdateInput) error {
+	return a.Pub.PublishEventUpdate(in.EventID, in.FixtureID)
+}
+
+// PublishEventVideo preserves the historical Temporal activity name for
+// workflows started before FF-085. It intentionally publishes the current
+// event.update wire contract; remove it only after those histories age out.
+func (a *Activities) PublishEventVideo(ctx context.Context, in EventVideoInput) error {
+	return a.PublishEventUpdate(ctx, in)
 }
 
 // FixtureStatusEntry is one inline projection in a status batch. The workflow

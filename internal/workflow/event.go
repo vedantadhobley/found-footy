@@ -99,6 +99,8 @@ const (
 	ff082CadenceMetadataVersion       = workflow.Version(1)
 	ff083VariantEvidenceChangeID      = "ff-083-accepted-variant-evidence"
 	ff083VariantEvidenceVersion       = workflow.Version(1)
+	ff085EventUpdateChangeID          = "ff-085-event-update"
+	ff085EventUpdateVersion           = workflow.Version(1)
 
 	// Pre-FF-061 histories retain FF-017's roughly 0/10/30/60 activity retry
 	// chain for replay compatibility. New histories use one activity attempt
@@ -132,6 +134,11 @@ func EventWorkflow(ctx workflow.Context, in EventWorkflowInput) (EventWorkflowOu
 		"first_seen_to_workflow_ms", elapsedMilliseconds(in.FirstSeenAt, startedAt))
 
 	out := EventWorkflowOutput{EventID: in.EventID}
+	eventUpdateContract := workflow.GetVersion(ctx,
+		ff085EventUpdateChangeID,
+		workflow.DefaultVersion,
+		ff085EventUpdateVersion,
+	) != workflow.DefaultVersion
 
 	// Read tunable config once at workflow start via a config activity
 	// (Temporal determinism — workflows can't touch env directly).
@@ -179,7 +186,7 @@ func EventWorkflow(ctx workflow.Context, in EventWorkflowInput) (EventWorkflowOu
 	// outcome_class so we can grep Loki for pipeline bugs.
 	if in.PlayerName == "" {
 		out.OutcomeClass = "unknown_player"
-		return finalizeEvent(ctx, in, out, log, cfgOut.FleetEnabled, startedAt)
+		return finalizeEvent(ctx, in, out, log, cfgOut.FleetEnabled, eventUpdateContract, startedAt)
 	}
 
 	// Step 1: fetch team aliases from pg.
@@ -225,7 +232,7 @@ func EventWorkflow(ctx workflow.Context, in EventWorkflowInput) (EventWorkflowOu
 			"player", in.PlayerName, "canonical", canonicalName,
 			"alias_count", len(aliasesOut.Aliases))
 		out.OutcomeClass = "empty_query"
-		return finalizeEvent(ctx, in, out, log, cfgOut.FleetEnabled, startedAt)
+		return finalizeEvent(ctx, in, out, log, cfgOut.FleetEnabled, eventUpdateContract, startedAt)
 	}
 	log.Info("query built", "query", query, "length", len(query))
 
@@ -296,6 +303,7 @@ func EventWorkflow(ctx workflow.Context, in EventWorkflowInput) (EventWorkflowOu
 		canonicalExactAliases:      canonicalExactAliases,
 		cadenceMetadata:            cadenceMetadata,
 		variantEvidence:            variantEvidence,
+		eventUpdateContract:        eventUpdateContract,
 		startedAt:                  startedAt,
 	}, log)
 
@@ -677,7 +685,7 @@ func EventWorkflow(ctx workflow.Context, in EventWorkflowInput) (EventWorkflowOu
 		"assets_kept", out.AssetsKept, "rejected", p.rejectedClips, "failed", p.failed,
 		"unavailable_attempts", out.UnavailableAttempts,
 		"search_outage_exhausted", out.SearchOutageExhausted)
-	return finalizeEvent(ctx, in, out, log, cfgOut.FleetEnabled, startedAt)
+	return finalizeEvent(ctx, in, out, log, cfgOut.FleetEnabled, eventUpdateContract, startedAt)
 }
 
 // classifiedSearchFailure extracts the bounded FF-061 observation carried by
@@ -707,6 +715,7 @@ func finalizeEvent(
 	out EventWorkflowOutput,
 	logger log.Logger,
 	fleetEnabled bool,
+	eventUpdateContract bool,
 	startedAt time.Time,
 ) (EventWorkflowOutput, error) {
 	actCtx := workflow.WithActivityOptions(ctx, workflow.ActivityOptions{
@@ -728,6 +737,9 @@ func finalizeEvent(
 		}).Get(actCtx, &completeOut); err != nil {
 		logger.Warn("MarkDownstreamComplete failed", "err", err)
 		return out, err
+	}
+	if eventUpdateContract {
+		publishEventUpdate(ctx, actCtx, logger, in, "", "completion", startedAt, true)
 	}
 
 	// #160: release this event's Firefox instance on normal completion.

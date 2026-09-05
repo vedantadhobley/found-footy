@@ -14,6 +14,10 @@ its historical heading anchors valid.
 
 New decisions after the frozen archive:
 
+- [Event updates own the asynchronous event projection](./2026-09-04-event-updates-own-async-projection.md)
+  — FF-085 replaces the video-specific dirty signal with an event-level
+  invalidation and publishes durable downstream completion without routing it
+  through fixture monitoring.
 - [Accepted variants form direct lineage, not perceptual clusters](./2026-08-31-accepted-variants-form-direct-lineage.md)
   — FF-083 retains every accepted MD5, separates immutable observation from
   movable root credit, and defers losing-byte reclamation to FF-079 without
