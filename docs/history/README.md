@@ -5,6 +5,8 @@ preserve sequence and rationale but do not define current behavior or work.
 Use the [`docs` routing index](../README.md) for current ledgers and
 [`todo.md`](../todo.md) for active issues.
 
+- [Issue validation — 2026-09-08](./issue-closures-2026-09-08.md) — FF-060's
+  natural durable download-failure evidence and the separate CDN-recovery work.
 - [Event-update rollout — 2026-09-08](./event-update-rollout-2026-09-08.md) —
   coordinated producer/consumer release identities, read-only verification,
   and remaining natural-browser acceptance for FF-085/FF-086.

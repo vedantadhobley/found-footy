@@ -5,6 +5,9 @@ Every surviving finding must have a stable disposition in
 [`todo.md`](../../todo.md), and any old claim must be verified against current
 code before work begins.
 
+- [Pre-rollout evidence — 2026-09-08](./pre-rollout-evidence-2026-09-08.md) —
+  vision timeout/admission burst, deferred-fixture shadow contamination,
+  durable download classification, and preserved cadence/variant review data.
 - [`design-audit.md`](./design-audit.md) — 2026-06-30 analysis that motivated
   the Go rebuild.
 - [`workflow-audit-2026-07-09.md`](./workflow-audit-2026-07-09.md) — early
