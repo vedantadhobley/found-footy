@@ -101,6 +101,8 @@ const (
 	ff083VariantEvidenceVersion       = workflow.Version(1)
 	ff085EventUpdateChangeID          = "ff-085-event-update"
 	ff085EventUpdateVersion           = workflow.Version(1)
+	ff087VisionFailureChangeID        = "ff-087-vision-failure-detail"
+	ff087VisionFailureVersion         = workflow.Version(1)
 
 	// Pre-FF-061 histories retain FF-017's roughly 0/10/30/60 activity retry
 	// chain for replay compatibility. New histories use one activity attempt
@@ -291,6 +293,11 @@ func EventWorkflow(ctx workflow.Context, in EventWorkflowInput) (EventWorkflowOu
 		workflow.DefaultVersion,
 		ff083VariantEvidenceVersion,
 	) != workflow.DefaultVersion
+	durableVisionFailures := workflow.GetVersion(ctx,
+		ff087VisionFailureChangeID,
+		workflow.DefaultVersion,
+		ff087VisionFailureVersion,
+	) != workflow.DefaultVersion
 	p := newPipeline(ctx, in, pipelineConfig{
 		maxHamming: cfgOut.MaxHamming, minRun: cfgOut.MinRunFrames, maxGaps: cfgOut.MaxGapFrames,
 		longMaxHamming: cfgOut.LongMaxHamming, longMinRun: cfgOut.LongMinRunFrames, longMaxGaps: cfgOut.LongMaxGapFrames,
@@ -298,6 +305,7 @@ func EventWorkflow(ctx workflow.Context, in EventWorkflowInput) (EventWorkflowOu
 		preHashMD5Claim:            preHashMD5Claim,
 		durableCandidates:          durableCandidates,
 		durableDownloadFailures:    durableDownloadFailures,
+		durableVisionFailures:      durableVisionFailures,
 		deferExactFollowerOutcomes: deferExactFollowerOutcomes,
 		atomicPlacement:            atomicPlacement,
 		canonicalExactAliases:      canonicalExactAliases,

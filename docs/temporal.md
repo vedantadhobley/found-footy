@@ -176,6 +176,14 @@ ApplicationError for invalid JSON/request/auth/model failures. Temporal stops
 after the first attempt. Rate-limit, capacity, unavailable, and other transient
 failures retain EventWorkflow's three-attempt policy (FF-012).
 
+FF-087 adds bounded details to both that permanent error and retryable
+`vision_failure` errors. New histories persist the final detail, or an
+`activity/timeout` fallback with the server's timeout subtype. A timeout's
+previous application-error cause never overrides its final classification.
+The `ff-087-vision-failure-detail` marker preserves historical terminal payloads;
+activity timeouts, retry counts, and registration names are unchanged. See the
+[failure-detail decision](./decisions/2026-09-08-vision-failures-retain-stage-and-timeout-kind.md).
+
 ## Testing shape
 
 Client-level: unit tests exercise `NewClient` connection retries +

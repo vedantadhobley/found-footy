@@ -14,6 +14,9 @@ its historical heading anchors valid.
 
 New decisions after the frozen archive:
 
+- [Vision failures retain stage and timeout kind](./2026-09-08-vision-failures-retain-stage-and-timeout-kind.md)
+  — FF-087 preserves bounded exhausted-failure evidence for representatives
+  and exact followers, and separates local LLM admission from request timing.
 - [Event updates use a coordinated quiet-window cutover](./2026-09-08-event-update-uses-coordinated-cutover.md)
   — FF-085 deploys one wire subject without a dual listener, retains Temporal
   history compatibility, and requires browser-bundle refresh plus REST recovery.

@@ -483,6 +483,15 @@ failures, activity tests decode bounded resolve/download/probe/staging detail,
 and EventWorkflow tests require the terminal candidate JSON while a version
 test preserves the pre-FF-060 payload.
 
+FF-087 tests fault each vision stage and round-trip its allowlisted details
+through Temporal's failure converter. Workflow regressions cover timeout
+precedence, malformed/old detail, permanent versus transient attempts, matching
+representative/follower evidence, cleanup, correlated logs, and the pre-FF-087
+null payload. A real-Postgres test retries terminal writes for both previously
+observed and terminal-first candidates. Local HTTP tests hold the only LLM
+slot, distinguish queued from active calls, cancel a waiter without sending
+HTTP, and verify request timeouts and gauge release without a live model.
+
 FF-012 similarly spans three unit layers: the LLM adapter types malformed 2xx
 JSON, `ValidateClip` marks all permanent model/config/response sentinels
 non-retryable, and WorkflowTestSuite proves permanent vision failure runs once

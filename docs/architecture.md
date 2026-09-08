@@ -63,6 +63,7 @@ found-footy/
 │   │   ├── event_pipeline.go            ✓ shared Selector state, deterministic contexts, live-asset/canonical-exact restoration, and construction
 │   │   ├── event_pipeline_intake.go     ✓ candidate launch, exact-MD5 ownership, hash claimant failover, and consumer loop
 │   │   ├── event_pipeline_validation.go ✓ vision, category-scoped perceptual dedup, winner selection, and legacy replay dispatch
+│   │   ├── event_vision_failure.go      ✓ bounded failure decoding; final Temporal timeout overrides prior-attempt detail
 │   │   ├── event_pipeline_placement.go  ✓ FF-066/FF-067 atomic accepted-candidate placement, removal gate, attribution, supersession, and invalidation
 │   │   ├── event_pipeline_effects.go    ✓ promotion, supersession, publication, cleanup, and terminal candidate durability
 │   │   ├── telemetry.go                 ✓ FF-050: typed replay-aware EventWorkflow lifecycle/search/candidate/publication timing envelope
@@ -392,6 +393,9 @@ the activity boundary, typed permanent
 LLM failures (invalid response/request, missing model, or auth) become
 non-retryable Temporal ApplicationErrors; transient model and infrastructure
 classes retain the workflow's bounded retry policy (FF-012).
+FF-087's activity-owned `failure.go` adds bounded stage/class evidence. New
+workflow histories persist it for the exact-byte representative and followers;
+Temporal timeouts retain their subtype without guessing the expired stage.
 
 ### team domain (D6)
 
@@ -438,6 +442,8 @@ Adapter-specific notes:
   classifyError translates HTTP status codes to typed errors
   (ErrRateLimited, ErrCapExceeded, etc.) and maps malformed successful wire
   responses to `ErrInvalidJSON`.
+  FF-087 adds typed local-admission interruption, separate wait/request timers,
+  and queued versus admitted-call gauges without changing the request contract.
 - **syndication**: metadata resolution and CDN byte download use separate 403
   classes. Metadata 403 is terminal `ErrGeoRestricted`; CDN 403 is transient
   `ErrCDNForbidden`, allowing the enclosing activity retry to resolve a fresh

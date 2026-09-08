@@ -17,6 +17,10 @@ import (
 // Typed sentinel errors. Grouping them in one file keeps the retry
 // classification decisions visible in one place.
 var (
+	// ErrLocalAdmission marks a canceled semaphore wait before any HTTP request.
+	// The context error stays in the chain; this sentinel does not change retries.
+	ErrLocalAdmission = errors.New("llm: local admission interrupted")
+
 	// ErrCapExceeded — the endpoint is at its concurrency cap.
 	// llama.cpp on joi returns 503 when max_parallel is exceeded (per
 	// AGENTS.md joi-side notes). Retry with backoff.

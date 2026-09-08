@@ -24,8 +24,6 @@ import (
 	"os"
 	"path/filepath"
 
-	"go.temporal.io/sdk/temporal"
-
 	"github.com/vedantadhobley/found-footy/internal/activity/heartbeat"
 	"github.com/vedantadhobley/found-footy/internal/config"
 	dvision "github.com/vedantadhobley/found-footy/internal/domain/vision"
@@ -37,11 +35,6 @@ import (
 // schema requires exactly 3; more frames = more chances the clock is visible
 // (it hides during replays/close-ups) without extra model calls.
 var framePositions = []float64{0.25, 0.50, 0.75}
-
-// permanentLLMErrorType identifies model/config failures that Temporal must
-// not retry. The sentinels remain in the cause chain for direct callers and
-// tests; the ApplicationError flag controls server-side retry behavior.
-const permanentLLMErrorType = "vision_llm_permanent"
 
 // --- dep interfaces (interface-shaped so tests inject fakes) ---
 
@@ -74,38 +67,42 @@ type Activities struct {
 // non-retryable ApplicationError. The verdict is always a nil-error Outcome.
 func (a *Activities) ValidateClip(ctx context.Context, in ValidateClipInput) (ValidateClipOutput, error) {
 	var out ValidateClipOutput
-	// One opaque VLM request that can queue behind the joi cap-4 semaphore past
+	// One opaque VLM request that can queue behind the local LLM semaphore past
 	// the HeartbeatTimeout; keep the attempt alive (#184 audit P0-1).
 	defer heartbeat.Keepalive(ctx, heartbeat.Interval)()
 
 	dir, err := os.MkdirTemp(a.ScratchDir, "vision-*")
 	if err != nil {
-		return out, fmt.Errorf("vision.ValidateClip: scratch: %w", err)
+		return out, visionFailure(FailureScratch, err)
 	}
 	defer func() { _ = os.RemoveAll(dir) }()
 
 	vidPath := filepath.Join(dir, "clip.mp4")
 	if err := a.fetchStaged(ctx, in.StagingKey, vidPath); err != nil {
-		return out, fmt.Errorf("vision.ValidateClip: fetch %s: %w", in.StagingKey, err)
+		return out, visionFailure(FailureFetch, err)
 	}
 
 	meta, err := a.FFmpeg.ProbeMetadata(ctx, vidPath)
 	if err != nil {
-		return out, fmt.Errorf("vision.ValidateClip: probe: %w", err)
+		return out, visionFailure(FailureProbe, err)
 	}
 
 	images := make([]llm.ChatImage, 0, len(framePositions))
 	for _, frac := range framePositions {
 		jpeg, err := a.FFmpeg.ExtractFrame(ctx, vidPath, frac*meta.DurationSecs, a.Cfg.FrameQuality)
 		if err != nil {
-			return out, fmt.Errorf("vision.ValidateClip: extract @%.2f: %w", frac, err)
+			return out, visionFailure(FailureExtract, err)
 		}
 		images = append(images, llm.ChatImage{Data: jpeg, MimeType: "image/jpeg"})
 	}
 
 	resp, err := a.callModel(ctx, images)
 	if err != nil {
-		return out, classifyModelFailure("model", err)
+		stage := FailureRequest
+		if errors.Is(err, llm.ErrLocalAdmission) {
+			stage = FailureAdmission
+		}
+		return out, visionFailure(stage, err)
 	}
 
 	var vr dvision.VisionResponse
@@ -113,7 +110,7 @@ func (a *Activities) ValidateClip(ctx context.Context, in ValidateClipInput) (Va
 		// Constrained decoding should make this impossible. Repeating the same
 		// accepted response does not repair it, so fail this activity once.
 		parseErr := fmt.Errorf("%w: %v", llm.ErrInvalidJSON, err)
-		return out, classifyModelFailure("parse response", parseErr)
+		return out, visionFailure(FailureParse, parseErr)
 	}
 
 	ev := dvision.Evaluate(vr.Frames, dvision.Expected{Elapsed: in.APIElapsed, Extra: in.APIExtra}, a.Cfg.ToleranceMinutes)
@@ -126,20 +123,6 @@ func (a *Activities) ValidateClip(ctx context.Context, in ValidateClipInput) (Va
 	out.Frames = vr.Frames
 	out.ClockReadings = ev.ClockReadings
 	return out, nil
-}
-
-// classifyModelFailure preserves transient model failures for the workflow's
-// retry policy and marks permanent configuration/response failures as a
-// non-retryable Temporal ApplicationError.
-func classifyModelFailure(stage string, err error) error {
-	wrapped := fmt.Errorf("vision.ValidateClip: %s: %w", stage, err)
-	if errors.Is(err, llm.ErrInvalidJSON) ||
-		errors.Is(err, llm.ErrModelNotFound) ||
-		errors.Is(err, llm.ErrInvalidRequest) ||
-		errors.Is(err, llm.ErrAuthFailed) {
-		return temporal.NewNonRetryableApplicationError(wrapped.Error(), permanentLLMErrorType, wrapped)
-	}
-	return wrapped
 }
 
 // callModel issues the single multi-image structured-output vision call.

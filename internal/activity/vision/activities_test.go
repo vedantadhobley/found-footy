@@ -21,21 +21,32 @@ import (
 )
 
 type fakeFFmpeg struct {
-	dur       float64
-	positions []float64
+	dur        float64
+	positions  []float64
+	probeErr   error
+	extractErr error
 }
 
 func (f *fakeFFmpeg) ProbeMetadata(_ context.Context, _ string) (*ffmpeg.VideoMetadata, error) {
+	if f.probeErr != nil {
+		return nil, f.probeErr
+	}
 	return &ffmpeg.VideoMetadata{DurationSecs: f.dur, Width: 1280, Height: 720}, nil
 }
 func (f *fakeFFmpeg) ExtractFrame(_ context.Context, _ string, pos float64, _ int) ([]byte, error) {
+	if f.extractErr != nil {
+		return nil, f.extractErr
+	}
 	f.positions = append(f.positions, pos)
 	return []byte{0xFF, 0xD8, 0xFF, 0xE0}, nil // minimal JPEG magic
 }
 
-type fakeS3 struct{}
+type fakeS3 struct{ err error }
 
-func (fakeS3) Download(_ context.Context, _ string) (io.ReadCloser, int64, error) {
+func (f fakeS3) Download(_ context.Context, _ string) (io.ReadCloser, int64, error) {
+	if f.err != nil {
+		return nil, 0, f.err
+	}
 	b := []byte("fake mp4 bytes")
 	return io.NopCloser(bytes.NewReader(b)), int64(len(b)), nil
 }
@@ -187,7 +198,7 @@ func assertPermanentLLMError(t *testing.T, err, sentinel error) {
 	if !errors.As(err, &appErr) {
 		t.Fatalf("err = %v, want Temporal ApplicationError", err)
 	}
-	if !appErr.NonRetryable() || appErr.Type() != permanentLLMErrorType {
-		t.Fatalf("ApplicationError nonretryable/type = %v/%q, want true/%q", appErr.NonRetryable(), appErr.Type(), permanentLLMErrorType)
+	if !appErr.NonRetryable() || appErr.Type() != PermanentLLMErrorType {
+		t.Fatalf("ApplicationError nonretryable/type = %v/%q, want true/%q", appErr.NonRetryable(), appErr.Type(), PermanentLLMErrorType)
 	}
 }
