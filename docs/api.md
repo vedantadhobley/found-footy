@@ -249,6 +249,11 @@ in the coordinated 2026-08-30 rollout. Found Footy's committed golden is
 FF-085 replaces `event.video` with `event.update` without changing its payload.
 The broader name reflects the existing asynchronous event-level ownership and
 adds a terminal dirty signal after `event_downstream_workflows.completed_at`
-commits. The Vedanta Systems consumer must accept the new subject before the
-worker rolls out; accepting the legacy subject during that deployment window
-keeps already-running pre-FF-085 histories harmless.
+commits. The accepted rollout is a
+[coordinated quiet-window hard cutover](./decisions/2026-09-08-event-update-uses-coordinated-cutover.md):
+confirm no running discovery workflows or named events debouncing, deploy the
+new consumer and producer within the same window, then verify both releases.
+The consumer accepts only `event.update`. Reload already-open browser tabs onto
+the new bundle and recover an authoritative REST snapshot; reconnect alone
+does not replace old JavaScript. The legacy Temporal activity remains for
+history compatibility and emits the new wire subject.

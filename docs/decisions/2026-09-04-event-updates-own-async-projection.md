@@ -52,6 +52,11 @@ completion.
 
 ## Consequences
 
+**Rollout amended 2026-09-08:** The
+[coordinated hard-cutover decision](./2026-09-08-event-update-uses-coordinated-cutover.md)
+supersedes the temporary dual-subject rollout below. The event contract and
+Temporal compatibility requirements are unchanged.
+
 The Found Footy worker and Vedanta Systems consumer form one coordinated
 contract rollout. Deploy the consumer first with temporary acceptance of both
 subjects, then deploy the worker. The payload and REST endpoints do not change.

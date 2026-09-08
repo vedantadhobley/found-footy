@@ -483,7 +483,7 @@ the current branch.
 
 ### FF-085 — asynchronous event completion has no live invalidation
 
-- **Status:** `in_progress`
+- **Status:** `implemented`
 - **Severity:** P1
 - **Observed:** Mbappe's 90+4′ missed-penalty workflow for Real Betis–Real
   Madrid on 2026-09-04 committed its final video update about 12 seconds before
@@ -506,16 +506,22 @@ the current branch.
   histories preserve their command graph through the registered
   `PublishEventVideo` compatibility activity, which forwards to the current
   wire subject. Shared schemas and producer goldens use `event.update`.
-- **Completion condition:** Commit the shared schema and Found Footy changes;
-  deploy a Vedanta Systems consumer that temporarily accepts both subjects,
-  upserts the returned event, and recovers an absent fixture; then deploy the
-  worker. Prove a natural no-candidate event changes from `searching` to
-  `complete` without a page refresh.
+- **Release checkpoint (2026-09-08):** Producer `dbc2a76` and shared schemas
+  `fcfb28f` are committed. The frontend agent reports consumer `ca1f8e5`
+  committed, with 38 tests, type-check, and both production image builds
+  passing; it is not pushed or deployed. Production Found Footy remains on
+  `bad0bf7`.
+- **Completion condition:** Use the accepted
+  [coordinated hard cutover](./decisions/2026-09-08-event-update-uses-coordinated-cutover.md),
+  with no dual-subject consumer. Recheck zero running discovery workflows and
+  no named events debouncing, deploy both sides, refresh existing browser
+  bundles, and verify authoritative snapshot recovery. Prove a natural
+  no-candidate event changes from `searching` to `complete` without a refresh.
 - **Decision:** [Event updates own the asynchronous event projection](./decisions/2026-09-04-event-updates-own-async-projection.md).
 
 ### FF-086 — live event delivery cannot identify or recover a silent no-op
 
-- **Status:** `confirmed`
+- **Status:** `implemented`
 - **Severity:** P1
 - **Observed:** The same Mbappe event received many successful Found Footy
   `event.video` publications while the production BFF retained its wildcard
@@ -524,7 +530,7 @@ the current branch.
 - **Unknown boundary:** Neither the BFF nor browser records the successful
   NATS-receive, targeted-fetch, SSE-write, browser-receive, and React-apply
   sequence. The incident therefore cannot be assigned to one exact hop.
-- **Known consumer defect:** The current React handler replaces only an event
+- **Known consumer defect:** The deployed React handler replaces only an event
   already present in its fixture. If an earlier fixture hint was missed, every
   later event notification is silently discarded. Core NATS and SSE do not
   replay that missing hint.
@@ -533,6 +539,11 @@ the current branch.
   hop plus rejected/no-op client patches. Preserve full REST recovery on
   initial connection and reconnect. Do not infer that FF-085's completion
   signal alone explains or fixes this incident.
+- **Frontend checkpoint (2026-09-08, agent-reported):** Consumer `ca1f8e5`
+  implements event upserts, missing-parent recovery, stale-response protection,
+  and bounded delivery diagnostics. Its 38 passing tests include real NATS/SSE
+  and reconnect coverage. Production rollout and end-to-end validation remain;
+  the historical Mbappe incident's exact failed hop is still unproven.
 
 ### FF-084 — event removal can leave or recreate pending candidates
 
