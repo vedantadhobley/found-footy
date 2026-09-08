@@ -483,7 +483,7 @@ the current branch.
 
 ### FF-085 — asynchronous event completion has no live invalidation
 
-- **Status:** `implemented`
+- **Status:** `validating`
 - **Severity:** P1
 - **Observed:** Mbappe's 90+4′ missed-penalty workflow for Real Betis–Real
   Madrid on 2026-09-04 committed its final video update about 12 seconds before
@@ -511,6 +511,11 @@ the current branch.
   committed, with 38 tests, type-check, and both production image builds
   passing; it is not pushed or deployed. Production Found Footy remains on
   `bad0bf7`.
+- **Production rollout (2026-09-08):** Found Footy `3723ce2` and Vedanta Systems
+  `ca1f8e5` deployed together with zero active discovery workflows. Release
+  identities, public REST, the production NATS subscription, and public SSE
+  connection passed; natural completion delivery remains unverified. See the
+  [rollout evidence](./history/event-update-rollout-2026-09-08.md).
 - **Completion condition:** Use the accepted
   [coordinated hard cutover](./decisions/2026-09-08-event-update-uses-coordinated-cutover.md),
   with no dual-subject consumer. Recheck zero running discovery workflows and
@@ -521,7 +526,7 @@ the current branch.
 
 ### FF-086 — live event delivery cannot identify or recover a silent no-op
 
-- **Status:** `implemented`
+- **Status:** `validating`
 - **Severity:** P1
 - **Observed:** The same Mbappe event received many successful Found Footy
   `event.video` publications while the production BFF retained its wildcard
@@ -530,7 +535,7 @@ the current branch.
 - **Unknown boundary:** Neither the BFF nor browser records the successful
   NATS-receive, targeted-fetch, SSE-write, browser-receive, and React-apply
   sequence. The incident therefore cannot be assigned to one exact hop.
-- **Known consumer defect:** The deployed React handler replaces only an event
+- **Known consumer defect:** The pre-cutover React handler replaced only an event
   already present in its fixture. If an earlier fixture hint was missed, every
   later event notification is silently discarded. Core NATS and SSE do not
   replay that missing hint.
@@ -544,6 +549,11 @@ the current branch.
   and bounded delivery diagnostics. Its 38 passing tests include real NATS/SSE
   and reconnect coverage. Production rollout and end-to-end validation remain;
   the historical Mbappe incident's exact failed hop is still unproven.
+- **Production rollout (2026-09-08):** Consumer `ca1f8e5` is now live with the
+  matching producer. Public snapshot and SSE handshake passed, and the new
+  BFF holds the production subscription. Event receipt through actual browser
+  application remains the natural-match acceptance gate; deployment alone
+  does not close the historical delivery investigation.
 
 ### FF-084 — event removal can leave or recreate pending candidates
 

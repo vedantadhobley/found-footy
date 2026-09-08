@@ -257,3 +257,8 @@ The consumer accepts only `event.update`. Reload already-open browser tabs onto
 the new bundle and recover an authoritative REST snapshot; reconnect alone
 does not replace old JavaScript. The legacy Temporal activity remains for
 history compatibility and emits the new wire subject.
+
+The [2026-09-08 rollout](./history/event-update-rollout-2026-09-08.md) deployed
+Found Footy `3723ce2` and Vedanta Systems `ca1f8e5`. Public REST and SSE connection
+checks passed; natural event delivery and completion still require browser
+acceptance on the new bundle.

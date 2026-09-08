@@ -5,6 +5,9 @@ preserve sequence and rationale but do not define current behavior or work.
 Use the [`docs` routing index](../README.md) for current ledgers and
 [`todo.md`](../todo.md) for active issues.
 
+- [Event-update rollout — 2026-09-08](./event-update-rollout-2026-09-08.md) —
+  coordinated producer/consumer release identities, read-only verification,
+  and remaining natural-browser acceptance for FF-085/FF-086.
 - [`roadmap-2026-08-15.md`](./roadmap-2026-08-15.md) — four-week Go rebuild
   delivery plan that ended with the 2026-08-15 production cutover.
 - [`issue-register-2026-08-17.md`](./issue-register-2026-08-17.md) — frozen
