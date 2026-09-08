@@ -14,6 +14,9 @@ its historical heading anchors valid.
 
 New decisions after the frozen archive:
 
+- [Event updates use a coordinated quiet-window cutover](./2026-09-08-event-update-uses-coordinated-cutover.md)
+  — FF-085 deploys one wire subject without a dual listener, retains Temporal
+  history compatibility, and requires browser-bundle refresh plus REST recovery.
 - [Event updates own the asynchronous event projection](./2026-09-04-event-updates-own-async-projection.md)
   — FF-085 replaces the video-specific dirty signal with an event-level
   invalidation and publishes durable downstream completion without routing it
