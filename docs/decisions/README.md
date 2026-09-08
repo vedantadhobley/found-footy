@@ -14,6 +14,9 @@ its historical heading anchors valid.
 
 New decisions after the frozen archive:
 
+- [Postponed score absence is not play regression](./2026-09-08-postponed-score-absence-is-not-play-regression.md)
+  — FF-075 excludes only an unchanged empty PST scoreboard from score-clear
+  warnings while retaining event-history, clock, and other regression guards.
 - [Vision failures retain stage and timeout kind](./2026-09-08-vision-failures-retain-stage-and-timeout-kind.md)
   — FF-087 preserves bounded exhausted-failure evidence for representatives
   and exact followers, and separates local LLM admission from request timing.

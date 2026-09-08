@@ -243,6 +243,14 @@ authorization continues through the existing partial absence debounce. An
 exact one-for-one player attribution replacement is also supported when team,
 type, detail, clock, and unchanged score agree.
 
+An unchanged `pst` scoreboard with only zero/null scores and no clock or event
+evidence may clear its score fields without a warning. `FixtureFacts.HasEvents`
+retains all stored history and raw provider event presence before confirmed or
+trackable filtering. Pending, anonymous, removed, or untracked events therefore
+disqualify this exception. Identity, name, played-clock, and nonzero-score loss
+remain anomalous; no provider facts or polling cadence are changed. See the
+[postponed-score decision](./decisions/2026-09-08-postponed-score-absence-is-not-play-regression.md).
+
 The batch aggregator recommends a global `positive_only` circuit when at least
 two fixtures regress or at least three confirmed events disappear. One
 anomalous fixture remains isolated, including an identity-conflict observation

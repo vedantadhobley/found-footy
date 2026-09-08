@@ -60,6 +60,10 @@ type FixtureFacts struct {
 
 	HomeScore *int
 	AwayScore *int
+
+	// HasEvents includes any stored event history or raw observed event, not
+	// only the confirmed/trackable subsets used for disappearance matching.
+	HasEvents bool
 }
 
 // EventFact is the provider-independent identity and clock evidence needed to

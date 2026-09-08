@@ -117,6 +117,12 @@ progress, clock-corrected event identity, coherent recent goal cancellation,
 stale or unsupported regression, one-fixture quarantine, and the multi-fixture
 2026-08-29 outage signature. Monitor and WorkflowTestSuite regressions prove
 the verdict is observable and aggregated but does not yet enforce mutations.
+The September 8 postponed-score corpus pins repeated retained-zero/fresh-null
+comparisons and their batch amplification. Domain and Monitor tests preserve
+warnings for played clocks, nonzero scores, missing events, and cleared
+metadata; pending/anonymous/removed history and untracked raw events prevent
+the empty-PST exception. Repeated activity refreshes keep score storage and
+the active lifecycle unchanged.
 
 FF-077 contract tables cover every documented provider status, fail unknown
 codes closed to deferred/status, select a clock only for timed play with a
