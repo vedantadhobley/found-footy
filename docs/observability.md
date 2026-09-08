@@ -65,6 +65,9 @@ a call site).
 `event_candidate_measured`, and `event_publish_measured`.
 FF-060 download-failure candidate measurements add bounded `failure_stage` and
 `failure_class` fields that match the terminal candidate's durable detail.
+FF-087 extends vision candidate measurements with the same fields and optional
+`failure_timeout_type`. A Temporal-owned timeout reports stage `activity`;
+previous-retry evidence is not attributed to that expired attempt.
 Postgres schema startup emits `migration_applied` only after a migration
 transaction commits, then `schema_verified` after the ledger and required
 object manifest match. Any chain, checksum, stamp, or object mismatch emits
@@ -94,6 +97,20 @@ emitter. `internal/workflow/telemetry.go` adds the same typed `module` and
 `action` vocabulary to those lines while preserving the SDK's replay
 suppression. These workflow lines do not increment the emitter-derived call
 metrics.
+
+LLM success/request-failure logs include `phase=request`, `admission_wait_ms`,
+and `request_ms`; the existing `elapsed_ms` remains request time. An interrupted
+local wait emits `llm_chat_failed` with `phase=local_admission` and zero request
+time, even when no HTTP call occurred. These are attempt timings, not whole
+candidate durations or gateway-specific queue measurements.
+
+`found_footy_llm_admission_wait_seconds{outcome}` measures local waits with only
+`acquired` and `canceled` labels. `found_footy_llm_waiting_calls` counts queued
+calls; `found_footy_llm_concurrent_calls` counts admitted calls and no longer
+includes waiters. `found_footy_llm_call_duration_seconds{kind}` still excludes
+local waiting. HTTP time includes remote admission/network/inference; it cannot
+separate those components without gateway correlation. No model, event, or
+request identifier is added as a metric label.
 
 FF-050 emits correlated workflow-observed timings for lifecycle, each Twitter
 search, candidate observation persistence, download, dense hash, vision,

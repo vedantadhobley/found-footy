@@ -92,6 +92,20 @@ The compatibility child retains FF-002's correlated unexpected-child and typed
 terminal-output paths. Cancellation bypasses every forensic and cleanup
 command under FF-015.
 
+**Vision failure contract (FF-087).** `ValidateClip` failures now carry typed
+stage/class evidence through Temporal. New histories persist it under
+`outcome_detail.failure`, keeping `failed/vision_error`. The stage distinguishes
+scratch, staging fetch, probe, frame extraction, local model admission, model
+request, and response parsing. Temporal-owned failures use `activity/timeout`
+plus a bounded `timeout_type`; that final timeout takes precedence over a
+previous retry's application-error detail. Invalid or legacy untyped details
+become `activity/unknown`, never a raw error string. Exact followers inherit
+the representative's detail. `ff-087-vision-failure-detail` leaves old histories
+on their original null terminal payload. The existing permanent-model
+non-retryable rule, three-attempt policy, cancellation, and cleanup remain
+unchanged; no schema migration is required. See the
+[decision](../decisions/2026-09-08-vision-failures-retain-stage-and-timeout-kind.md).
+
 **Exact-follower outcome contract (FF-065).** Exact-byte collapse avoids
 duplicate work; it does not by itself prove a durable winner. A candidate that
 matches an existing promoted asset becomes `duplicate` immediately with

@@ -13,6 +13,7 @@ package llm
 import (
 	"context"
 	"encoding/base64"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -150,17 +151,30 @@ func (c *Client) Chat(ctx context.Context, req ChatRequest) (*ChatResponse, erro
 
 	// Acquire semaphore slot. Bounded by ctx so caller cancellation
 	// releases the wait instead of holding it forever.
-	c.ins.concurrentCalls.Inc()
+	waitStart := time.Now()
+	c.ins.waitingCalls.Inc()
 	select {
 	case c.sem <- struct{}{}:
+		c.ins.waitingCalls.Dec()
+		c.ins.admissionDuration.WithLabelValues("acquired").Observe(time.Since(waitStart).Seconds())
 	case <-ctx.Done():
-		c.ins.concurrentCalls.Dec()
+		wait := time.Since(waitStart)
+		c.ins.waitingCalls.Dec()
+		c.ins.admissionDuration.WithLabelValues("canceled").Observe(wait.Seconds())
 		c.ins.calls.WithLabelValues("chat", "failure").Inc()
-		return nil, ctx.Err()
+		err := errors.Join(ErrLocalAdmission, ctx.Err())
+		c.ins.emitEvent(ctx, logging.LevelWarn, vocabulary.ActionLLMChatFailed,
+			"llm local admission interrupted",
+			logging.String("model", req.Model), logging.String("phase", "local_admission"),
+			logging.Int64("admission_wait_ms", wait.Milliseconds()),
+			logging.Int64("request_ms", 0), logging.Int64("elapsed_ms", 0), logging.Err(err))
+		return nil, err
 	}
+	wait := time.Since(waitStart)
+	c.ins.concurrentCalls.Inc()
 	defer func() {
-		<-c.sem
 		c.ins.concurrentCalls.Dec()
+		<-c.sem
 	}()
 
 	// Bound the actual request by RequestTimeout on top of whatever
@@ -179,6 +193,9 @@ func (c *Client) Chat(ctx context.Context, req ChatRequest) (*ChatResponse, erro
 		c.ins.emitEvent(ctx, logging.LevelWarn, vocabulary.ActionLLMChatFailed,
 			"llm chat call failed",
 			logging.String("model", req.Model),
+			logging.String("phase", "request"),
+			logging.Int64("admission_wait_ms", wait.Milliseconds()),
+			logging.Int64("request_ms", elapsed.Milliseconds()),
 			logging.Int64("elapsed_ms", elapsed.Milliseconds()),
 			logging.Err(classified),
 		)
@@ -192,6 +209,9 @@ func (c *Client) Chat(ctx context.Context, req ChatRequest) (*ChatResponse, erro
 	c.ins.emitEvent(ctx, logging.LevelDebug, vocabulary.ActionLLMChatCall,
 		"llm chat call ok",
 		logging.String("model", resp.Model),
+		logging.String("phase", "request"),
+		logging.Int64("admission_wait_ms", wait.Milliseconds()),
+		logging.Int64("request_ms", elapsed.Milliseconds()),
 		logging.Int64("elapsed_ms", elapsed.Milliseconds()),
 		logging.Int("prompt_tokens", resp.Usage.PromptTokens),
 		logging.Int("completion_tokens", resp.Usage.CompletionTokens),

@@ -51,7 +51,7 @@ the current branch.
 
 ### FF-087 — vision failure exhaustion discards the actionable cause
 
-- **Status:** `confirmed`
+- **Status:** `implemented`
 - **Severity:** P2
 - **Evidence:** September 4 produced 80 failed vision representatives and
   167 failed candidate outcomes after exact-copy propagation. All 167 durable
@@ -62,10 +62,20 @@ the current branch.
 - **Cause:** `onVisionDone` replaces every exhausted activity error with
   `vision_error` and nil detail. Fetch/probe/extraction, local admission,
   model failures, and Temporal timeout types cannot be distinguished from SQL.
-- **Required change:** Retain bounded vision failure stage/class and Temporal
-  timeout subtype through retry exhaustion and exact-copy propagation. Separate
-  local admission wait from HTTP request time without changing retries, prompts,
-  or acceptance. Pin transient/permanent failures and old-history compatibility.
+- **Implementation (2026-09-08, not deployed):** Typed activity details now
+  retain stage/class; Temporal-owned timeouts take precedence over earlier
+  retry causes and retain a bounded subtype. New histories persist identical
+  detail for representatives and exact followers; the version marker preserves
+  old null payloads. LLM telemetry separates local waiting from HTTP time and
+  queued from admitted calls. No schema, retry, prompt, or acceptance change.
+- **Verification:** `make check` passed, including real-Postgres integration
+  tests. Targeted race checks passed for vision activities, the LLM adapter,
+  and workflows; documentation links and anchors also passed.
+- **Acceptance:** Release the worker, then verify a natural terminal vision
+  failure retains bounded detail and correlate admission/request measurements.
+  Historical rows are not rewritten. Unit, workflow, serialization, and
+  Postgres regressions cover the contract. See the
+  [decision](./decisions/2026-09-08-vision-failures-retain-stage-and-timeout-kind.md).
 - **Boundary:** Diagnosis alone does not fix saturation. FF-037 owns the
   work-lane/admission follow-up; shared gateway changes need a Control handoff.
   Do not bypass vision, globally extend deadlines, or replay old events as

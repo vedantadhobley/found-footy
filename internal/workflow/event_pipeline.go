@@ -79,6 +79,7 @@ type pipeline struct {
 	preHashMD5Claim                         bool
 	durableCandidates                       bool
 	durableDownloadFailures                 bool
+	durableVisionFailures                   bool
 	deferExactFollowerOutcomes              bool
 	atomicPlacement                         bool
 	canonicalExactAliases                   bool
@@ -122,6 +123,7 @@ func newPipeline(ctx workflow.Context, in EventWorkflowInput, cfg pipelineConfig
 		preHashMD5Claim:            cfg.preHashMD5Claim,
 		durableCandidates:          cfg.durableCandidates,
 		durableDownloadFailures:    cfg.durableDownloadFailures,
+		durableVisionFailures:      cfg.durableVisionFailures,
 		deferExactFollowerOutcomes: cfg.deferExactFollowerOutcomes,
 		atomicPlacement:            cfg.atomicPlacement,
 		canonicalExactAliases:      cfg.canonicalExactAliases,
@@ -153,6 +155,7 @@ type pipelineConfig struct {
 	preHashMD5Claim                         bool
 	durableCandidates                       bool
 	durableDownloadFailures                 bool
+	durableVisionFailures                   bool
 	deferExactFollowerOutcomes              bool
 	atomicPlacement                         bool
 	canonicalExactAliases                   bool

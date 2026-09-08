@@ -2,6 +2,8 @@
 package workflow
 
 import (
+	"encoding/json"
+
 	"github.com/google/uuid"
 	"go.temporal.io/sdk/workflow"
 
@@ -235,9 +237,19 @@ func (p *pipeline) onVisionDone(c clip) func(workflow.Future) {
 
 		var vout visionactivity.ValidateClipOutput
 		if err := f.Get(p.ctx, &vout); err != nil {
-			p.logCandidatePhase(c.tweetURL, "vision", "failed", c.visionStartedAt)
+			var detail json.RawMessage
+			var fields []interface{}
+			if p.durableVisionFailures {
+				failure := visionFailureDetail(err)
+				detail = jsonDetail(map[string]any{"failure": failure})
+				fields = append(fields, "failure_stage", string(failure.Stage), "failure_class", string(failure.Class))
+				if failure.TimeoutType != "" {
+					fields = append(fields, "failure_timeout_type", string(failure.TimeoutType))
+				}
+			}
+			p.logCandidatePhase(c.tweetURL, "vision", "failed", c.visionStartedAt, fields...)
 			// Vision infra-fail after retries — drop the clip + its staging.
-			p.failExactCluster(c, "vision_error", nil)
+			p.failExactCluster(c, "vision_error", detail)
 			p.deleteStaging(c.stagingKey)
 			return
 		}

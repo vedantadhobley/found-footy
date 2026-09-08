@@ -19,11 +19,13 @@ type Instruments struct {
 	log logging.Emitter
 	reg *metrics.Registry
 
-	calls           *prometheus.CounterVec
-	callDuration    *prometheus.HistogramVec
-	tokens          *prometheus.CounterVec
-	concurrentCalls prometheus.Gauge
-	connectionState prometheus.Gauge
+	calls             *prometheus.CounterVec
+	callDuration      *prometheus.HistogramVec
+	admissionDuration *prometheus.HistogramVec
+	waitingCalls      prometheus.Gauge
+	tokens            *prometheus.CounterVec
+	concurrentCalls   prometheus.Gauge
+	connectionState   prometheus.Gauge
 }
 
 // RegisterMetrics builds the LLM adapter's metric families, registers
@@ -35,8 +37,10 @@ type Instruments struct {
 //     outcome ∈ success/failure. Rolled into the four-golden-signals
 //     dashboard.
 //   - found_footy_llm_call_duration_seconds{kind} — 14 exp buckets,
-//     0.05s → ~800s. Vision calls on Qwen3-VL take 3-30s; the upper
-//     tail catches degraded joi performance.
+//     0.05s → ~410s. Measures HTTP request time, excluding local admission.
+//   - found_footy_llm_admission_wait_seconds{outcome} — local semaphore wait;
+//     outcome is acquired/canceled, including waits that never reach HTTP.
+//   - found_footy_llm_waiting_calls — calls waiting for local admission.
 //   - found_footy_llm_tokens_used_total{kind, direction} — direction ∈
 //     prompt/completion. Populated from the API response's usage block.
 //   - found_footy_llm_concurrent_calls — live count of in-flight chat
@@ -56,9 +60,18 @@ func RegisterMetrics(reg *metrics.Registry, log logging.Emitter) *Instruments {
 		Namespace: "found_footy",
 		Subsystem: "llm",
 		Name:      "call_duration_seconds",
-		Help:      "LLM call duration in seconds, by kind.",
+		Help:      "LLM HTTP request duration in seconds, excluding local admission, by kind.",
 		Buckets:   prometheus.ExponentialBuckets(0.05, 2, 14), // 50ms → ~400s
 	}, []string{"kind"})
+	admissionDuration := prometheus.NewHistogramVec(prometheus.HistogramOpts{
+		Namespace: "found_footy", Subsystem: "llm", Name: "admission_wait_seconds",
+		Help:    "Local LLM semaphore wait in seconds, by admission outcome.",
+		Buckets: prometheus.ExponentialBuckets(0.05, 2, 14),
+	}, []string{"outcome"})
+	waitingCalls := prometheus.NewGauge(prometheus.GaugeOpts{
+		Namespace: "found_footy", Subsystem: "llm", Name: "waiting_calls",
+		Help: "LLM chat calls waiting for local semaphore admission.",
+	})
 
 	tokens := prometheus.NewCounterVec(prometheus.CounterOpts{
 		Namespace: "found_footy",
@@ -81,16 +94,18 @@ func RegisterMetrics(reg *metrics.Registry, log logging.Emitter) *Instruments {
 		Help:      "1 if the last /v1/models probe succeeded, 0 otherwise.",
 	})
 
-	reg.PrometheusRegistry().MustRegister(calls, callDuration, tokens, concurrentCalls, connectionState)
+	reg.PrometheusRegistry().MustRegister(calls, callDuration, admissionDuration, waitingCalls, tokens, concurrentCalls, connectionState)
 
 	return &Instruments{
-		log:             log,
-		reg:             reg,
-		calls:           calls,
-		callDuration:    callDuration,
-		tokens:          tokens,
-		concurrentCalls: concurrentCalls,
-		connectionState: connectionState,
+		log:               log,
+		reg:               reg,
+		calls:             calls,
+		callDuration:      callDuration,
+		admissionDuration: admissionDuration,
+		waitingCalls:      waitingCalls,
+		tokens:            tokens,
+		concurrentCalls:   concurrentCalls,
+		connectionState:   connectionState,
 	}
 }
 
