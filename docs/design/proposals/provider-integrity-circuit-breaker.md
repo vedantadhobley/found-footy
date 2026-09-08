@@ -5,8 +5,13 @@
 The wire contract and non-enforcing semantic evaluator have shipped; durable
 circuit/quarantine state and mutation enforcement remain proposed. The
 [first production shadow audit](../audits/provider-integrity-shadow-2026-08-31.md)
-found and locally repaired classification gaps; one additional live shadow
-window remains an enforcement gate. Current behavior is authoritative in the
+found and locally repaired classification gaps. The
+[second shadow window](../audits/pre-rollout-evidence-2026-09-08.md#ff-088-and-ff-075-postponed-polling-pollutes-circuit-evidence)
+is now reviewed: stable deferred null-score observations repeatedly flag
+against retained zero scores and contaminate global recommendations. Repair
+and regression-test that classification before enforcement; waiting for more
+unchanged polls is not the remaining gate. FF-088 owns the separate deferred
+polling/reactivation policy. Current behavior is authoritative in the
 [fixture-monitoring ledger](../../orchestration/monitor.md).
 
 ## Problem
@@ -116,9 +121,9 @@ separate Temporal execution, and a worker restart must not reset provider trust.
 - zero or conflicting fixture/team identity, negative scores, or an event whose
   team is not a fixture participant.
 
-The current adapter decodes `errors` but ignores it and does not model
-`results` or `paging`. It also marks a successful HTTP chunk complete without
-checking that every requested ID appeared.
+The shipped typed adapter now rejects these envelope and coverage defects.
+This was the pre-FF-075 transport gap; the remaining work is durable semantic
+trust and mutation enforcement, not repeating the wire-contract implementation.
 
 ### Quarantine one fixture
 
@@ -230,8 +235,8 @@ State transitions and operator actions require durable reason evidence.
 1. **Shipped:** harden the API envelope and requested-ID coverage contract.
 2. **Shipped:** add the pure evaluator in shadow mode. Record typed workflow
    verdicts and adapter contract metrics while preserving current mutations.
-3. **In progress:** the August 30 regression corpus and first live-window audit
-   are pinned; run the repaired evaluator through one additional live window.
+3. **Repair required:** both shadow windows are reviewed. Pin and repair the
+   September 8 deferred-score classification before durable enforcement.
 4. Apply the additive provider-state/quarantine migration.
 5. Enforce `rejected` and `positive_only` policies.
 6. Add audited force-open and fixture-resolution operations. Force-close must

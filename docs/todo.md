@@ -49,6 +49,66 @@ the current branch.
 
 ## Confirmed issues
 
+### FF-087 — vision failure exhaustion discards the actionable cause
+
+- **Status:** `confirmed`
+- **Severity:** P2
+- **Evidence:** September 4 produced 80 failed vision representatives and
+  167 failed candidate outcomes after exact-copy propagation. All 167 durable
+  details are JSON null. Worker logs show 319 60-second LLM request timeouts;
+  229 activity completions arrived after timeout. The shared gateway also
+  logged 97 Gemma admission waits exceeding its 60-second limit. See the
+  [pre-rollout audit](./design/audits/pre-rollout-evidence-2026-09-08.md#ff-087-vision-failure-burst-and-missing-durable-cause).
+- **Cause:** `onVisionDone` replaces every exhausted activity error with
+  `vision_error` and nil detail. Fetch/probe/extraction, local admission,
+  model failures, and Temporal timeout types cannot be distinguished from SQL.
+- **Required change:** Retain bounded vision failure stage/class and Temporal
+  timeout subtype through retry exhaustion and exact-copy propagation. Separate
+  local admission wait from HTTP request time without changing retries, prompts,
+  or acceptance. Pin transient/permanent failures and old-history compatibility.
+- **Boundary:** Diagnosis alone does not fix saturation. FF-037 owns the
+  work-lane/admission follow-up; shared gateway changes need a Control handoff.
+  Do not bypass vision, globally extend deadlines, or replay old events as
+  part of this diagnostic slice.
+
+### FF-088 — long-postponed fixtures never leave active polling
+
+- **Status:** `confirmed`
+- **Severity:** P2
+- **Evidence:** Cincinnati–DC United `1490439`, scheduled September 5 at
+  23:30 UTC, still polls every 30 seconds on September 8 with PST status,
+  no events, and no terminal observation. Terminal grace does not apply.
+- **Cause:** PST is considered `Live()` for short delays, with no bounded
+  deferred policy. `Reschedule` has no runtime caller; moving the row to
+  staging alone fails because past-kickoff activation and PST emergency
+  activation would return it to active polling.
+- **Required design:** Define deferred polling and reactivation across active
+  polling, staging, and ingestion. Preserve the same fixture and resumption
+  path; do not force-complete/delete it or introduce a new lifecycle state
+  without an explicit need. Pin short delay, stale kickoff, future reschedule,
+  resumed play, and existing-event cases before implementation.
+- **Related, not identical:** FF-075 compares retained 0–0 against repeated
+  provider null scores and emits the same anomaly every poll. That chronic
+  warning can combine with an unrelated fixture warning to recommend a global
+  restriction. Repair classification before enabling enforcement; cadence
+  changes alone do not make the classifier correct. See the
+  [recorded observation and code trace](./design/audits/pre-rollout-evidence-2026-09-08.md#ff-088-and-ff-075-postponed-polling-pollutes-circuit-evidence).
+
+### FF-089 — video-CDN denials still exhaust download retries
+
+- **Status:** `confirmed`
+- **Severity:** P2
+- **Evidence:** All 1,149 pre-rollout September `download_error` outcomes
+  across 148 events are durably classified `cdn_download/forbidden`.
+- **Disposition:** This is the previously deferred CDN recovery work, not a
+  new failure introduced by the event-update rollout. FF-060's diagnostic
+  fix is [validated and closed](./history/issue-closures-2026-09-08.md).
+- **Next investigation:** Preserve representative denial evidence, determine
+  which failures are recoverable, and test a bounded recovery path before
+  changing the four-attempt download policy. Do not assume more retries,
+  cookies, or variant fallback will work. X search HTTP 429 belongs to FF-038,
+  not this media-CDN issue.
+
 ### FF-075 — successful provider responses can destructively regress live state
 
 - **Status:** `confirmed`
@@ -104,6 +164,13 @@ the current branch.
   exact release identity; API and workers verified schema hash `d4691198111b`.
   Enforcement remains absent while the repaired evaluator collects one more
   natural match window.
+- **Second shadow window (2026-09-08):** Reviewed. Stable postponed null-score
+  observations repeatedly compare against retained zero scores and can combine
+  with unrelated anomalies to recommend a global restriction. The exact
+  Cincinnati input and a two-fixture aggregate are in the
+  [pre-rollout audit](./design/audits/pre-rollout-evidence-2026-09-08.md#ff-088-and-ff-075-postponed-polling-pollutes-circuit-evidence).
+  Fix and regression-test this classification before the enforcement migration;
+  simply waiting longer or reducing postponed cadence is insufficient.
 - **Design:** [API-Football provider-integrity circuit breaker](./design/proposals/provider-integrity-circuit-breaker.md).
 
 ### FF-076 — scorer name without provider ID is treated as anonymous
@@ -134,6 +201,12 @@ the current branch.
   provider ID arrives, so refinement cannot create a duplicate event/workflow
   or reuse a natural key incorrectly. The API DTO must represent a present
   player name with nullable ID instead of collapsing the whole player to null.
+- **September evidence:** Four additional named goals with missing IDs never
+  searched: Wrede 34′ (HEBC–Dortmund), Bayo 34′ and 53′ (Udinese–Venezia), and
+  Mamadou Kone 54′ (Lens–Lorient). Exact IDs are in the
+  [pre-rollout audit](./design/audits/pre-rollout-evidence-2026-09-08.md#existing-failure-classes-and-coverage-gaps).
+  This reinforces the separate identity-v2 proposal; the event-update rollout
+  does not change matcher or identity behavior.
 - **Prior-decision boundary:** The 2026-08-05 placeholder decision rejected a
   noisy team-only fallback for events with no scorer. This event does have a
   player search term, so that rationale does not apply. Do not weaken searches
@@ -399,8 +472,13 @@ the current branch.
   tiebreak. The solver removes arrival order, but the current evidence relation
   would expose far too many historical variants and its tiebreak is not an
   accepted product rule.
-- **Next work:** After FF-083 release, review natural post-FF-082 pairs while
-  every accepted variant remains inside the ordinary public media window, then
+- **September checkpoint:** The
+  [new audit](./design/audits/pre-rollout-evidence-2026-09-08.md#ff-081082083-quality-evidence-now-supports-the-next-review)
+  exports the expanded corpus and preserves five natural cadence-comparison
+  pairs, including never-public variants, outside ordinary media cleanup in a
+  local research copy. The cadence-aware experiment changes 128 direct-pair
+  decisions, but these are unreviewed predictions, not accepted winners.
+- **Next work:** Review those natural post-FF-082/083 pairs, then
   evaluate the cadence-aware relation on rows that actually retain cadence and
   label presentation defects that metadata cannot express. Do not change
   `IsUpgrade` or adopt direct-cover visibility until reliable presentation evidence
@@ -409,10 +487,12 @@ the current branch.
   the three legacy Danso edges onto the clear 62.159 s active winner after
   explicit production-data approval. See the [focused
   audit](./design/audits/video-quality-2026-08-31.md).
+  Correct the offline report's unconditional legacy limitation labels: cadence
+  and first-loss evidence are absent in old rows, not in every exported row.
 
 ### FF-082 — retain cadence as independent keeper-quality evidence
 
-- **Status:** `implemented`
+- **Status:** `validating`
 - **Severity:** P3
 - **Observed:** Before FF-082, `DownloadAndStage` probed and returned frame
   rate, but `clip`, `video.Asset`, and `video_assets` did not retain it. The
@@ -436,14 +516,18 @@ the current branch.
 - **Regressions:** Domain, activity, workflow-version, migration, Postgres
   asset/placement, and manifest tests cover nullable old rows and positive new
   cadence.
-- **Completion condition:** Apply the migration before the worker release,
-  verify a natural new 30/50/60 fps asset retains its probed value, then add
-  reviewed cadence pairs before changing `IsUpgrade`.
+- **Production validation (2026-09-08):** Deployed before this audit. All 590
+  accepted assets first seen in the September pre-rollout window retain
+  cadence, including natural 30/50/60 fps values. Five approximately-60-fps
+  variants and their 30-fps keepers are preserved locally for FF-081 review.
+- **Remaining acceptance:** Add reviewed cadence pairs before changing
+  `IsUpgrade`; persistence itself has natural production evidence. See the
+  [quality checkpoint](./design/audits/pre-rollout-evidence-2026-09-08.md#ff-081082083-quality-evidence-now-supports-the-next-review).
 - **Decision:** [Video cadence is independent quality evidence](./decisions/2026-08-31-video-cadence-is-independent-quality-evidence.md).
 
 ### FF-083 — accepted losing variants disappear before quality review
 
-- **Status:** `implemented`
+- **Status:** `validating`
 - **Severity:** P2
 - **Observed:** Before FF-083, a distinct MD5 that passed vision but lost its
   first dHash/quality comparison never entered `video_assets`. Atomic placement
@@ -475,10 +559,15 @@ the current branch.
   public-root-only reads, and exact recurrence idempotency. Recovery includes shareless accepted
   variants. Migration and schema gates require the nullable correlated FK and
   partial lookup index.
-- **Completion condition:** Apply migration
-  `20260831_02_retain_accepted_video_variants.sql`, release the worker, then
-  export and review natural post-FF-082/FF-083 direct pairs before the ordinary
-  media cutoff. Historical first-loss variants cannot be backfilled.
+- **Production validation (2026-09-08):** Deployed before this audit. The
+  September window contains 184 accepted variants that never had a public
+  share, with stable observed-versus-credited attribution. Five such variants
+  and their keepers were downloaded from exact Garage keys; all ten sizes and
+  MD5s matched. The full metadata/hash export and review manifest are saved.
+- **Remaining acceptance:** Visually review the preserved natural pairs under
+  FF-081; no human labels or new keeper policy have been accepted. See the
+  [preserved evidence](./design/audits/pre-rollout-evidence-2026-09-08.md#preserved-local-review-material).
+  Historical first-loss variants cannot be backfilled.
 - **Decision:** [Accepted variants form direct lineage, not perceptual clusters](./decisions/2026-08-31-accepted-variants-form-direct-lineage.md).
 
 ### FF-085 — asynchronous event completion has no live invalidation
@@ -506,21 +595,18 @@ the current branch.
   histories preserve their command graph through the registered
   `PublishEventVideo` compatibility activity, which forwards to the current
   wire subject. Shared schemas and producer goldens use `event.update`.
-- **Release checkpoint (2026-09-08):** Producer `dbc2a76` and shared schemas
-  `fcfb28f` are committed. The frontend agent reports consumer `ca1f8e5`
-  committed, with 38 tests, type-check, and both production image builds
-  passing; it is not pushed or deployed. Production Found Footy remains on
-  `bad0bf7`.
+- **Pre-rollout gates (2026-09-08):** Producer `dbc2a76` and shared schemas
+  `fcfb28f` were committed. Consumer `ca1f8e5` passed its 38 tests, type-check,
+  and both production image builds before the coordinated deployment below.
 - **Production rollout (2026-09-08):** Found Footy `3723ce2` and Vedanta Systems
   `ca1f8e5` deployed together with zero active discovery workflows. Release
   identities, public REST, the production NATS subscription, and public SSE
   connection passed; natural completion delivery remains unverified. See the
   [rollout evidence](./history/event-update-rollout-2026-09-08.md).
-- **Completion condition:** Use the accepted
-  [coordinated hard cutover](./decisions/2026-09-08-event-update-uses-coordinated-cutover.md),
-  with no dual-subject consumer. Recheck zero running discovery workflows and
-  no named events debouncing, deploy both sides, refresh existing browser
-  bundles, and verify authoritative snapshot recovery. Prove a natural
+- **Remaining acceptance:** The
+  [coordinated hard cutover](./decisions/2026-09-08-event-update-uses-coordinated-cutover.md)
+  is deployed, with no dual-subject consumer. Refresh already-open browser
+  bundles and verify authoritative snapshot recovery. Prove a natural
   no-candidate event changes from `searching` to `complete` without a refresh.
 - **Decision:** [Event updates own the asynchronous event projection](./decisions/2026-09-04-event-updates-own-async-projection.md).
 
@@ -547,8 +633,9 @@ the current branch.
 - **Frontend checkpoint (2026-09-08, agent-reported):** Consumer `ca1f8e5`
   implements event upserts, missing-parent recovery, stale-response protection,
   and bounded delivery diagnostics. Its 38 passing tests include real NATS/SSE
-  and reconnect coverage. Production rollout and end-to-end validation remain;
-  the historical Mbappe incident's exact failed hop is still unproven.
+  and reconnect coverage. Natural end-to-end validation remains after the
+  deployment below; the historical Mbappe incident's exact failed hop is still
+  unproven.
 - **Production rollout (2026-09-08):** Consumer `ca1f8e5` is now live with the
   matching producer. Public snapshot and SSE handshake passed, and the new
   BFF holds the production subscription. Event receipt through actual browser
@@ -779,7 +866,7 @@ the current branch.
 | FF-024 | P2 | `confirmed` | The Garage `staging/` prefix has no bounded orphan sweep after abnormal termination. | Protect active keys and delete only proven age-bounded orphans. |
 | FF-035 | P2 | `implemented` | Each binary now parses only its owned typed sections and rejects semantic or cross-field violations before external work. A derived contract test keeps Go tags, `.env.example`, Compose overrides, environment scope, and cookie mounts aligned; dead config keys were removed. | Roll out the committed release and verify clean startup for worker, API, Twitter, and one VNC config parse. |
 | FF-036 | P2 | `implemented` | FF-079 bounds snapshots/search to configured completed UTC kickoff dates while keeping targeted SQL history. Fixture assembly uses request-wide event, discovery, and clip batches instead of N+1 reads. | Release worker/API with the FF-079 migration, then verify the public cutoff and query latency against retained production history. |
-| FF-037 | P2 | `mitigated` | LLM, Temporal, and ffmpeg admission are process-local and share work lanes. | Dedicated task/ffmpeg lanes; checked aggregate limits; shared inference owns global admission. |
+| FF-037 | P2 | `mitigated` | LLM, Temporal, and ffmpeg admission are process-local and share work lanes. The September 4 burst also exhausted gateway admission and whole vision-activity budgets; FF-087 records its missing durable cause. | Measure local wait versus request time; coordinate gateway deadlines/admission with Control before changing work lanes or limits. |
 | FF-038 | P2 | `mitigated` | Firefox capacity, leases, Docker access, and the shared X account/IP search budget are not one atomic controller boundary. Natural FF-061 validation measured an internal timeline bucket with limit 50 and a roughly 15-minute reset window. | HTTP fleet controller with atomic browser and measured search admission, scoped labels, reaping, and no worker socket. |
 | FF-039 | P2 | `confirmed` | API/worker/Twitter lifecycle, readiness, metrics identity, and error classification diverge. | Shared lifecycle contract, real readiness, correct error classes, standard identity labels. |
 | FF-040 | P2 | `implemented` | Generic fixture upserts let delayed ingestion or poll responses overwrite newer provider state, active/staging polling omitted mutable display metadata, and competing activators lacked one explicit write contract. Fixture storage now separates ingest, active refresh, staging refresh, and audited lifecycle transitions; every provider write is state-guarded and monotonic on a pre-request `last_polled_at` observation version. | Release the worker, then verify a natural team/league/kickoff correction emits `fixture.update` while a delayed response leaves the newer snapshot and lifecycle untouched. No schema migration is required. |
@@ -799,7 +886,6 @@ the current branch.
 | FF-056 | P1 | `validating` | The Go vision port computed `elapsed + extra - 1` but then clamped normal-time results back to `elapsed`, shifting the intended ±1 clock window one minute late. Abdelkarim's API-30' goal therefore rejected genuine clips whose sampled clock read 28'. The unclamped normalization is deployed in `136e2d2`. | Verify a natural API-minus-two sampled buildup frame enters the verified pool without admitting an outside-tolerance API-minus-three frame. |
 | FF-057 | P1 | `validating` | Period-aware reset clocks and exact `45:xx 2H` / `15:xx ET2` boundary alternatives are deployed. The corrected historical replay completed all 104 Barcelona–Al Ahly clock rejects across four events, normalized the 31 malformed audit envelopes from the interrupted first run, closed all four checklists, and left zero pending rows. | Verify the next natural reset-clock goal; the deterministic repair and its production exercise are complete. |
 | FF-059 | P1 | `implemented` | VNC now uses a separate raw Firefox ESR image and read-only profile-capture service; Playwright remains headless and search-only. Invalid or expired profiles cannot overwrite the shared backup. The immutable production VNC image built successfully in release `e2143ac`, but the optional service was not running and was not recreated. | Prove raw login → atomic capture → static `/auth/verify` → fresh fleet-instance reload in dev, then repeat production recovery only on a real authorized expiry. |
-| FF-060 | P2 | `validating` | In the 2026-08-22 through 2026-08-25 production sample, all 1,624 `download_error` candidates were `video.twimg.com` HTTP 403 failures after four attempts. Release `e4ae2d7` now preserves a bounded stage/class through Temporal and persists it under `outcome_detail.failure`; retry and acceptance policy are unchanged. | Verify a natural failure records `cdn_download/forbidden`, then use the durable distribution to design the separate CDN-denial recovery path. |
 | FF-062 | P1 | `validating` | A real goal that returned after reaching a removed tombstone was mapped back to that terminal row and skipped while its identity stayed exact. Leipzig fixture `1550681` initially retained five active goals against API-Football's coherent 0–6 result. Before release `e2143ac`, a provider clock correction from 45+2 to 45+1 made the return non-exact, so old code allocated generation 2 and completed the fixture. | Prove one natural exact-identity post-removal reappearance receives a new UUID and completes its own debounce/downstream lifecycle under `e2143ac`. |
 | FF-063 | P1 | `validating` | A played terminal fixture whose provider event inventory remains permanently inconsistent had no bounded exit from active polling. The additive terminal observation field, one-hour grace, settled event/downstream gates, completion audit evidence, and stable recency shipped in release `5c105af`. | Verify one coherent and one incomplete natural terminal fixture. Do not remove the rollback-compatible `completion_counter` column until FF-013. |
 | FF-064 | P3 | `implemented` | Production uses Control's canonical `control-joi.luv` identity with `gemma-4-12b` pinned. Found Footy release `e4ae2d7` passed its exact three-image request against Control contract-v3 digest `0fc304bc…`; the typed catalog, constrained response, and strict rejection checks all matched the application contract. | Control retains `joi.luv` as a rollback route until observed legacy use reaches zero; no Found Footy work remains. |
@@ -813,31 +899,6 @@ the current branch.
 | FF-072 | P2 | `confirmed` | A new accepted candidate is copied from Garage `staging/` to its deterministic final `assets/` key before the placement transaction. An exhausted or ambiguous database failure can therefore leave final bytes without a `video_assets` owner row; FF-024 covers only `staging/`. | Make final-object reconciliation explicit: either prove retry ownership before copy or sweep only age-bounded final keys that have no matching durable asset, without deleting an in-flight placement. |
 | FF-073 | P2 | `confirmed` | Firefox reaping suppresses each release error and reports success. Its broad `active fixture OR pending downstream` keep set can retain a failed normal release until fixture completion, hiding the operational failure from Temporal retry. | Define the exact lease interval, make remove-not-found idempotent under concurrent release, attempt every orphan, aggregate release failures, and return them so the activity retries. |
 | FF-074 | P3 | `confirmed` | The post-release audit must include durable-data minimization, not only code paths: unused tables/columns/indexes, duplicated or derivable fields, compatibility residue, retention gaps, and aggregates that should be combined may still remain after the rebuild. | Run a code-first schema ownership audit plus read-only production cardinality/null/age/index evidence. Turn each accepted removal or combination into a bounded migration issue; do not mutate production during the audit. |
-
-### FF-060 — download failures lost their actionable cause
-
-- **Observed:** Across the 72-hour production audit, 1,624 of 11,018
-  candidates (14.74%) ended as `failed/download_error` across 115 events. Four
-  events lost their complete one- or two-candidate sets.
-- **Retained-log result:** Every one of the 1,624 terminal warnings was
-  `video.twimg.com` HTTP 403 after four `DownloadAndStage` attempts. There were
-  zero exhausted resolve, timeout, scratch, probe, or Garage staging failures
-  in the same window.
-- **Implemented:** The activity now carries a bounded stage and class through
-  a retryable Temporal application error. New EventWorkflow histories persist
-  that value under `outcome_detail.failure` after retry exhaustion and emit the
-  same bounded fields in candidate measurements. Raw errors and signed URLs do
-  not enter Postgres. No schema migration is needed.
-- **Boundary:** This slice changes diagnosis only. It does not reinterpret CDN
-  403 as terminal, change the four-attempt retry unit, or add an unmeasured
-  cookie/variant fallback. See the
-  [decision](./decisions/2026-08-25-download-failures-retain-bounded-stage-and-class.md).
-- **Rollout:** Release `e4ae2d7` deployed at 14:06 UTC on 2026-08-25. Both
-  workers, the API, and Twitter reported the exact release identity with zero
-  restarts. Startup dependencies and all four Temporal schedules were healthy,
-  the first active poll completed, Twitter verified its session and cookie
-  backup, API health returned `ok`, and no production fleet instance remained.
-  Natural classified failure evidence is still required.
 
 ### FF-062 — removed event reappearance was swallowed by its tombstone
 
