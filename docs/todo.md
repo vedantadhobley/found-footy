@@ -97,11 +97,11 @@ the current branch.
   path; do not force-complete/delete it or introduce a new lifecycle state
   without an explicit need. Pin short delay, stale kickoff, future reschedule,
   resumed play, and existing-event cases before implementation.
-- **Related, not identical:** FF-075 compares retained 0–0 against repeated
-  provider null scores and emits the same anomaly every poll. That chronic
-  warning can combine with an unrelated fixture warning to recommend a global
-  restriction. Repair classification before enabling enforcement; cadence
-  changes alone do not make the classifier correct. See the
+- **Related, not identical:** FF-075's deployed evaluator compares retained
+  0–0 against repeated provider null scores and emits the same anomaly every
+  poll. The September 8 local repair excludes only an empty unchanged PST
+  scoreboard, preventing it from amplifying another fixture's warning. That
+  classification fix does not change this polling/reactivation gap. See the
   [recorded observation and code trace](./design/audits/pre-rollout-evidence-2026-09-08.md#ff-088-and-ff-075-postponed-polling-pollutes-circuit-evidence).
 
 ### FF-089 — video-CDN denials still exhaust download retries
@@ -179,8 +179,22 @@ the current branch.
   with unrelated anomalies to recommend a global restriction. The exact
   Cincinnati input and a two-fixture aggregate are in the
   [pre-rollout audit](./design/audits/pre-rollout-evidence-2026-09-08.md#ff-088-and-ff-075-postponed-polling-pollutes-circuit-evidence).
-  Fix and regression-test this classification before the enforcement migration;
-  simply waiting longer or reducing postponed cadence is insufficient.
+- **Second shadow repair (2026-09-08, implemented, not deployed):** An unchanged
+  non-terminal PST observation with zero/null scores, absent clocks, and no
+  event evidence no longer reports score clearing. Monitor includes pending,
+  anonymous, and removed history plus untracked provider events in that
+  evidence. Nonzero scores, played clocks, missing confirmed events, cleared
+  names, and identity/phase changes keep their existing rules. Regression tests
+  pin the exact input, repeated refresh, and isolated/global aggregate boundary.
+  Thresholds, score storage, polling, and enforcement mode remain unchanged.
+  See the [decision](./decisions/2026-09-08-postponed-score-absence-is-not-play-regression.md).
+- **Repair verification:** `make check`, targeted domain/Monitor/workflow race
+  checks, and changed-document link/anchor checks passed. The new reproduction
+  tests failed against the old classifier before the repair.
+- **Next:** Release the classification repair with enforcement still off.
+  Durable causal baselines, quarantine, and guarded mutation remain the next
+  implementation phase; no amount of unchanged postponed polling implements
+  that protection. FF-088's deferred polling policy remains separate work.
 - **Design:** [API-Football provider-integrity circuit breaker](./design/proposals/provider-integrity-circuit-breaker.md).
 
 ### FF-076 — scorer name without provider ID is treated as anonymous

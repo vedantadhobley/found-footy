@@ -35,7 +35,7 @@ func AssessFixture(comparison FixtureComparison) FixtureVerdict {
 	phaseRegressed := providerPhaseRegressed(stored.Status, observed.Status)
 	terminalRegressed := stored.Terminal && !observed.Terminal
 	clockRegressed := materialClockRegressed(stored, observed)
-	populatedFieldCleared := providerFieldCleared(stored, observed)
+	populatedFieldCleared := providerFieldCleared(comparison)
 	missing := missingConfirmedEvents(comparison.ConfirmedEvents, comparison.ObservedEvents)
 	scoreDecreased := providerScoreDecreased(stored, observed)
 
@@ -214,13 +214,35 @@ func providerScoreDecreased(stored, observed FixtureFacts) bool {
 		optionalIntDecreased(stored.AwayScore, observed.AwayScore)
 }
 
-func providerFieldCleared(stored, observed FixtureFacts) bool {
-	return (stored.HomeScore != nil && observed.HomeScore == nil) ||
-		(stored.AwayScore != nil && observed.AwayScore == nil) ||
+// providerFieldCleared preserves loss signals except for an empty postponed
+// scoreboard whose retained zero values do not establish that play occurred.
+func providerFieldCleared(comparison FixtureComparison) bool {
+	stored, observed := comparison.Stored, comparison.Observed
+	scoreCleared := (stored.HomeScore != nil && observed.HomeScore == nil) ||
+		(stored.AwayScore != nil && observed.AwayScore == nil)
+	return (scoreCleared && !emptyPostponedScoreboard(comparison)) ||
 		(stored.Elapsed != nil && observed.Elapsed == nil) ||
 		(stored.HomeName != "" && observed.HomeName == "") ||
 		(stored.AwayName != "" && observed.AwayName == "") ||
 		(stored.LeagueName != "" && observed.LeagueName == "")
+}
+
+// emptyPostponedScoreboard recognizes only the stable PST observation seen in
+// the September shadow audit. Any clock, event history, nonzero score, or
+// different phase keeps the normal regression rules; this is not a PST bypass.
+func emptyPostponedScoreboard(comparison FixtureComparison) bool {
+	if len(comparison.ConfirmedEvents) != 0 || len(comparison.ObservedEvents) != 0 {
+		return false
+	}
+	for _, facts := range []FixtureFacts{comparison.Stored, comparison.Observed} {
+		if facts.Status != "pst" || facts.Terminal || facts.HasEvents ||
+			facts.Elapsed != nil || facts.Extra != nil ||
+			(facts.HomeScore != nil && *facts.HomeScore != 0) ||
+			(facts.AwayScore != nil && *facts.AwayScore != 0) {
+			return false
+		}
+	}
+	return true
 }
 
 func materialClockRegressed(stored, observed FixtureFacts) bool {

@@ -56,6 +56,15 @@ existing absence debounce. An exact one-for-one scorer replacement is trusted
 when team, type, detail, clock, and stable score agree. Identity conflicts
 reject only the affected fixture; they do not reject an unrelated batch.
 
+The September 8 repair excludes score clearing only for unchanged `PST`
+observations with zero/null scores, no elapsed/extra, and no stored or observed
+events. Monitor retains all event-history presence and raw provider-event
+presence as facts before filtering confirmed/trackable identities. A benign
+deferred scoreboard cannot amplify an unrelated anomaly into a global warning;
+played evidence, missing events, and other cleared fields keep their guards.
+This does not change score retention, postponed polling, or reactivation. See
+the [decision](../decisions/2026-09-08-postponed-score-absence-is-not-play-regression.md).
+
 This phase does **not** enforce its recommendation: fixture refresh, event
 votes, completion, and cleanup still follow the existing path. Durable circuit
 state, fixture quarantine, and positive-only reconciliation remain FF-075 work

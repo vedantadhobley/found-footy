@@ -34,8 +34,12 @@ func providerFixtureComparison(
 			Extra:     observed.Fixture.Status.Extra,
 			HomeScore: observed.Goals.Home,
 			AwayScore: observed.Goals.Away,
+			HasEvents: len(observed.Events) > 0,
 		},
 	}
+	// Keep pending, unknown-player, and removed history as play evidence even
+	// though only active confirmed events participate in disappearance checks.
+	comparison.Stored.HasEvents = len(storedEvents) > 0
 
 	for _, storedEvent := range storedEvents {
 		if storedEvent.Removed || !storedEvent.DownstreamTriggered {

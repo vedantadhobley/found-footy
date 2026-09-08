@@ -7,10 +7,12 @@ circuit/quarantine state and mutation enforcement remain proposed. The
 [first production shadow audit](../audits/provider-integrity-shadow-2026-08-31.md)
 found and locally repaired classification gaps. The
 [second shadow window](../audits/pre-rollout-evidence-2026-09-08.md#ff-088-and-ff-075-postponed-polling-pollutes-circuit-evidence)
-is now reviewed: stable deferred null-score observations repeatedly flag
-against retained zero scores and contaminate global recommendations. Repair
-and regression-test that classification before enforcement; waiting for more
-unchanged polls is not the remaining gate. FF-088 owns the separate deferred
+is now reviewed: stable deferred null-score observations repeatedly flagged
+against retained zero scores and contaminated global recommendations. The
+[second classification repair](../../decisions/2026-09-08-postponed-score-absence-is-not-play-regression.md)
+is implemented locally, not deployed: only an unchanged empty PST scoreboard
+is exempt from score clearing. Waiting for more unchanged polls is not the
+remaining design gate. FF-088 owns the separate deferred
 polling/reactivation policy. Current behavior is authoritative in the
 [fixture-monitoring ledger](../../orchestration/monitor.md).
 
@@ -235,8 +237,11 @@ State transitions and operator actions require durable reason evidence.
 1. **Shipped:** harden the API envelope and requested-ID coverage contract.
 2. **Shipped:** add the pure evaluator in shadow mode. Record typed workflow
    verdicts and adapter contract metrics while preserving current mutations.
-3. **Repair required:** both shadow windows are reviewed. Pin and repair the
-   September 8 deferred-score classification before durable enforcement.
+3. **Local repair complete, release pending:** both shadow windows are reviewed.
+   The September 8 regression repair excludes only empty unchanged PST
+   scoreboards, including all retained/raw event presence as counterevidence.
+   Release it with enforcement off; retain the first corpus and verify the
+   corrected natural fixture/batch classification.
 4. Apply the additive provider-state/quarantine migration.
 5. Enforce `rejected` and `positive_only` policies.
 6. Add audited force-open and fixture-resolution operations. Force-close must
@@ -255,6 +260,8 @@ trusted state while provider trust is degraded.
 - nonempty envelope errors, results mismatch, paging mismatch, missing,
   duplicate, and unrequested fixture IDs;
 - suspended, interrupted, postponed, extra-time, and shootout transitions;
+- unchanged empty PST zero/null scoreboards, isolated versus global anomalies,
+  and retained/raw event evidence that disqualifies the deferred exception;
 - terminal-to-live and material clock rollback;
 - the 2026-08-29 multi-fixture regression: first bad batch opens the circuit,
   three bad polls create no absence votes, and no share/object is destroyed;
