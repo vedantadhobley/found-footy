@@ -29,8 +29,9 @@ real Twitter.
 
 - **`found-footy-{env}-twitter`** — static fallback + fleet image builder:
   Playwright launches Firefox
-  headless; the Go service exposes the HTTP surface on `:8888`. Firefox profile
-  lives in the container writable layer (regenerated each start).
+  headless; the Go service exposes the HTTP surface on `:8888`. The headless
+  image declares no volumes; `/data/firefox-profile` lives in its writable
+  layer. Restart preserves that profile; removing the container discards it.
 - **`found-footy-{env}-twitter-vnc`** — opt-in (`--profile vnc`): raw Debian
   Firefox ESR + Xvfb/noVNC and `cmd/twitter-auth`. Firefox owns the persistent
   environment-specific profile; the Go companion reads `cookies.sqlite` and
@@ -39,6 +40,13 @@ real Twitter.
   → `/config`); the backup remains `/config/twitter_cookies.json`. The
   directory mount lets atomic temp-file replacement work and survives
   container recreation.
+
+**FF-090 (implemented locally, not deployed):** Fleet release requests anonymous
+volume removal for containers created from older images. This does not remove
+cookie bind mounts or named VNC profiles. Deployed pre-fix images still declare
+an anonymous `/data` volume; previously detached volumes require separate,
+ownership-verified cleanup. See the
+[storage decision](./decisions/2026-09-09-search-profiles-follow-container-removal.md).
 
 The active search path uses the per-event instance model
 ([twitter-scaling.md](./design/proposals/twitter-scaling.md), #160): one

@@ -175,9 +175,9 @@ func (f *Fleet) Provision(ctx context.Context, eventID uuid.UUID) (string, error
 		ShmSize:     1 << 30, // 1 GiB — Firefox rendering needs > default 64 MB
 		Resources:   container.Resources{Memory: f.cfg.InstanceMemLimit},
 		// Firefox is a critical child of Go PID 1. If Firefox/Playwright dies,
-		// the service exits non-zero and Docker rebuilds the whole unit from the
-		// shared cookie backup. Explicit Release uses ContainerStop and therefore
-		// does not trigger an on-failure restart.
+		// the service exits non-zero and Docker restarts the process unit. The
+		// same container keeps its profile and reloads shared cookies; only
+		// removal discards the profile. Explicit Release suppresses restart.
 		RestartPolicy: container.RestartPolicy{Name: "on-failure"},
 		AutoRemove:    false, // Release does stop+rm explicitly (idempotent)
 	}
@@ -203,7 +203,9 @@ func (f *Fleet) Provision(ctx context.Context, eventID uuid.UUID) (string, error
 
 // Release stops + removes the event's instance. Idempotent — a missing
 // container is success, since the happy path, the VAR cancel-cleanup, and
-// the monitor decay path may all attempt release.
+// the monitor decay path may all attempt release. Remove anonymous volumes
+// as well: older search images declared /data as a volume instead of keeping
+// their profile in the writable layer. Named volumes and cookie binds survive.
 func (f *Fleet) Release(ctx context.Context, eventID uuid.UUID) error {
 	name := InstanceName(f.cfg.Network, eventID)
 	inst, ok, err := f.find(ctx, eventID)
@@ -215,7 +217,7 @@ func (f *Fleet) Release(ctx context.Context, eventID uuid.UUID) error {
 	}
 	timeout := 5
 	_ = f.cli.ContainerStop(ctx, inst.ID, container.StopOptions{Timeout: &timeout})
-	if err := f.cli.ContainerRemove(ctx, inst.ID, container.RemoveOptions{Force: true}); err != nil {
+	if err := f.cli.ContainerRemove(ctx, inst.ID, container.RemoveOptions{Force: true, RemoveVolumes: true}); err != nil {
 		return fmt.Errorf("firefoxfleet.Release: rm %s: %w", name, err)
 	}
 	return nil

@@ -47,7 +47,7 @@ type NewBrowserOptions struct {
 	// (headless) — each container has its own private profile, no
 	// shared volume, no cross-instance SQLite locking. The raw-login
 	// container owns a different profile and never passes it to Playwright.
-	// See decisions.md 2026-07-23 for the ephemeral-vs-shared rationale.
+	// Container restart preserves it; removal discards it (FF-090).
 	ProfileDir string
 
 	// Headless is true in every deployed search container. False remains useful

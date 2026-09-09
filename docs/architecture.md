@@ -477,6 +477,12 @@ Adapter-specific notes:
 tests pass against a mock. Dev and prod Twitter containers run the Go browser
 service. The archived Python service is rollback evidence only.
 
+FF-090 removes implicit headless-image volumes. Search profiles are private
+writable-layer data; fleet removal also deletes anonymous volumes left attached
+by older images. Cookie binds and named operator-login storage remain persistent.
+See the [storage contract](./decisions/2026-09-09-search-profiles-follow-container-removal.md)
+and [release status](./todo.md#ff-090--firefox-container-removal-leaves-anonymous-profile-volumes).
+
 `twitter.Client.Search(ctx, addr, req)` takes a **per-call base address**
 (#160): empty `addr` → the shared `TwitterConfig.BaseURL` (pre-#160
 behavior); a non-empty `addr` → that event's dedicated fleet instance,

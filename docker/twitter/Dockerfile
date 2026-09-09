@@ -56,17 +56,14 @@ COPY --from=builder /out/twitter /usr/local/bin/twitter
 COPY --from=builder /root/.cache/ms-playwright-go /home/pwuser/.cache/ms-playwright-go
 RUN chown -R pwuser:pwuser /home/pwuser/.cache
 
-# /data + /config are bind-mount / volume targets. pwuser needs
-# write access to profile dir + cookie file. The volume mounts at
-# runtime inherit host permissions; the mkdir here ensures the
-# standalone `docker run` PoC (no mount) has a writable path.
+# The private profile stays in the writable layer; Compose/the fleet binds
+# only /config for shared cookies. Pre-create both paths for the non-root user.
+# Do not declare VOLUME: an unmounted target would create an anonymous volume
+# that outlives its container. Operator login uses a separate image and mount.
 RUN mkdir -p /data /config && chown -R pwuser:pwuser /data /config
 
 USER pwuser
 WORKDIR /home/pwuser
-
-# Bind-mount / volume targets.
-VOLUME ["/config", "/data"]
 
 # 8888 = Twitter search-service HTTP surface.
 EXPOSE 8888

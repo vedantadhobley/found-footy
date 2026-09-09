@@ -14,6 +14,9 @@ its historical heading anchors valid.
 
 New decisions after the frozen archive:
 
+- [Search profiles follow container removal](./2026-09-09-search-profiles-follow-container-removal.md)
+  — FF-090 removes implicit headless volumes, cleans older anonymous profiles
+  on release, and preserves explicit cookie and operator-login storage.
 - [Postponed score absence is not play regression](./2026-09-08-postponed-score-absence-is-not-play-regression.md)
   — FF-075 excludes only an unchanged empty PST scoreboard from score-clear
   warnings while retaining event-history, clock, and other regression guards.
