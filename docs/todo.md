@@ -51,7 +51,7 @@ the current branch.
 
 ### FF-090 — Firefox container removal leaves anonymous profile volumes
 
-- **Status:** `implemented`
+- **Status:** `validating`
 - **Severity:** P1
 - **Evidence:** The September 9 storage inspection verified that the deployed
   Twitter image declares `/data` as a volume and the static production
@@ -62,7 +62,7 @@ the current branch.
 - **Pre-fix cause:** `Fleet.Release` removed containers with `Force: true` but omitted
   `RemoveVolumes`. Docker retains the anonymous volume after container removal.
   Comments claiming profiles lived in the disposable writable layer were wrong.
-- **Implementation (2026-09-09, not deployed):** Remove the headless image's
+- **Implementation (2026-09-09, deployed as `a7c9f53`):** Remove the headless image's
   implicit volumes and request anonymous-volume deletion on owned fleet release.
   Cookie binds and explicit VNC profiles remain persistent. Unit, real-Docker,
   Compose-contract, and built-image smoke tests cover storage ownership and
@@ -73,8 +73,12 @@ the current branch.
   release checks, and the built-image storage smoke passed. The smoke verified
   legacy-mount cutover, restart versus recreation, and persistent synthetic
   cookie/named-profile sentinels. It did not perform authenticated X searches.
-- **Acceptance:** Separately approve worker/Twitter rollout and confirm
-  static/new event browsers have no `/data` mount. Audit
+- **Rollout:** All four application processes verified `a7c9f53`; static
+  Twitter authenticated and refreshed its cookie backup with only the `/config`
+  bind mounted. The exact release image passed the isolated storage smoke.
+  See the [release evidence](./history/storage-and-diagnostics-rollout-2026-09-09.md).
+- **Acceptance:** Confirm the next natural event browser has no `/data` mount
+  and its workflow removes the container normally. Audit
   existing anonymous volumes without assuming an unreferenced volume belongs
   to this project; deletion requires separate approval for proven targets.
 - **Boundary:** The separately approved legacy named-volume cleanup reclaimed
@@ -84,7 +88,7 @@ the current branch.
 
 ### FF-087 — vision failure exhaustion discards the actionable cause
 
-- **Status:** `implemented`
+- **Status:** `validating`
 - **Severity:** P2
 - **Evidence:** September 4 produced 80 failed vision representatives and
   167 failed candidate outcomes after exact-copy propagation. All 167 durable
@@ -95,7 +99,7 @@ the current branch.
 - **Cause:** `onVisionDone` replaces every exhausted activity error with
   `vision_error` and nil detail. Fetch/probe/extraction, local admission,
   model failures, and Temporal timeout types cannot be distinguished from SQL.
-- **Implementation (2026-09-08, not deployed):** Typed activity details now
+- **Implementation (2026-09-08; deployed 2026-09-09 as `a7c9f53`):** Typed activity details now
   retain stage/class; Temporal-owned timeouts take precedence over earlier
   retry causes and retain a bounded subtype. New histories persist identical
   detail for representatives and exact followers; the version marker preserves
@@ -104,7 +108,7 @@ the current branch.
 - **Verification:** `make check` passed, including real-Postgres integration
   tests. Targeted race checks passed for vision activities, the LLM adapter,
   and workflows; documentation links and anchors also passed.
-- **Acceptance:** Release the worker, then verify a natural terminal vision
+- **Acceptance:** Verify a natural terminal vision
   failure retains bounded detail and correlate admission/request measurements.
   Historical rows are not rewritten. Unit, workflow, serialization, and
   Postgres regressions cover the contract. See the
@@ -130,10 +134,10 @@ the current branch.
   path; do not force-complete/delete it or introduce a new lifecycle state
   without an explicit need. Pin short delay, stale kickoff, future reschedule,
   resumed play, and existing-event cases before implementation.
-- **Related, not identical:** FF-075's deployed evaluator compares retained
-  0–0 against repeated provider null scores and emits the same anomaly every
-  poll. The September 8 local repair excludes only an empty unchanged PST
-  scoreboard, preventing it from amplifying another fixture's warning. That
+- **Related, not identical:** The pre-fix FF-075 evaluator compared retained
+  0–0 against repeated provider null scores and emitted the same anomaly every
+  poll. The September 8 repair, deployed September 9 as `a7c9f53`, excludes
+  only an empty unchanged PST scoreboard, preventing it from amplifying another fixture's warning. That
   classification fix does not change this polling/reactivation gap. See the
   [recorded observation and code trace](./design/audits/pre-rollout-evidence-2026-09-08.md#ff-088-and-ff-075-postponed-polling-pollutes-circuit-evidence).
 
@@ -212,7 +216,7 @@ the current branch.
   with unrelated anomalies to recommend a global restriction. The exact
   Cincinnati input and a two-fixture aggregate are in the
   [pre-rollout audit](./design/audits/pre-rollout-evidence-2026-09-08.md#ff-088-and-ff-075-postponed-polling-pollutes-circuit-evidence).
-- **Second shadow repair (2026-09-08, implemented, not deployed):** An unchanged
+- **Second shadow repair (2026-09-08; deployed 2026-09-09 as `a7c9f53`):** An unchanged
   non-terminal PST observation with zero/null scores, absent clocks, and no
   event evidence no longer reports score clearing. Monitor includes pending,
   anonymous, and removed history plus untracked provider events in that
@@ -224,8 +228,11 @@ the current branch.
 - **Repair verification:** `make check`, targeted domain/Monitor/workflow race
   checks, and changed-document link/anchor checks passed. The new reproduction
   tests failed against the old classifier before the repair.
-- **Next:** Release the classification repair with enforcement still off.
-  Durable causal baselines, quarantine, and guarded mutation remain the next
+- **Rollout:** The 22:00 UTC active poll completed with two tracked fixtures,
+  including postponed Cincinnati–DC, and a trusted aggregate with no regression
+  or fetch errors. Enforcement remains off. See the
+  [release evidence](./history/storage-and-diagnostics-rollout-2026-09-09.md).
+- **Next:** Durable causal baselines, quarantine, and guarded mutation remain the next
   implementation phase; no amount of unchanged postponed polling implements
   that protection. FF-088's deferred polling policy remains separate work.
 - **Design:** [API-Football provider-integrity circuit breaker](./design/proposals/provider-integrity-circuit-breaker.md).

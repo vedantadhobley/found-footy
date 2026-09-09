@@ -24,12 +24,14 @@ than assume that this legacy volume remains available.
 
 ## Separate current lifecycle finding
 
-The deployed Twitter image `3723ce2aa6476a2c85e2bb24351336eda890683d`
-declares `/data` as a Docker volume. The running static Twitter container has
+At inspection, the deployed Twitter image `3723ce2aa6476a2c85e2bb24351336eda890683d`
+declared `/data` as a Docker volume. The running static Twitter container had
 an anonymous volume there, contrary to the documented writable-layer design.
 Fleet release omits `RemoveVolumes`, so removing an event container does not
 remove its anonymous profile volume. This is not the source of the deleted
 legacy named volume and has not been fixed by deleting it.
 
 Follow-up: [FF-090](../todo.md#ff-090--firefox-container-removal-leaves-anonymous-profile-volumes).
-No anonymous-volume cleanup or runtime change was authorized or performed.
+No anonymous-volume cleanup or runtime change was part of this deletion.
+The separately approved [later rollout](./storage-and-diagnostics-rollout-2026-09-09.md)
+deployed the lifecycle fix without reclaiming existing anonymous volumes.

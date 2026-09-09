@@ -41,11 +41,12 @@ real Twitter.
   directory mount lets atomic temp-file replacement work and survives
   container recreation.
 
-**FF-090 (implemented locally, not deployed):** Fleet release requests anonymous
+**FF-090 (deployed 2026-09-09 as `a7c9f53`):** Fleet release requests anonymous
 volume removal for containers created from older images. This does not remove
-cookie bind mounts or named VNC profiles. Deployed pre-fix images still declare
-an anonymous `/data` volume; previously detached volumes require separate,
-ownership-verified cleanup. See the
+cookie bind mounts or named VNC profiles. The deployed headless image declares
+no volumes, and static Twitter has only the `/config` bind. The next natural
+event browser still needs lifecycle verification. Previously detached volumes
+require separate, ownership-verified cleanup. See the
 [storage decision](./decisions/2026-09-09-search-profiles-follow-container-removal.md).
 
 The active search path uses the per-event instance model

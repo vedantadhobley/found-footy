@@ -5,6 +5,9 @@ preserve sequence and rationale but do not define current behavior or work.
 Use the [`docs` routing index](../README.md) for current ledgers and
 [`todo.md`](../todo.md) for active issues.
 
+- [Storage and diagnostics rollout — 2026-09-09](./storage-and-diagnostics-rollout-2026-09-09.md)
+  — `a7c9f53` deployment, disposable-profile checks, resumed polling, and
+  remaining natural-event validation.
 - [Legacy Twitter storage cleanup — 2026-09-09](./storage-cleanup-2026-09-09.md)
   — approved removal of the unused Python browser volume and the separate
   current anonymous-profile-volume lifecycle finding.
