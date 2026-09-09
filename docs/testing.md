@@ -173,6 +173,39 @@ production-derived dHash sequences, retained metadata, accepted human identity
 and quality labels, and the observed current outputs. Tests replay the matcher
 and comparator while keeping known policy disagreements explicit instead of
 treating current output as ground truth.
+
+The separate September natural-cadence corpus preserves first-loss variants
+with known frame rate, source-copy checksums, exact observations, and frame
+diagnostics. Tests replay current quality preference and experimental
+stable-offset/cadence outcomes. Adams has an explicit accepted shorter-copy
+judgment, pinned separately from the current longer-keeper result; the other
+natural pairs remain unlabelled. See the
+[bounded cadence review](./design/audits/video-cadence-review-2026-09-08.md).
+
+The offline aligned-section report replays both corpora without rewriting
+labels or previous predictions. Synthetic tests expose internal missing
+sections hidden by whole-span coverage, unmatched edges, tolerated misses,
+isolated hits, and changed offsets. Accounting and reversal checks keep
+sample positions and coverage consistent; report tests enforce scoped pairs,
+explicit unknown legacy cadence, failure propagation, and corpus-drift
+rejection. Natural positions are pinned independently of keeper acceptance.
+See the [overlap experiment](./design/audits/video-overlap-review-2026-09-08.md).
+
+The offline `scripts/audit_video_cadence` package tests native-frame repetition
+evidence without changing runtime selection. Unit tests cover repeat periods,
+noise, low motion, mixed windows, edge overlays, malformed timing, truncated
+frames, and output limits. The separately compiled ffmpeg controls generate
+native-rate, repeated, re-encoded, interpolated, static, and overlay-masked
+motion. They deliberately demonstrate that no detected repeats does not prove
+native FPS. See its [execution contract](../scripts/audit_video_cadence/README.md).
+
+The [offline picture-quality pilot](../scripts/benchmark_video_quality/README.md)
+has an explicit Docker-only Python test command, separate from Go's gates.
+Tests cover source SHA/path integrity, aligned sample windows, finite scores,
+incomplete/duplicate output rejection, and tentative review labels that must
+not authorize replacement. Two complete natural/control runs verify exact
+BRISQUE score repeatability; these results do not validate a production selector.
+
 FF-082 tests positive nullable frame-rate persistence across workflow version
 gating, activity recovery projections, domain invariants, and Postgres asset
 and atomic-placement round trips. Keeper behavior remains unchanged.

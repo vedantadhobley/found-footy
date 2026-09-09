@@ -8,6 +8,15 @@ code before work begins.
 - [Pre-rollout evidence — 2026-09-08](./pre-rollout-evidence-2026-09-08.md) —
   vision timeout/admission burst, deferred-fixture shadow contamination,
   durable download classification, and preserved cadence/variant review data.
+- [Natural cadence-pair review — 2026-09-08](./video-cadence-review-2026-09-08.md)
+  — five preserved FF-081 first-loss pairs, presentation and motion-cadence
+  evidence, executable policy snapshots, and unresolved replacement choices.
+- [Aligned-section overlap experiment — 2026-09-08](./video-overlap-review-2026-09-08.md)
+  — shared sections, unmatched edges/interior gaps, preserved keeper judgments,
+  saved-corpus evidence, and limits of coverage-based replacement.
+- [Picture-quality pilot — 2026-09-09](./video-picture-quality-2026-09-09.md)
+  — measured BRISQUE baseline, noise/aggregation failure cases, tentative
+  Palacios/Mariano preferences, and the separate Demirović compilation boundary.
 - [`design-audit.md`](./design-audit.md) — 2026-06-30 analysis that motivated
   the Go rebuild.
 - [`workflow-audit-2026-07-09.md`](./workflow-audit-2026-07-09.md) — early

@@ -295,6 +295,25 @@ The audit also carries a cadence-aware quality experiment and an exact minimum
 direct-cover solver for components up to twenty assets. The solver requires
 every hidden node to have a selected direct substitute, never a transitive
 path. Both remain research surfaces, not runtime policy.
+Its `-overlap-json` report measures sections and unsupported edges/interior
+gaps at each qualified route's offset, alongside all previous quality
+predictions. It distinguishes similar-sample support from span coverage and
+passes accepted labels through the `-pair-corpus` input mode without changing
+them. See the [aligned-section experiment](./design/audits/video-overlap-review-2026-09-08.md).
+The separate `scripts/audit_video_cadence` command examines adjacent decoded
+frames at their original presentation timestamps. It reports experimental
+repeat patterns and explicit timing/low-motion uncertainty; it neither
+certifies source FPS nor changes persisted metadata or keeper selection.
+Spatial bitrate density remains an encoding-budget proxy, not an upscale or
+sharpness detector. See the [cadence review](./design/audits/video-cadence-review-2026-09-08.md).
+
+The separate [picture-quality pilot](../scripts/benchmark_video_quality/README.md)
+uses an isolated Python/OpenCV CPU tool, not a Go adapter or service. It
+verifies saved source hashes, compares whole/shared picture samples, and
+preserves transformed controls and independent user observations. It has no
+production imports, network access, or keeper-policy write path. The
+[first result](./design/audits/video-picture-quality-2026-09-09.md) rules out
+BRISQUE as a standalone selector; learned-model comparison remains pending.
 
 FF-066 adds `ClipPlacement` and `PlacementRepo` as the accepted-candidate write
 boundary. The Postgres adapter locks the event and commits candidate

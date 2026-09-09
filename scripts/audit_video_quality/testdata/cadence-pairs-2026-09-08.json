@@ -1,0 +1,369 @@
+{
+  "schema_version": 1,
+  "captured_at": "2026-09-08",
+  "hash_cadence_ms": 100,
+  "review_status": "partially_reviewed",
+  "method": "Source-frame sheets and offline diagnostics; Adams also has an explicit user judgment after local playback. Other pairs remain unlabelled.",
+  "cases": [
+    {
+      "id": "el-khannouss-39",
+      "event_label": "Bilal El Khannouss 39′ VfB Stuttgart–1. FC Köln",
+      "fixture_id": 1575149,
+      "keeper_id_at_capture": "534fc300-7639-5114-81b3-58e89ea08b01",
+      "left": {
+        "asset_id": "534fc300-7639-5114-81b3-58e89ea08b01",
+        "event_id": "8e341705-bf02-4a74-b913-397c8e56b208",
+        "hash_version": "dhash-v2-gray640-equalized-area9x8@0.1s",
+        "frame_hashes_hex": "335cae96dbc9cc66335cae96dbc9cc66335cae96dbc9cc66335cae96dbc9cce6335cae96dbc9cce6335cae96dbc9cce6335cae96dbc9cce6335cae96dbc9ccc6235caeb6dbc9ccc6235caeb6d3c9ccc6231cacb6d3c9ccc6232cacb6d2d9ccc42328aca6d2d9ccc42328aca6d2d9cccc2339aca6d2d9cccc2339eca692d9cccc2319eca692d9cccc23197ca69299cdcc27297ca69693cdcc03297ca6b6939dcc03a95c26a6939dcc0ba1d86ea593998d0302d84ea5b2998d0322f84c25b299998b02f84c6d2693980b12f9cc4d2633980302f9cc4d26339b8322f18ccb66371b8304f08cca66363b03a5f08cca6c263b03a5f0888a6c66330385f0889a4d66330725f0899a4d663317a5f0899acd663307a5f2899acd66330785f2889acd66320705e2089ecd4e760704e258949bce66070ae05a349bcc66070ae052349bcce62f0ae052349bcce62f0ae0d234938de60f0ae0d234978dc62f0ae09224168dce0f0ae09224369dce2f0ae0926c369d8e0f0ae0926c369d8e0f0ae0926c369d8e0f0ae09264369d8e2f0bc29264369d8e0f09e29264369d8e2f09e29264369d8e2f09e29264369d8e2f09e29264369d8e2f09e29264369d8e0f09e29264369d8e0f09e29264369d8e0f09e29264369d8e0f09e2b264369d8e2f09e2b264369d8e2f09e2b264369d8e2f09e2b064369d8e2f09e2b164361d8e2f09e2b164361d8e2f09e2b164361d8e2f09e2b164361d8e2f09e2a060361d8c2f09e2a060363d8c2f09e2a040363d8c0f09c2a04136398c0f09e2a0c1763b8c0f08e2a2c1663b9c8f88eaa2c1663b1c0f8acae2c3663b190f8cc8e2926433190f0cc8e2936437198f0ec8c293ec76190f0ad4c283cc76391f1294c2a2c8663b1f0a94c4a6c866331b2a2879c8c29ad88716393998e2bab8a3a9a9b8989898981b6ae8b81ab89418941470ea9a8a9a9ab3355cd8d3d9fbd99332537192b0f2f2ab16d3d33217b6d08b3754b0929696929337d4d031b3a8d8b33174f1d4d4e4f8b73c73581b33fafa9f331b1b9a6bfaf8b71312d9d1dbfaf8070395e0ba96f6fa0710d4a8f224bab803a0b06af06828c80328ab5abcdad8b8100aaa5a7b90a8dc0ab3aa1a5a898cbc92342aa89a526cad2f3f9acacc7214fc9b0ecbecb4a28cbc1d226a5cd9ae8cdcae6aa00c6c9785eca735d4a4b44b84f41b1a6ccd59a4c4fc",
+        "width": 1280,
+        "height": 720,
+        "duration_ms": 10730,
+        "bitrate": 1373499,
+        "frame_rate": 30,
+        "popularity_at_capture": 15,
+        "exact_observations_at_capture": 13,
+        "share_state_at_capture": "active",
+        "sha256": "d122f8ffbef5682871966c77e4ba886b501f4f2e081dbb53d50eb8c004640c79",
+        "probe": {
+          "video_stream_bitrate": 1240460,
+          "video_duration_seconds": 10.7,
+          "format_duration_seconds": 10.730667,
+          "decoded_frames": 321,
+          "default_decimation_kept": 321,
+          "strict_decimation_kept": 321
+        }
+      },
+      "right": {
+        "asset_id": "71c323dd-47f4-5873-9b83-26c5b999011e",
+        "event_id": "8e341705-bf02-4a74-b913-397c8e56b208",
+        "hash_version": "dhash-v2-gray640-equalized-area9x8@0.1s",
+        "frame_hashes_hex": "23596ca692d9cdcc23597ca692d9cdcc27397ca6969bc9cc23a97c26a69389cc03a97c26a79399cc0391786ea593998d0302784ea5b2998d0322f84c25b29b990362f84c4d2693981342f94c4d2633991342f9cc4f26331b1322f18c4b66331b13a2f09cca66331b13a4f19cca64263b1385f1988a4d26331785f1989a4d66331705f0989a4d66331725f0889a4d66331725f0899acd66331705f2089acd66331705f2089ecd66761704e2181489ce66170ae258349bce66070ae250349bcc66270ae250349bcde60f0ae250349b8de60f0ae212341b8dc60f8ae09234138dce0f0ae0923c379dcc0f0ae2922c36998c0f0ac2926c36998e0f0ac2926c36198e2f0bc2926c36198e2f09c2926c36198e2f09c2926436198e2f4de2926c36198e2f4de2926436198e2f0de2906436198e2f0de2906436198e2f0de2906436198e2f0de2906436198e2f0de2b06436198e2f0de2b06436198e2f0de2b06436198e2f0de2b06436198e2f0de2b16436198e2f0de2b16436198e2f4de2b16436198e2f0de2b16436198e2f0de2a16436190e2f0de2a06036190c2f0de2a06136190c2f09e2a061363b0c2f09e2a041363b0c0f09e2a041763b1c0f89e2a041663b1c0f89c220c1663b1d0f88c260c36433190f0dc262836433190f1cc660936c77190f1cc44093cc77191f18c442a3cc7639171a84c2a3c8763b171894c427c866331b2aa858c8c31a589716393919623b3823a9a9b99a9811181b6ae8b85aba0418149072ea9a821a9a33755c59d359fb591372537192b1fa303796d3d3b25736b313b7549192969612",
+        "width": 1280,
+        "height": 720,
+        "duration_ms": 7337,
+        "bitrate": 1389286,
+        "frame_rate": 59.99794057412217,
+        "popularity_at_capture": 1,
+        "exact_observations_at_capture": 2,
+        "share_state_at_capture": "observed",
+        "sha256": "a21451889201a822a2e73946ba8431eee0cab37dad4521e0dd8b635b242d9d4a",
+        "probe": {
+          "video_stream_bitrate": 1258913,
+          "video_duration_seconds": 7.283583,
+          "format_duration_seconds": 7.337506,
+          "decoded_frames": 437,
+          "default_decimation_kept": 325,
+          "strict_decimation_kept": 436
+        }
+      },
+      "current": {
+        "matches": true,
+        "quality_preference": "left"
+      },
+      "experimental": {
+        "stable_action": "keep_both",
+        "cadence_action": "keep_both",
+        "coverage_class": "left_contains_right",
+        "left_coverage": 0.682243,
+        "right_coverage": 1,
+        "similarity": 1,
+        "left_start": 16,
+        "right_start": 0,
+        "overlap_frames": 73,
+        "similar_frames": 73
+      }
+    },
+    {
+      "id": "adams-82",
+      "human": {
+        "dedup_decision": "collapse",
+        "quality_winner": "right",
+        "reasons": ["presentation", "sufficient_content", "watermark"],
+        "notes": "User prefers the shorter right copy: it looks better and retains essentially all useful content; the extra 1.7 seconds do not justify retaining the watermarked keeper. This is not an isolated native-FPS judgment or approval of a new duration threshold.",
+        "reviewed_by": "user",
+        "reviewed_at": "2026-09-08"
+      },
+      "event_label": "Che Adams 82′ Fiorentina–Torino",
+      "fixture_id": 1550110,
+      "keeper_id_at_capture": "1bbec76a-cbb5-50ce-aca2-125cea8b5a9d",
+      "left": {
+        "asset_id": "1bbec76a-cbb5-50ce-aca2-125cea8b5a9d",
+        "event_id": "c0d20927-7d1a-4f70-9332-2c683b111cad",
+        "hash_version": "dhash-v2-gray640-equalized-area9x8@0.1s",
+        "frame_hashes_hex": "351817e89ae63018351897c89ae63018353897489ac63018353097489ac63018253097489ac63118253897489ac67118253897489ac4711c253887589ac4711c253887589ace711c253887589ace711c253887c8bece711c253887a8b6ce713c25388788bace713c24380788becef13c24180788bacef13c241807c8becef13c341807d81bcee83c301807c81bcee838b21887c89bcee038921897c89bcee438921883c80bcef438929883cc2bcef438929883c42bcef43c919883c42bcef63cd9888fc423cef63c998c874423cef63c998c874433cef2bc990c874433cef3bc992c874433cef3bc990c854433cef3be898c894433cef3b2890c894433cef3f289ac114431cef3f2c9ac154531cef3fac9ac15e5318ef3fac9ac85a4318ef3fac9ac85a4318ef3fbc8ac85a4318ef3fbc93c05a4318ee3f9c9bc15a4718ee3f9c93c158c718ae3f1491c154c618ae3f1c91e054c6388cbf1c91e014c6398cbf1491e8a4c6318cff3c81e084c6318cff3091e084c6318cff3491e884c6318cee3581e884c63188ee3581e884c63188ee3582e884c43188ee3582e884843108ee3582e8858c3108ee3582e885cc3308ee3582e88dcc3308ee3582e88dcc3308ec3582e889cc3308ec3582e889cc3300dc3582e889cc3300cc3582e889cc3300cc3582e8898c3700dc3582e8898c3700dc3582e8898e3300dc3582e8898e3300dc3582e889ae3300dc3582e889aa3300dc3582e889aa3300dc3cc4c9889ac9b89a8ec6d395bad999bd8f11c0c5849c8dbdb60ecce3a2becccdbe6eecbb9ababeaeba8392a6a1399f07b0c992c4e1b99b43a0e86ce5a1b29e8380e476c5b8b2cf85807a1ae354bcbf83e0b88ec3a47e5681e85e9e8328eec7c1782e8b8fa8acc771b01686c7a0a6e7a1b0d292a3b3b696a1b1c84a899194aea1a0c868c99991aca3a0786cac8c9c9ca6b8383e94a4929eb698389c9dc5909ebe88104e5d8da09ebe89284e26c4c08c9ed9344e0ecd40dc9ed8b0466e8dc1dedfc970460ecd80bebe6",
+        "width": 1280,
+        "height": 720,
+        "duration_ms": 9216,
+        "bitrate": 1499261,
+        "frame_rate": 30,
+        "popularity_at_capture": 6,
+        "exact_observations_at_capture": 4,
+        "share_state_at_capture": "active",
+        "sha256": "598d49443b18704e3a8ac677475cd5bb5c385813acc145425a050c8fd237fb48",
+        "probe": {
+          "video_stream_bitrate": 1364830,
+          "video_duration_seconds": 9.2,
+          "format_duration_seconds": 9.216,
+          "decoded_frames": 276,
+          "default_decimation_kept": 265,
+          "strict_decimation_kept": 276
+        }
+      },
+      "right": {
+        "asset_id": "1d6e5caa-f284-5069-8db3-b6378d090621",
+        "event_id": "c0d20927-7d1a-4f70-9332-2c683b111cad",
+        "hash_version": "dhash-v2-gray640-equalized-area9x8@0.1s",
+        "frame_hashes_hex": "241807d83fcee934341807d81bcee834321807c81bcee83a321807c81bceec3a921807c81bcee438921803cc0bcee439929803c423cef439929803c429cef63c9198034423cff63c991c074423cff63cd90c074433cff334d90c074433cff334992c074433cef3bc992c054433cef3b6990c054433cef3b6891c094433cef3f2890c014433cef3f2892c114531cef3f2c8ac154531cef3f2c8ac056531cef3f3c8bc05a4318ef3fb883c05a4318ff3fb883c0524318ff3fbc81c0524318fe3f3881c1525718fe3f3481e1544718fe3f3481e054c618debf3481e014c610debf3481e036c630dcff3481e036c6319cff3481e0b4c6319cff3481e0a4c6319cff3581e0a4c6319cff3581e0a4c6319cfe3581e004c43198ff3582f024843198ff3582f004843198ff3582f0248c3198ff3582f825cc3188ff3582f8258c3380ff3582f825cc3380ff3582f825cc3300fd3582f821cc3300fd3582f829cc3300fd3582f8a98c3300fd3582f8298c3700fd3582f8298c3300fd3582f8218e3310fd3582f820ae3310fd3582f820ae3310fd3582f820aa3310fd34c0ccac8bc9b89a8ec4f1e89ac9b99a8ec4d395bad899bd9700c0c5949ccd95b64ecce1b2beceddbe6eaeff9bba9eb6b38312d2b13d9f07b14bd2e4e1b09f0380a86ce5b1b28e8380747ef598b2ef85c03a1ac354b6be83e0bc9d85827e56c1e85e8e8338bec7e1782ecae3a0ace731b01697a7a0b6a7a1b0c24281b1b69ea1b0c049c991b5aea1a2e868c98d90aca3b1787c9cac929ca6b038be9e84929cb692109c9dc580bcbe8010ce4dc4a09c9e91284e2ec4d28c9e9",
+        "width": 1280,
+        "height": 720,
+        "duration_ms": 7552,
+        "bitrate": 1854080,
+        "frame_rate": 60,
+        "popularity_at_capture": 1,
+        "exact_observations_at_capture": 2,
+        "share_state_at_capture": "observed",
+        "sha256": "a449b2b6da47ea1b2349a25cea2227868e06522816f938c3cdfc4a4b0382423c",
+        "probe": {
+          "video_stream_bitrate": 1739851,
+          "video_duration_seconds": 7.45,
+          "format_duration_seconds": 7.552,
+          "decoded_frames": 447,
+          "default_decimation_kept": 438,
+          "strict_decimation_kept": 446
+        }
+      },
+      "current": {
+        "matches": true,
+        "quality_preference": "left"
+      },
+      "experimental": {
+        "stable_action": "keep_both",
+        "cadence_action": "collapse_left",
+        "coverage_class": "equivalent",
+        "left_coverage": 0.804348,
+        "right_coverage": 1,
+        "similarity": 0.986486,
+        "left_start": 15,
+        "right_start": 0,
+        "overlap_frames": 74,
+        "similar_frames": 73
+      }
+    },
+    {
+      "id": "palacios-42",
+      "event_label": "Cesar Palacios Perez 42′ Fulham–Crystal Palace",
+      "fixture_id": 1557391,
+      "keeper_id_at_capture": "b72a0184-bc56-5861-956f-88b2a4b4e8e6",
+      "left": {
+        "asset_id": "a2e66274-1978-5e92-b8b8-94661627114e",
+        "event_id": "efbf1ffa-a02e-4018-a41a-89608cbad27a",
+        "hash_version": "dhash-v2-gray640-equalized-area9x8@0.1s",
+        "frame_hashes_hex": "565554525a89c9985e555452da99d9987e555492da9999d97e5155929a9999997e61d5929a9999997e2a9596929199997e2a9594929199997a2a9594929191997a6aa594929191917a6aa594929191917e6aa9a4949393917d62aba4941213117d64aa25140233937d552a29340033137d652a29240432337d454a29242432337f4552492c2426337a445249280426337a485649290426236a4a5440290426276a4a5452c90464666a4a9492890c64667e6a8492c9084446744aa59251094c467454ad825209cc44745428261209c8c4745448249211888479544824b211888469545824a213989c69205025a213989869285041221319996968504120121199696894412002111979689441600211195348b442400613115350b402400613115350a0824004231173502982c004231173502982c004233377502906c00423336750490480042233670149048004623367214104808046336521530580884633652153048088467365215204008846734d20d2040008c6624d428204000884464d428204000084464942820000118c464940a20800118cc64940a20800118c464940a60800118cc65940240800110c865940240000110c845944241000110c941145041000210914114504100021191c114504100023191c114504110023191c110105110023191c110105110023191c21010d110023191c21010d110023191c25010d310023191825010d310023111825090d110023111825090d110023111825090d110023111825090d110023111825490d110023111805490d910023111805490d900023111805490d900023111805490d900023111805490d900023111805490d900023191805490d900023191805410d900023191805490d900023191805490d900023191805490d908023191805490d900023191825490d100023191805490d100023111825490d100023111825490d100023111825490d100023111825490d100023111825090d100023111825090d110023111825090d110023111825090d1000231118",
+        "width": 1280,
+        "height": 720,
+        "duration_ms": 9365,
+        "bitrate": 1342299,
+        "frame_rate": 60,
+        "popularity_at_capture": 1,
+        "exact_observations_at_capture": 11,
+        "share_state_at_capture": "observed",
+        "sha256": "881dceefd453e2559a398d28f1162f996008199cb58984a9831f532352dcaef3",
+        "probe": {
+          "video_stream_bitrate": 1217658,
+          "video_duration_seconds": 9.266667,
+          "format_duration_seconds": 9.365333,
+          "decoded_frames": 556,
+          "default_decimation_kept": 470,
+          "strict_decimation_kept": 552
+        }
+      },
+      "right": {
+        "asset_id": "b72a0184-bc56-5861-956f-88b2a4b4e8e6",
+        "event_id": "efbf1ffa-a02e-4018-a41a-89608cbad27a",
+        "hash_version": "dhash-v2-gray640-equalized-area9x8@0.1s",
+        "frame_hashes_hex": "6421d2048088c4634c20d2048088c4624c429204028884664c42820802098c464842820800198c464840a20800118cc64840a68800118cc65840a48800118c865840a48880118c8c18c4a49080110c8c18c4a49080110c8c10c4849084010c0c10c4849080211c0c10c4849080211d0c10c4849180211d0c1084859180231d1c3080859180231d1c20808d9180231d1c20808d9180231d1820808db180231d1824008db180231d1824088d9180231d1824088d9180231d1824098d9180231d1824098d9180431d1824498d9180231d1824c98d9180231d1824c98d9180231d1824c98d9180231d1824c98d9180231d1824c98d9180231d1824c98d9180231d1824c98d9180231d1824c98d9080231d1824c98d9180231d1824c90d9180231d1824c90d9180231d1824c90d9180231d1824c90d9180231d1824890d9180231d1824490d9180231d1824080d9180231d1824490d9180631d1824090d9180231d1824090d9180631d1824090d9180231d1824090d1180631d1824098d1080231d18240989108063191824098930804319182409892080421918240989208042191821088820804219182108882080423918210888208042393821088820804229380308882288c629380108882280c62938490888a280c62938490a882280c629384b129a2080c62038e048ddabe1fac4008058d963e1fac40080585962f3fa8400889881c6b6f2888088baa5d6f6f4848288bae5d6f6f488029899e5e6c6e4c8ca98d9e466e6e4f4fa8879646666f4fcfa883d3c36367c7c6ea41c1a1e9e3c3c6ea06c4cce9e9c3e3690acacae8e9e9f83a0b6b6a6c7cb8d83845393d3e3e185a38aa9d9e9e0d0d0a9a8eaece0e8d898c995d46c64e8c8c89a0524b6b4c8c8c9990137b6b8d8f8d80c8296d6f898c90982c2d6dae8c8c90981c0d6cedcc08905b1e0ceee6c608981d1fc60eeac284889d1ee30a6fe88a8c8e1eef8b5d6c888c8e06cfcf5d74880e8606cfed4d628c4e0286dfefcd628c4f0a869f67cd4a8c8f0b07bf678f5b0d0f0b0dbf6786db6f070d4fff63c6ff4d060d0fef63cefe4d070d2fef6bceae4d070d2defabcf6f4d0f0c8defebcf6f2d0b0c0defebcf6f0d090d0defe9eb2f0f098d4fefe9eb6f0e0a8cadefebeb6e0e0a8c8ecdff6f6e0e0e8ececdfeee36068e4ecfccfeef26868e4e4beef6f78686864e4be77a771a82066ec",
+        "width": 1280,
+        "height": 720,
+        "duration_ms": 10880,
+        "bitrate": 1413721,
+        "frame_rate": 30,
+        "popularity_at_capture": 35,
+        "exact_observations_at_capture": 19,
+        "share_state_at_capture": "active",
+        "sha256": "8090e23c456555db3e7be261423317a635733b6fe75fbf22a7347d8b4ba92f3a",
+        "probe": {
+          "video_stream_bitrate": 1286540,
+          "video_duration_seconds": 10.8,
+          "format_duration_seconds": 10.88,
+          "decoded_frames": 324,
+          "default_decimation_kept": 324,
+          "strict_decimation_kept": 324
+        }
+      },
+      "current": {
+        "matches": true,
+        "quality_preference": "incumbent_tie"
+      },
+      "experimental": {
+        "stable_action": "keep_both",
+        "cadence_action": "keep_both",
+        "coverage_class": "partial_overlap",
+        "left_coverage": 0.548387,
+        "right_coverage": 0.472222,
+        "similarity": 0.960784,
+        "left_start": 42,
+        "right_start": 0,
+        "overlap_frames": 51,
+        "similar_frames": 49
+      }
+    },
+    {
+      "id": "mitchell-35",
+      "event_label": "Tyrick Mitchell 35′ Fulham–Crystal Palace",
+      "fixture_id": 1557391,
+      "keeper_id_at_capture": "2672b255-23ac-54ef-b5ed-49df03836421",
+      "left": {
+        "asset_id": "2672b255-23ac-54ef-b5ed-49df03836421",
+        "event_id": "3c19c331-7561-4ef2-b2cb-969b3b8f9cd3",
+        "hash_version": "dhash-v2-gray640-equalized-area9x8@0.1s",
+        "frame_hashes_hex": "4a52d2d2b23331334a5ad2d2923331336a5ad2d3923331336a4ad2d392b339336a4adad392bb39336a4adad19abb39316a4adad19abb39316a4adad19ab939396a6acbd19a9939316a69c9d9d89939316829c9c9d899993169a9e9c8d899993965ade9e8d8999db955a5ade8ccd99c9955a4ace8ccd99c9954a4a4eccccc9c9854b4a4eccccc9c9852d634f4eecccc9c6ad6b6f466ccccde6adab2f666eecccc6a5a9ab66666cc8e656bdaba3666ecaf556dd9bb337266a654ec4dd9b37367e75af4eddd9b3375f76af6acfc99b935f3685aa6eeddb931e3757af6eeec9839f35469d6f6eedc9d79567ddbf66edc9d796a75dbf66eec9c396af4edf727ec9c3d6a74edff37eecc3d6a56edfb37e6cc8c74daecfab766cc8cf4fafef8bf76cc8ed4eabefc9b776cc6d4e9befc9b736ec6dced9efc9b736ec6dafddefc9b336fe7dafddefcdf3377c7caf4dff4df3b67c7ea54dff4df3b3767ea54dff4cf3b3767ea54dffece393767ee56cffecfb93567ee56cffecfb93563ee56cffecfb93d63ee7ecffecfb93d63ec7aeffaefb93d63ec7aeffaeeb93d63ec7aeffaeebd3d63ec7aeffaeedd1d63e4faeffaeefd1d63f4faeefaeefd1d63f4faeefaeedc1d63f6faeefbfecc1d73f6faeefbfeee1d73f6eaeef9feee1c73f6e8eefdf6ee1c73f7e8eefdbfee1c3bf7eceefd3fee1c3bf7ecfefd3fee1c3df3ecfefd3fee1c1df3ecfefd3fee1c1df3ecfefd3fef1c1df3eceefd3fef1c1df3ecfefd3fef1c1df3ecfefd3fef1c1df3ecfefd3fef1c1df3ecfefd3fef1c1df3ecfefd3be71c1df3ecfefd3bee9c1df3ecfefd3be69c1df3ecfefd3be69c1df3ecfefd3bee9c1df3ecfefd3bee9c1df3ecfefd3bee9c1df3ecfefd3bee9c1df1ecfefd3be69c1df9eceefc3be69c1df9eceefc3be79c1df9eceefc3fe79c1df9eceefc3fe79c1dfae4eefc3fe79c1dfae4effcbfe79c1dfae4effcbfe79c1c2754e35e799eb8189e31b7be5e9ea899d86f3cdb9e8c9c1f976eeeccdc960e8c9eefceccd5170dcfabeeccc4850c4cceebccc8dc0f0cce8efed8d89a1e2e9e0adcd8921e3cbf9e9bd8d0931eb8bb9b9ff093971cb92f1fb8e1431e189d3f3e9863071c94ba2f9e1a071ed29a3aae1a1e1e5390989ab81c1ab9d858999da9199dd2529bbaaa9a9692a434b62f273696a7c64c5f6e4f6f6d6ec6258fd7aeec4e8fc646c7ebc5f76764f938e8f1e0c9b0b55c8ebc58ae66dcdaccacccc498c8898649c9db8f8d890b0657121b0b8e84808006140b0640e086c98e060d0786a0848f8d0e1f170780e08619181e3f0680e4861b9c3a2f2e86e4869a3038296f0ea4e4a4723138292e3e84e06432396d7b3cb2e161b92d7a7e39a6c563c119367a3537",
+        "width": 1280,
+        "height": 720,
+        "duration_ms": 12352,
+        "bitrate": 1299569,
+        "frame_rate": 30,
+        "popularity_at_capture": 16,
+        "exact_observations_at_capture": 14,
+        "share_state_at_capture": "active",
+        "sha256": "2797ec42f1c047c1e5c2f0d1dc287d791255f6f644d786f5eea706dbef3e6187",
+        "probe": {
+          "video_stream_bitrate": 1164788,
+          "video_duration_seconds": 12.333333,
+          "format_duration_seconds": 12.352,
+          "decoded_frames": 370,
+          "default_decimation_kept": 370,
+          "strict_decimation_kept": 370
+        }
+      },
+      "right": {
+        "asset_id": "38260fd9-2763-5df4-ad72-39a22c4f3c36",
+        "event_id": "3c19c331-7561-4ef2-b2cb-969b3b8f9cd3",
+        "hash_version": "dhash-v2-gray640-equalized-area9x8@0.1s",
+        "frame_hashes_hex": "692969c9d8991931652d69e9d89999b155a52de8ccd9989955a52de8ccdd9c9d55a42ceccccc9c9854b4246ccccc9c9852d63464cccccc9c52d636746ecccc5e6ad6b47466cecede6ad2b276666ecc5e695b9aba6766ce876d6bdaba7767e787556d59bb337367e756f54dddbb3377f76af6eddd9b3373f36adeacfd99b933f3657ab66ecd993973756bd67eefdd99735569d7766fdd9971567ddbf66fcc9d71567ddbf66fcc9d316a75edf727ee9c356a74edff37e6cc3c75daedfb37e6ce9c75fafefbbb77ce9655fabefd9b77ce96d5e9befd9b736ed6ddedbefd9b7367c6dbfddffd9b7367c7dafddf7ddb7367c7daf5df75df3377c7ea75df75df3b77c7ea54df74df3b3747ea54df7ecf3b3747ee56cf7ecf3b3767ee56cf7ecf393373ee5ecf7ecfb93373ed7ecf7ecfb93b73ed7eef7aefb93b73ed7aef7aefb93b73ed7aef7aef9d3b73ed7aef7befdd3973ed7a6f7befdd3973ed7aef7befdd3973ed7aef7befdd1973ed7bef7befcd1d73f77beffbffef1d73f77beff9ffef1d73f779eefd7fee1d73f7e9eefd3fef1d73f7e9eefd3fef1c73f7edfefd3fef1c31f7edeefd3fe71c31f7edeefd3fe71c11f7edeefd3fe71c15f7edeefd3fe71c15f7edeefd3fe79c15f7edeefd3fe79c1df7edeefd3fe71c1df7edfefd3fe71c1df7edfefd3fe79c1df7edfefd3be79c1df7edfefd3be79c1df7edfefd3be79c1df7edfefd3be79c1df7edfefd3be79c1df7edfefd3be69c1df76dfefd3be79c1dfd6dfefd3be79c1dff6dfffd3be79c1dfbedeffd3be79c1dfbedeffd3fe79c1dfbeceffd3fe79c1dfbeceffc3fe79c1dfbeceffc3fe79c9dfbe4effc3fe79c9d7514e3de799eb819ca3927be5bbca89998df7f9b9e0c991b379effce9c9c1f1eb6efeecccd970ecfafefccccc50f4dce",
+        "width": 1280,
+        "height": 720,
+        "duration_ms": 8256,
+        "bitrate": 1442320,
+        "frame_rate": 60,
+        "popularity_at_capture": 1,
+        "exact_observations_at_capture": 2,
+        "share_state_at_capture": "observed",
+        "sha256": "948dc1c5333c1dd188a896c071b52da7f1c7b8feb342dda292dc5d3ec4fcda1b",
+        "probe": {
+          "video_stream_bitrate": 1318956,
+          "video_duration_seconds": 8.166667,
+          "format_duration_seconds": 8.256,
+          "decoded_frames": 490,
+          "default_decimation_kept": 438,
+          "strict_decimation_kept": 486
+        }
+      },
+      "current": {
+        "matches": true,
+        "quality_preference": "left"
+      },
+      "experimental": {
+        "stable_action": "keep_both",
+        "cadence_action": "keep_both",
+        "coverage_class": "left_contains_right",
+        "left_coverage": 0.666667,
+        "right_coverage": 1,
+        "similarity": 0.963415,
+        "left_start": 11,
+        "right_start": 0,
+        "overlap_frames": 82,
+        "similar_frames": 79
+      }
+    },
+    {
+      "id": "mariano-36",
+      "event_label": "Mariano Díaz 36′ Alaves–Osasuna",
+      "fixture_id": 1570363,
+      "keeper_id_at_capture": "9f37ee38-4df8-595f-86c4-f61e29f73388",
+      "left": {
+        "asset_id": "9f37ee38-4df8-595f-86c4-f61e29f73388",
+        "event_id": "e7c2b982-d6f4-462e-9204-322fd01a8eeb",
+        "hash_version": "dhash-v2-gray640-equalized-area9x8@0.1s",
+        "frame_hashes_hex": "bdfefade9f3b7129bdfefade9f3bb129bdfefade9fbbb129bdfefade9fbbb129bd7efade9fbbb309bd7efade9fbbb30bbd7efade9fbb330bfd7eeade9fbb330bfdfeeade9fbb330bfdfeeade9f9bb30bbdfeebde9f9b3109bdfeebdedf9b3101adfeebdedf9b3101bd7eebdedfbb3101bd7eebdedfbb3505bcd6ef7edfbf3505bcb6ff6edfbf3505bcb6ffefdf9d3585be3effefdf9d35c4be3efdefcfdd15c0be7efdefcfdd1dc4bc7ef5afefdd1dc4fe7efdbfefdd1d847e7efdbfefcd1ec27e3efff7efcd1ec27e3efff7efed1ec23e3efaf7efef1ec23e3efaf6b7ee16c23e3f7adeb7ee56821f3e7efeb7e656823b3e7efab76756873f3fbffab7e777873e3f3dfaf77777872a3f3dffdbb677872e3f3dffdbb777072e1f3cfedbb7730f2f1f1efcdbb3730f3f161afcfbbb730f3d1e1efefd9b730f3f1e1efeed9bb3171e1e9ffeecd9b337161ed5feecddbb37161fd5feeeddbb3b160fdd7efeddb933160fdffef6ddb93b160fdffef6ddb93b160f5dfef6ccb97b160f5dfef6dcb97b160f95fefeddb97b161f95feeeddb97b161715feecddbb733e1e1ffeedddbbf32d1e9afeedd933f72d1e9afeed9b33f72d3ebafcedbb73f73e3f2ffddbbb77ef3a3f3ffddbb377cf1e3f3dffdab777cf193b37fadeb7f7df3f773efaf677e6de367e7efab667fede3e7e7effb76fdf9eb73e7ef7bfefdd9d3c3e7ef7efefdd9f3cbc7effefdfdb9f3cbcfeffeedf9b9f3cbefefafedfb31f383dfefadedfb33b387afefede9eb33b987afefedebeb33bb8befefedebe373bbafefef6debe3773b6bafef4bcbe7773b8b6fefcbc7e7776b2b4fefebc7e7676babcfcfefc7ef676b8fefceefd7cf6c68d76fcea79fcfee6ace6bcfa79fdfee6a2ecfcfaf9fdfcaeb26dfefafbfddcaeb66dfedefbfddc8e92e8fedefaf9dcce92ed7edefaf9dcca9aedfad6faf9dcda1aedfed6faf9dcd91aedfed6f2f9dcc91bedfad6f2f9dcc81bedfaf6f2f9dcdd99edfab6f2f9fcd999edfab4b2f9fc99bdd5fab4f2fbfc99bfd4fab4f2fbfd99bdd4fab4b2fbf9b9bbd4fab5f6f3f9b9bfd4fafdf6f3f9b9b696fae9e6f3f9b932ab766b66f3f379bbabd6ebece6f379b7aaf6fbece6f37baf2df6dacce6f3732756eed2c9e6f2f3b757aef2d9ccf2f3af5beef6dbccf2e39f5bfeb69bcce2e39faf5ea6929df8e39faedeecb699d0c39fb6de6eb699d0c3bf1ebfca363bd0c79f5ebfdf663390c7bf5cbfd6643390873f6cffd6ec33b0873eac7f96ec733083bebc7bb6cc673083beacfab6c8677003bea8faa6d8e670033e58f666d9e6e003bc18b66e99cee003bc39b6ee9bcee003b419f6ccb38ce063bdb9f6ce328ce0c3bdb276ce729cc0c3fd32fcce729cd0c3f970fc8e769cd4c3e931fc8ee698d4c3e971fc8ee639dcc3f971ec8ee639dcc36935ec8ec6399cc3f9a5ec8ec6399cc3f9e5ec9ec6319cc3fba5ec3ece711cc0faa5fc3ece711cc0f2a5fc3ecef11cc4f2a4dc3eccf33cc4f2a5dc3eccf33c84f2a5fc7eccf33c84f4a5ec7eccf33c84f4e1fc7e8cf33c84d4e5fc7e8ce33c84d4e5fc6e8ce33c8cd4e5fc7e8ce33c8c22c95298bdaead2522d366999dae2d6522935a59193e196d27a2d659197e594ba5a3c671597a586b55d39661197a584bd5d6d4512b3a384b959654d12b3a382a959494533b6e584a",
+        "width": 1280,
+        "height": 720,
+        "duration_ms": 15146,
+        "bitrate": 1355453,
+        "frame_rate": 30,
+        "popularity_at_capture": 15,
+        "exact_observations_at_capture": 10,
+        "share_state_at_capture": "active",
+        "sha256": "7e1b800e802577aad3f1e42551da4225666d0af0a172395686a5370f98190d1b",
+        "probe": {
+          "video_stream_bitrate": 1225538,
+          "video_duration_seconds": 15.066667,
+          "format_duration_seconds": 15.146667,
+          "decoded_frames": 452,
+          "default_decimation_kept": 452,
+          "strict_decimation_kept": 452
+        }
+      },
+      "right": {
+        "asset_id": "dd0a33e7-da37-5288-abd6-4e4c8876610d",
+        "event_id": "e7c2b982-d6f4-462e-9204-322fd01a8eeb",
+        "hash_version": "dhash-v2-gray640-equalized-area9x8@0.1s",
+        "frame_hashes_hex": "9df9fbb7f3fbfd55bdd9bbb7f2fbfd55bdd1bbb7b2fbfdb59bd7fbb5f2fbf9b5bbd5fbbd76f3f9b5b7b7fb7966f3f9b1b3b77b6966f3f971bbb3f76b64f7fb71bbaff77bece6f371bf2df6fbcce6f773a56df7d3cde6f3f3b777efd3d9eef3f3bf57adf6d9cce2f3bf5beff69bcceaf38fffdfa69bcceaf3afaf5ee7b39dc8e39fafdee7b799d4c39fb6ff6f3639d0c39f5ebfcf3639d0c39f5ebfcf663390c3bf5cadd764339083bf6c7d97ec331083bfac79b7ec733083bfbc7bb6ec672083bfbcfba7c86760039e98fb27c9676013de58fa6fd9c6e003bc78f26f99cee003b579f66db38ee003bdb9f2cd338ce243b9b9f6cf338cc0c3b93166ce339cc4c3f9f164ce739cc4c3f971e48e7699ccc3e971e48e6699ccc3e971ec8e6699ccc3e971ec8ee6394cc3e1e5ec8ec6394cc3e1e5ec8ec6314ec1e1e5ec0ec6314ed0f1e5ec1ec6311ed0e3e5ec3ece711cd4f3e5ec3ece711cd4f3e5ec2ece731cd4f3e5ec2eccf32cd4f5e1ec2eccf32cd4f5e1ec3ecce32c94d5e1ec7e8ce32c94d5e1cc6e8ce32c94d5e1cc6e84e33c14d5e1cc6e84e33c9423db729cbdae2d2923d36231592e2d6123d35259193e5b7b",
+        "width": 1280,
+        "height": 704,
+        "duration_ms": 5479,
+        "bitrate": 1684378,
+        "frame_rate": 60,
+        "popularity_at_capture": 1,
+        "exact_observations_at_capture": 1,
+        "share_state_at_capture": "observed",
+        "sha256": "8e0af835e1fc01929ea0d5dcff0b82fda540f75dcf38a709deded2a9d8395ed6",
+        "probe": {
+          "video_stream_bitrate": 1557284,
+          "video_duration_seconds": 5.433333,
+          "format_duration_seconds": 5.479909,
+          "decoded_frames": 326,
+          "default_decimation_kept": 326,
+          "strict_decimation_kept": 326
+        }
+      },
+      "current": {
+        "matches": true,
+        "quality_preference": "left"
+      },
+      "experimental": {
+        "stable_action": "keep_both",
+        "cadence_action": "keep_both",
+        "coverage_class": "left_contains_right",
+        "left_coverage": 0.36,
+        "right_coverage": 1,
+        "similarity": 1,
+        "left_start": 90,
+        "right_start": 0,
+        "overlap_frames": 54,
+        "similar_frames": 54
+      }
+    }
+  ],
+  "matcher": {
+    "primary": {
+      "max_hamming": 12,
+      "min_run": 30,
+      "max_gaps": 3
+    },
+    "sustained": {
+      "max_hamming": 16,
+      "min_run": 50,
+      "max_gaps": 5
+    }
+  }
+}
