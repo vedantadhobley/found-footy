@@ -1007,7 +1007,7 @@ the current branch.
 | FF-070 | P2 | `implemented` | Typed activation, completion, detection, stability, and removal records now commit inside the owning Postgres state transaction. The standalone Composer and ignored-error call sites are gone; audit failure rolls state back for activity retry. | Release the worker and verify one natural event produces detected/stable rows while an idempotent monitor retry does not duplicate either transition. |
 | FF-071 | P2 | `implemented` | Composite foreign keys now enforce event/fixture identity across assets, shares, candidates, credits, and supersession. Named checks enforce complete removal state, media/hash shape, non-negative candidate measurements, and positive popularity; domain validation mirrors local value/state rules. The ordered migration preflights historical rows and refuses ambiguous repair. | Run the FF-071 migration before the application rollout; verify its ledger/stamp and one natural placement under the positive-popularity contract. |
 | FF-072 | P2 | `confirmed` | A new accepted candidate is copied from Garage `staging/` to its deterministic final `assets/` key before the placement transaction. An exhausted or ambiguous database failure can therefore leave final bytes without a `video_assets` owner row; FF-024 covers only `staging/`. | Make final-object reconciliation explicit: either prove retry ownership before copy or sweep only age-bounded final keys that have no matching durable asset, without deleting an in-flight placement. |
-| FF-073 | P2 | `confirmed` | Firefox reaping suppresses each release error and reports success. Its broad `active fixture OR pending downstream` keep set can retain a failed normal release until fixture completion, hiding the operational failure from Temporal retry. | Define the exact lease interval, make remove-not-found idempotent under concurrent release, attempt every orphan, aggregate release failures, and return them so the activity retries. |
+| FF-073 | P2 | `implemented` | Browser ownership now follows debounce/checklists; sweeps pin inspected Docker IDs, preserve concurrent-not-found success, and join removal failures. Versioned staging cleanup has bounded retries and survives vendor-poll failure. | Full and targeted race gates passed. Separately approve worker rollout, then verify normal browser release and a natural eligible-orphan sweep. No schema change or old-volume deletion. |
 | FF-074 | P3 | `confirmed` | The post-release audit must include durable-data minimization, not only code paths: unused tables/columns/indexes, duplicated or derivable fields, compatibility residue, retention gaps, and aggregates that should be combined may still remain after the rebuild. | Run a code-first schema ownership audit plus read-only production cardinality/null/age/index evidence. Turn each accepted removal or combination into a bounded migration issue; do not mutate production during the audit. |
 
 ### FF-062 — removed event reappearance was swallowed by its tombstone
@@ -1287,19 +1287,38 @@ the current branch.
 
 ### FF-073 — Firefox reaper acknowledges failed releases
 
-- **Verified path:** `ReapOrphans` continues after each `Release` failure and
-  returns only the successful names with a nil error. The Temporal activity
-  therefore records success and does not retry the failed set. A later
-  15-minute sweep is the only recovery path.
-- **Lease ambiguity:** `ListLiveFleetEventIDs` keeps every non-removed event
-  whose fixture remains active, even after its EventWorkflow should have
-  released the browser. A failed happy-path release may therefore stay outside
-  the orphan set until the fixture completes. The pending-downstream branch is
+- **Pre-fix path:** `ReapOrphans` continued after each `Release` failure and
+  returned only the successful names with a nil error. The Temporal activity
+  therefore recorded success and did not retry the failed set. A later
+  15-minute sweep was the only recovery path.
+- **Pre-fix lease ambiguity:** `ListLiveFleetEventIDs` kept every non-removed event
+  whose fixture remained active, even after its EventWorkflow should have
+  released the browser. A failed happy-path release could therefore stay outside
+  the orphan set until fixture completion. The pending-downstream branch is
   still load-bearing for late-match discovery and must remain.
 - **Required invariant:** The keep set must describe browser lease ownership,
   not merely event liveness. Reaping must attempt all eligible containers and
   return aggregated failures. Concurrent/double release must treat Docker
   remove-not-found as success after ownership has already been established.
+- **Implementation (2026-09-09, not deployed):** The existing rows now project
+  warmup ownership across the debounce/spawn handoff and keep every pending
+  downstream. Completed discovery no longer inherits fixture-wide ownership.
+  The reaper targets the listed immutable Docker ID, rechecks its scope, and
+  joins failures after independent attempts. Container-not-found is success;
+  missing ownership evidence fails closed. No new lease table or schema.
+- **Additional reproductions:** A same-name replacement was deleted using the
+  old container's age; staging skipped cleanup after vendor failure and allowed
+  only one attempt. New histories use up to three attempts inside a 3min total
+  deadline, independent of vendor-poll success. The version marker preserves
+  old command paths. See the [decision](./decisions/2026-09-09-firefox-cleanup-follows-discovery-ownership.md).
+- **Verification:** New adapter, real-Postgres, and workflow reproductions failed
+  before the fix and passed after it. Race checks passed for the fleet adapter,
+  fleet activities, workflows, and targeted PG ownership cases. `make check`
+  passed, including full integration/scenario tests; changed-document file links
+  and whitespace checks also passed.
+- **Boundary:** Pending checklists are still conservative ownership, not proof
+  of Temporal liveness. No production rollout, data repair, or detached-volume
+  cleanup is part of this implementation.
 
 ### FF-074 — post-release durable-data minimization audit
 

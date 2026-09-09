@@ -11,14 +11,17 @@ import (
 	"github.com/stretchr/testify/mock"
 	"go.temporal.io/sdk/testsuite"
 
+	fleetactivity "github.com/vedantadhobley/found-footy/internal/activity/fleet"
 	"github.com/vedantadhobley/found-footy/internal/activity/monitor"
 	"github.com/vedantadhobley/found-footy/internal/workflow"
 )
 
+// newStagingPollEnv wires the coordinator with safe disabled-fleet activity behavior.
 func newStagingPollEnv(s *testsuite.WorkflowTestSuite) *testsuite.TestWorkflowEnvironment {
 	env := s.NewTestWorkflowEnvironment()
 	env.RegisterWorkflow(workflow.StagingPollWorkflow)
 	env.RegisterActivity(&monitor.Activities{})
+	env.RegisterActivity(&fleetactivity.Activities{})
 	env.OnActivity("GetMonitorConfig", mock.Anything, mock.Anything).
 		Return(monitor.GetMonitorConfigOutput{
 			ActivationWindow: 5 * time.Minute,

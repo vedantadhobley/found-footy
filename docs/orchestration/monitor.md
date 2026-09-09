@@ -193,9 +193,9 @@ Two hooks straddle the debounce, both gated on the monitor config's
 - **Reaper backstop** (StagingPoll, audit P0-5). The provision/release hooks only
   fire while the worker is alive; a crash between provision and release, or a
   failed release, strands a container. `ReapOrphanedFirefox` (below) reconciles
-  the labeled container set against the DB every 15 min. See
-  [decisions.md](../decisions.md) 2026-08-13 (audit P0-5) for the KEEP predicate and
-  why the reaper lives in StagingPoll rather than at worker startup.
+  the labeled container set against the DB every 15 min. The
+  [FF-073 ownership decision](../decisions/2026-09-09-firefox-cleanup-follows-discovery-ownership.md)
+  supersedes the original fixture-wide keep predicate without adding a scheduler.
 
 ## StagingPollWorkflow — as shipped
 
@@ -204,11 +204,23 @@ Two hooks straddle the debounce, both gated on the monitor config's
 staging fixtures + handles vendor edge cases (kickoff-corrected activation,
 Live()-emergency activation). Location: `internal/workflow/staging_poll.go`.
 
-Also the home of the **fleet orphan reaper** (audit P0-5): each cycle ends with a
-best-effort `ReapOrphanedFirefox` — it diffs the labeled Firefox containers
-against `EventRepo.ListLiveFleetEventIDs` (the KEEP set: not-removed events whose
-fixture is still active OR whose downstream is still in flight) and releases the
-strays past a 120s min-age grace. No-op when the fleet is disabled, so the call
-is unconditional. A sweep failure is recorded, never fatal — the next tick
-retries. This is the only thing that cleans up a container the live-path
-provision/release hooks stranded (worker crash, failed release).
+Also the home of the **fleet orphan reaper** (FF-073): `ReapOrphanedFirefox`
+compares scoped containers with `EventRepo.ListLiveFleetEventIDs`. Non-removed
+events own warmup while their fixture is active, their counter is positive, and
+no discovery checklist exists yet. Any pending downstream row preserves ownership
+regardless of fixture state. A completed discovery cannot keep its browser merely
+because its fixture remains active. The trigger-to-checklist handoff remains protected.
+
+Strays must meet the unchanged 120s minimum age. Cleanup rechecks ownership
+labels/network and removes the listed Docker ID, never a same-name replacement.
+Missing containers are successful absence; other failures are joined after
+attempting independent targets. Each activity attempt reloads ownership and inventory.
+An enabled fleet with missing/unavailable ownership data fails before deletion.
+A disabled fleet remains a no-op.
+
+New histories run cleanup even after vendor polling fails, with at most three
+attempts, 60s per attempt, and 3min total including queue/retry time. Exhaustion
+is recorded in the workflow result, not fatal to staging; the next 15min tick
+remains a recovery path. `ff-073-fleet-reaper` preserves the old single-attempt
+and vendor-failure early-return paths for replay. Pending checklists are kept
+conservatively; this does not replace stale-workflow recovery or repair old rows.

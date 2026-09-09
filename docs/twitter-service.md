@@ -49,6 +49,12 @@ event browser still needs lifecycle verification. Previously detached volumes
 require separate, ownership-verified cleanup. See the
 [storage decision](./decisions/2026-09-09-search-profiles-follow-container-removal.md).
 
+FF-073 (implemented locally, not deployed) narrows reaper ownership to warmup
+and unfinished downstream work. Cleanup pins the inspected container ID and
+surfaces joined failures for bounded Temporal retry. Completed discovery no longer
+retains a failed-release browser just because the fixture is active. See the
+[ownership decision](./decisions/2026-09-09-firefox-cleanup-follows-discovery-ownership.md).
+
 The active search path uses the per-event instance model
 ([twitter-scaling.md](./design/proposals/twitter-scaling.md), #160): one
 short-lived Firefox per searchable event, zero warm. The worker creates each

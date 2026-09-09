@@ -201,28 +201,6 @@ func (f *Fleet) Provision(ctx context.Context, eventID uuid.UUID) (string, error
 	return addr, nil
 }
 
-// Release stops + removes the event's instance. Idempotent — a missing
-// container is success, since the happy path, the VAR cancel-cleanup, and
-// the monitor decay path may all attempt release. Remove anonymous volumes
-// as well: older search images declared /data as a volume instead of keeping
-// their profile in the writable layer. Named volumes and cookie binds survive.
-func (f *Fleet) Release(ctx context.Context, eventID uuid.UUID) error {
-	name := InstanceName(f.cfg.Network, eventID)
-	inst, ok, err := f.find(ctx, eventID)
-	if err != nil {
-		return err
-	}
-	if !ok {
-		return nil
-	}
-	timeout := 5
-	_ = f.cli.ContainerStop(ctx, inst.ID, container.StopOptions{Timeout: &timeout})
-	if err := f.cli.ContainerRemove(ctx, inst.ID, container.RemoveOptions{Force: true, RemoveVolumes: true}); err != nil {
-		return fmt.Errorf("firefoxfleet.Release: rm %s: %w", name, err)
-	}
-	return nil
-}
-
 // instanceRef is the inspected identity and process state of one owned fleet
 // container. Provision needs Running to distinguish its no-op idempotent path
 // from a prior create-success/start-failure retry.
@@ -236,22 +214,27 @@ type instanceRef struct {
 // is (·, false, nil), not an error. A same-named foreign container is an error,
 // never something this fleet adopts or removes.
 func (f *Fleet) find(ctx context.Context, eventID uuid.UUID) (instanceRef, bool, error) {
-	name := InstanceName(f.cfg.Network, eventID)
-	insp, err := f.cli.ContainerInspect(ctx, name)
+	return f.inspect(ctx, InstanceName(f.cfg.Network, eventID), eventID)
+}
+
+// inspect proves ownership for either a current name or an immutable listed ID.
+// Reapers use IDs so a replacement under the same name cannot inherit a stale deletion decision.
+func (f *Fleet) inspect(ctx context.Context, ref string, eventID uuid.UUID) (instanceRef, bool, error) {
+	insp, err := f.cli.ContainerInspect(ctx, ref)
 	if err != nil {
 		if client.IsErrNotFound(err) {
 			return instanceRef{}, false, nil
 		}
-		return instanceRef{}, false, fmt.Errorf("firefoxfleet.find %s: %w", name, err)
+		return instanceRef{}, false, fmt.Errorf("firefoxfleet.inspect %s: %w", ref, err)
 	}
 	if insp.Config == nil ||
 		insp.Config.Labels[labelFleet] != "firefox" ||
 		insp.Config.Labels[labelScope] != f.cfg.Network ||
 		insp.Config.Labels[labelEvent] != eventID.String() {
-		return instanceRef{}, false, fmt.Errorf("firefoxfleet.find %s: ownership labels do not match scope %q and event %s", name, f.cfg.Network, eventID)
+		return instanceRef{}, false, fmt.Errorf("firefoxfleet.inspect %s: ownership labels do not match scope %q and event %s", ref, f.cfg.Network, eventID)
 	}
 	if insp.NetworkSettings == nil || insp.NetworkSettings.Networks[f.cfg.Network] == nil {
-		return instanceRef{}, false, fmt.Errorf("firefoxfleet.find %s: container is not attached to scope network %q", name, f.cfg.Network)
+		return instanceRef{}, false, fmt.Errorf("firefoxfleet.inspect %s: container is not attached to scope network %q", ref, f.cfg.Network)
 	}
 	running := insp.State != nil && insp.State.Running
 	return instanceRef{ID: insp.ID, Running: running}, true, nil
@@ -282,9 +265,10 @@ func (f *Fleet) count(ctx context.Context) (int, error) {
 	return len(list), nil
 }
 
-// Instance is a live fleet member: its container name, the event it belongs to
-// (from the found-footy.fleet.event label), and when it was created.
+// Instance identifies an owned running or stopped container. ID pins a sweep
+// to this exact incarnation; Name is a reusable operator-facing locator.
 type Instance struct {
+	ID        string
 	Name      string
 	EventID   uuid.UUID
 	CreatedAt time.Time
@@ -314,34 +298,9 @@ func (f *Fleet) ListInstances(ctx context.Context) ([]Instance, error) {
 		if len(c.Names) > 0 {
 			name = strings.TrimPrefix(c.Names[0], "/")
 		}
-		out = append(out, Instance{Name: name, EventID: evID, CreatedAt: time.Unix(c.Created, 0)})
+		out = append(out, Instance{ID: c.ID, Name: name, EventID: evID, CreatedAt: time.Unix(c.Created, 0)})
 	}
 	return out, nil
-}
-
-// ReapOrphans stop+rms every fleet instance whose event is NOT in `live` and
-// which is older than minAge (the grace — so a just-provisioned instance whose
-// event has not hit the DB yet is never reaped). Best-effort + idempotent: a
-// failed Release is skipped and retried next sweep. Returns the names reaped.
-// Runs in an activity / at startup, never a workflow, so time.Now() is fine.
-// audit P0-5 / #183.
-func (f *Fleet) ReapOrphans(ctx context.Context, live map[uuid.UUID]bool, minAge time.Duration) ([]string, error) {
-	insts, err := f.ListInstances(ctx)
-	if err != nil {
-		return nil, err
-	}
-	cutoff := time.Now().Add(-minAge)
-	var reaped []string
-	for _, in := range insts {
-		if live[in.EventID] || in.CreatedAt.After(cutoff) {
-			continue
-		}
-		if err := f.Release(ctx, in.EventID); err != nil {
-			continue // best-effort; next sweep retries
-		}
-		reaped = append(reaped, in.Name)
-	}
-	return reaped, nil
 }
 
 // waitForSlot blocks until the fleet is below MaxInstances or ctx expires.

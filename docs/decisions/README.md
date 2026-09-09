@@ -14,6 +14,9 @@ its historical heading anchors valid.
 
 New decisions after the frozen archive:
 
+- [Firefox cleanup follows discovery ownership](./2026-09-09-firefox-cleanup-follows-discovery-ownership.md)
+  — FF-073 derives browser ownership from debounce/checklists, pins removal to
+  inspected container IDs, and retries sweep failures independently of vendor polling.
 - [Search profiles follow container removal](./2026-09-09-search-profiles-follow-container-removal.md)
   — FF-090 removes implicit headless volumes, cleans older anonymous profiles
   on release, and preserves explicit cookie and operator-login storage.

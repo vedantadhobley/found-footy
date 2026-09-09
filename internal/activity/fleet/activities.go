@@ -89,9 +89,8 @@ func (a *Activities) ReleaseFirefox(ctx context.Context, in ReleaseFirefoxInput)
 	return nil
 }
 
-// ReapOrphanedFirefoxInput bounds the sweep. MinAgeSecs is the grace so a
-// just-provisioned instance whose event has not yet landed in the DB is never
-// reaped.
+// ReapOrphanedFirefoxInput bounds the sweep. MinAgeSecs protects new containers
+// across the ownership-query/list gap and an in-flight provisioning attempt.
 type ReapOrphanedFirefoxInput struct {
 	MinAgeSecs int
 }
@@ -102,13 +101,16 @@ type ReapOrphanedFirefoxOutput struct {
 }
 
 // ReapOrphanedFirefox stop+rms fleet instances whose event is no longer live —
-// crash-orphans (provisioned, worker died before release) and failed releases
-// (exited-but-not-removed). Queries the live-event set, diffs it against the
-// labeled containers, releases the strays. No-op when the fleet is disabled or
-// no lister is wired. audit P0-5 / #183.
+// crash-orphans and failed releases. Each attempt refreshes the DB ownership
+// projection and scoped Docker inventory. Joined removal failures reach Temporal
+// retry; missing ownership data fails closed before any removal. Only a disabled
+// fleet is a no-op; an enabled fleet requires its ownership repository.
 func (a *Activities) ReapOrphanedFirefox(ctx context.Context, in ReapOrphanedFirefoxInput) (ReapOrphanedFirefoxOutput, error) {
-	if a.Fleet == nil || a.LiveEvents == nil {
+	if a.Fleet == nil {
 		return ReapOrphanedFirefoxOutput{}, nil
+	}
+	if a.LiveEvents == nil {
+		return ReapOrphanedFirefoxOutput{}, fmt.Errorf("fleet.ReapOrphanedFirefox: missing ownership repository")
 	}
 	ids, err := a.LiveEvents.ListLiveFleetEventIDs(ctx)
 	if err != nil {

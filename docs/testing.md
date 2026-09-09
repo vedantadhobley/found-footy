@@ -29,6 +29,13 @@ and `rg --files test/scenarios -g '*.yaml'`.
 
 ## Tier 1 — pure Go unit tests
 
+FF-073 tests pin partial removal failure/retry, immutable IDs across replacement,
+ownership changes, concurrent not-found, cancellation, age/keep exclusions, and
+missing ownership evidence. Real-Postgres cases cover warmup, trigger/checklist
+handoff, completed discovery on active fixtures, and late/replayed pending work.
+Staging workflow tests cover bounded retries, vendor failure isolation, and old
+version branches. See the [cleanup decision](./decisions/2026-09-09-firefox-cleanup-follows-discovery-ownership.md).
+
 FF-090 storage regressions cover release, orphan reaping, failed-start recovery,
 retryable removal failures, and the shared-cookie-only bind contract. An
 isolated real-Docker test proves `Fleet.Release` removes an old anonymous
