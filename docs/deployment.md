@@ -117,6 +117,18 @@ not trigger the restart policy. Compose-managed headless Twitter retains
 `restart: unless-stopped`; the opt-in VNC service intentionally retains
 `restart: no` because the operator owns that session.
 
+FF-090 makes the headless profile writable-layer data: restart keeps it;
+removing/recreating the container clears it. The headless image must declare
+no implicit volumes. Cookie-directory binds and the VNC named profile remain
+persistent. Before rollout, run
+`bash scripts/smoke_twitter_storage.sh <built-headless-image>` against the
+candidate image. It uses isolated synthetic sentinels, not real authentication.
+After an approved rollout, verify static and newly provisioned search containers
+have only the cookie bind and no `/data` mount. Already detached anonymous
+volumes require a separate ownership audit and deletion approval; rollout is
+not authorization for a volume prune. See the
+[storage decision](./decisions/2026-09-09-search-profiles-follow-container-removal.md).
+
 If a legacy `ff-firefox-ev-*` container appears, stop before deployment and
 identify its workflow and network ownership. The scoped provisioner
 intentionally ignores legacy unscoped containers because it cannot prove which

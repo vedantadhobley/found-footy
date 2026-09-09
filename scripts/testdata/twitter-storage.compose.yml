@@ -1,0 +1,31 @@
+# Isolated storage sentinels; no browser, real credentials, network, or app stack.
+services:
+  search:
+    image: ${FF_STORAGE_IMAGE:?provide a built headless image}
+    entrypoint: ["sleep", "300"]
+    group_add: ["${FF_STORAGE_HOST_GID:?provide the test directory group}"]
+    network_mode: none
+    mem_limit: 128m
+    cpus: 1
+    pids_limit: 32
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    volumes:
+      - ${FF_STORAGE_COOKIE_DIR:?provide a temporary directory}:/config
+  login:
+    # This is a storage sentinel, not the actual operator-login process.
+    # Contract tests separately pin the real VNC Compose mounts in both stacks.
+    image: ${FF_STORAGE_IMAGE:?provide a built headless image}
+    entrypoint: ["sleep", "300"]
+    group_add: ["${FF_STORAGE_HOST_GID:?provide the test directory group}"]
+    network_mode: none
+    mem_limit: 128m
+    cpus: 1
+    pids_limit: 32
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    volumes:
+      - ${FF_STORAGE_COOKIE_DIR:?provide a temporary directory}:/config
+      - manual-profile:/data
+volumes:
+  manual-profile:

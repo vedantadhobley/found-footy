@@ -36,6 +36,7 @@ docs/
 .claude/
 
 # Local production-forensics probes are not application build inputs.
+scratch-audit-*/
 scripts/probe_cookie_download/
 scripts/probe_vision/
 

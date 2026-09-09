@@ -64,8 +64,8 @@ var idleCPUFirefoxPrefs = map[string]any{
 
 	// ── Cold-start speedup — kills bandwidth-heavy Firefox startup work ──
 	// Safe Browsing DB downloads are ~200 MB from Google on first
-	// launch. With Python-shape ephemeral profiles, every container
-	// restart would re-download unless we disable. We don't need
+	// launch. Each newly created search container has a fresh profile
+	// and would re-download unless we disable. We don't need
 	// malware/phishing protection for a scraping browser.
 	"browser.safebrowsing.malware.enabled":          false,
 	"browser.safebrowsing.phishing.enabled":         false,
@@ -120,12 +120,10 @@ func main() {
 	}
 	twitterCfg := cfg.TwitterService
 
-	// Firefox profile lives in the container writable layer for headless
-	// (matches Python-shape — each container gets its own private
-	// /data/firefox-profile/ via Docker's copy-on-write, no shared
-	// volume, no cross-instance SQLite locking). The raw-login container owns
-	// the separate `twitter-vnc-profile` volume and only publishes cookies. See
-	// decisions.md 2026-07-23 (ephemeral vs subdirs) for the rationale.
+	// Headless profiles live at /data/firefox-profile in the container's
+	// writable layer. Restart preserves that layer; removal discards it.
+	// Only cookies are shared through /config. The separate raw-login
+	// container retains its named profile volume and publishes cookie snapshots.
 	// Launch browser first — if this fails the service can't do
 	// anything useful, exit non-zero so the orchestrator restarts us.
 	browser, err := twitter.NewBrowser(twitter.NewBrowserOptions{

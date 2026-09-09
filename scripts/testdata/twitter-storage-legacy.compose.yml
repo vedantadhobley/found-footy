@@ -1,0 +1,5 @@
+# Simulate the old anonymous /data mount when testing a Compose cutover.
+services:
+  search:
+    volumes:
+      - /data

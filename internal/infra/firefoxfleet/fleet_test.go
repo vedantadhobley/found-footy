@@ -11,6 +11,9 @@
 //     release-on-missing — WITHOUT spinning a real Firefox container. The
 //     full Provision→healthy→Release round-trip stays a live-verification
 //     step (Firefox startup is ~30s and flaky; it does not belong in unit CI).
+//
+// storage_integration_test.go separately uses an isolated inert container to
+// verify Docker's anonymous-volume removal semantics without Firefox or X.
 package firefoxfleet
 
 import (
@@ -105,6 +108,7 @@ type fakeContainer struct {
 	created       int64
 	running       bool
 	restartPolicy container.RestartPolicy
+	binds         []string
 }
 
 // fakeDocker implements the fleet's narrow Docker API without a socket.
@@ -113,6 +117,8 @@ type fakeDocker struct {
 	containers map[string]*fakeContainer
 	nextID     int
 	startErr   error
+	removeErr  error
+	removals   []container.RemoveOptions
 }
 
 func newFakeDocker() *fakeDocker {
@@ -153,6 +159,7 @@ func (d *fakeDocker) ContainerCreate(_ context.Context, cfg *container.Config, h
 		id: id, name: name, labels: labels, networks: networks,
 		created:       time.Now().Add(-time.Minute).Unix(),
 		restartPolicy: hostCfg.RestartPolicy,
+		binds:         append([]string(nil), hostCfg.Binds...),
 	}
 	return container.CreateResponse{ID: id}, nil
 }
@@ -237,9 +244,13 @@ func (d *fakeDocker) ContainerStop(_ context.Context, ref string, _ container.St
 	return nil
 }
 
-func (d *fakeDocker) ContainerRemove(_ context.Context, ref string, _ container.RemoveOptions) error {
+func (d *fakeDocker) ContainerRemove(_ context.Context, ref string, opts container.RemoveOptions) error {
 	d.mu.Lock()
 	defer d.mu.Unlock()
+	d.removals = append(d.removals, opts)
+	if d.removeErr != nil {
+		return d.removeErr
+	}
 	c, ok := d.lookup(ref)
 	if !ok {
 		return errdefs.NotFound(errors.New("container not found"))

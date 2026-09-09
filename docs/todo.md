@@ -49,6 +49,39 @@ the current branch.
 
 ## Confirmed issues
 
+### FF-090 — Firefox container removal leaves anonymous profile volumes
+
+- **Status:** `implemented`
+- **Severity:** P1
+- **Evidence:** The September 9 storage inspection verified that the deployed
+  Twitter image declares `/data` as a volume and the static production
+  container has an anonymous volume mounted there. The pre-fix
+  `docker/twitter/Dockerfile` declared `VOLUME ["/config", "/data"]`;
+  the fleet binds only `/config`.
+  `internal/twitter/browser.go` opens a persistent profile under `/data`.
+- **Pre-fix cause:** `Fleet.Release` removed containers with `Force: true` but omitted
+  `RemoveVolumes`. Docker retains the anonymous volume after container removal.
+  Comments claiming profiles lived in the disposable writable layer were wrong.
+- **Implementation (2026-09-09, not deployed):** Remove the headless image's
+  implicit volumes and request anonymous-volume deletion on owned fleet release.
+  Cookie binds and explicit VNC profiles remain persistent. Unit, real-Docker,
+  Compose-contract, and built-image smoke tests cover storage ownership and
+  lifecycle. Correct comments that confused container restart with replacement.
+  Exclude local audit scratch directories from image build contexts. See the
+  [decision](./decisions/2026-09-09-search-profiles-follow-container-removal.md).
+- **Verification:** `make check-short`, `make test`, isolated real-Docker
+  release checks, and the built-image storage smoke passed. The smoke verified
+  legacy-mount cutover, restart versus recreation, and persistent synthetic
+  cookie/named-profile sentinels. It did not perform authenticated X searches.
+- **Acceptance:** Separately approve worker/Twitter rollout and confirm
+  static/new event browsers have no `/data` mount. Audit
+  existing anonymous volumes without assuming an unreferenced volume belongs
+  to this project; deletion requires separate approval for proven targets.
+- **Boundary:** The separately approved legacy named-volume cleanup reclaimed
+  roughly 102 GB but does not fix this current path. Current anonymous-volume
+  disk usage has not been attributed. See the
+  [cleanup evidence](./history/storage-cleanup-2026-09-09.md).
+
 ### FF-087 — vision failure exhaustion discards the actionable cause
 
 - **Status:** `implemented`

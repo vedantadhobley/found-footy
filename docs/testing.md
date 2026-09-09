@@ -29,6 +29,23 @@ and `rg --files test/scenarios -g '*.yaml'`.
 
 ## Tier 1 — pure Go unit tests
 
+FF-090 storage regressions cover release, orphan reaping, failed-start recovery,
+retryable removal failures, and the shared-cookie-only bind contract. An
+isolated real-Docker test proves `Fleet.Release` removes an old anonymous
+profile volume without deleting explicit named storage. All created resources
+use a unique test scope and cleanup; no application container is modified.
+Contract tests reject Dockerfile `VOLUME` in the headless image and require
+explicit cookie/VNC ownership in both inert Compose models. Build contexts
+exclude `scratch-audit-*/` forensic artifacts.
+
+For a built headless image, run
+`bash scripts/smoke_twitter_storage.sh <test-image>`. This separately tests the
+final image metadata and a legacy-mount-to-writable-layer Compose transition.
+Synthetic cookie and profile sentinels prove that restart retains the private
+profile, recreation clears it, and cookie binds plus named login storage
+survive. The isolated, capped test containers have no network or real browser;
+this is storage validation, not an authenticated search smoke test.
+
 Every domain package + activity package + config + observability substrate
 keeps tests in the package they verify. Small packages use one `*_test.go`;
 larger packages split tests by responsibility while sharing package-private
