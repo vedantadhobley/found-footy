@@ -95,6 +95,9 @@ func StagingPollWorkflow(ctx workflow.Context, in StagingPollWorkflowInput) (Sta
 
 	workflowID := workflow.GetInfo(ctx).WorkflowExecution.ID
 	logger.Info("StagingPollWorkflow cycle started", "workflow_id", workflowID)
+	// Preserve the old poll-failure command path and single-attempt policy
+	// when replaying a history that predates independent cleanup retries.
+	reaperV2 := workflow.GetVersion(ctx, "ff-073-fleet-reaper", workflow.DefaultVersion, 1) != workflow.DefaultVersion
 
 	var pollOut monitor.PollStagingFixturesOutput
 	if err := workflow.ExecuteActivity(ctx, "PollStagingFixtures",
@@ -102,26 +105,37 @@ func StagingPollWorkflow(ctx workflow.Context, in StagingPollWorkflowInput) (Sta
 	).Get(ctx, &pollOut); err != nil {
 		logger.Warn("PollStagingFixtures failed", "error", err)
 		out.Errors = append(out.Errors, "PollStagingFixtures: "+err.Error())
-		return out, nil
+		if !reaperV2 {
+			return out, nil
+		}
+	} else {
+		out.Considered = pollOut.Considered
+		out.Polled = pollOut.Polled
+		out.MissedIDs = pollOut.MissedIDs
+		out.EmergencyActivated = pollOut.EmergencyActivated
+		out.KickoffActivated = pollOut.KickoffActivated
+		out.Errors = append(out.Errors, pollOut.Errors...)
 	}
-	out.Considered = pollOut.Considered
-	out.Polled = pollOut.Polled
-	out.MissedIDs = pollOut.MissedIDs
-	out.EmergencyActivated = pollOut.EmergencyActivated
-	out.KickoffActivated = pollOut.KickoffActivated
-	out.Errors = append(out.Errors, pollOut.Errors...)
 
 	// Periodic fleet orphan reap (#183 / audit P0-5). StagingPoll is the
 	// always-on */15 cron, so it is the natural home for fleet reconciliation:
 	// it sweeps crash-orphans (worker died between Provision and Release) and
 	// failed-release strays that no EventWorkflow will ever clean up. The
 	// activity no-ops when the fleet is disabled, so this runs unconditionally.
-	// Best-effort — a sweep failure is recorded, never fatal (next tick
-	// retries). Own options: modest timeout, no in-cycle retry.
-	reapCtx := workflow.WithActivityOptions(ctx, workflow.ActivityOptions{
+	// Cleanup is independent of vendor polling. Exhaustion is recorded, never
+	// fatal to this coordinator; each retry refreshes DB ownership and Docker IDs.
+	reapOptions := workflow.ActivityOptions{
 		StartToCloseTimeout: 60 * time.Second,
 		RetryPolicy:         &temporal.RetryPolicy{MaximumAttempts: 1},
-	})
+	}
+	if reaperV2 {
+		reapOptions.ScheduleToCloseTimeout = 3 * time.Minute
+		reapOptions.RetryPolicy = &temporal.RetryPolicy{
+			InitialInterval: time.Second, BackoffCoefficient: 2,
+			MaximumInterval: 10 * time.Second, MaximumAttempts: 3,
+		}
+	}
+	reapCtx := workflow.WithActivityOptions(ctx, reapOptions)
 	var reapOut fleetactivity.ReapOrphanedFirefoxOutput
 	if err := workflow.ExecuteActivity(reapCtx, "ReapOrphanedFirefox",
 		fleetactivity.ReapOrphanedFirefoxInput{MinAgeSecs: 120},

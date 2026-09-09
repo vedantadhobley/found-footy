@@ -502,6 +502,13 @@ by older images. Cookie binds and named operator-login storage remain persistent
 See the [storage contract](./decisions/2026-09-09-search-profiles-follow-container-removal.md)
 and [release status](./todo.md#ff-090--firefox-container-removal-leaves-anonymous-profile-volumes).
 
+FF-073 separates removal into `firefoxfleet/cleanup.go`: immutable container-ID
+targeting, ownership rechecks, concurrent-not-found success, and joined sweep
+failures. The PG keep projection follows debounce/checklist ownership instead
+of retaining all events on active fixtures. No lease table or schema is added;
+the [monitor ledger](./orchestration/monitor.md#stagingpollworkflow--as-shipped)
+owns retry timing and old-history compatibility.
+
 `twitter.Client.Search(ctx, addr, req)` takes a **per-call base address**
 (#160): empty `addr` → the shared `TwitterConfig.BaseURL` (pre-#160
 behavior); a non-empty `addr` → that event's dedicated fleet instance,

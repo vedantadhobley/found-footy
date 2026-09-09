@@ -184,6 +184,13 @@ The `ff-087-vision-failure-detail` marker preserves historical terminal payloads
 activity timeouts, retry counts, and registration names are unchanged. See the
 [failure-detail decision](./decisions/2026-09-08-vision-failures-retain-stage-and-timeout-kind.md).
 
+FF-073 versions staging cleanup with `ff-073-fleet-reaper`. New histories run
+the sweep after a failed vendor poll and allow at most three 60s attempts within
+a 3min total deadline; old histories retain one attempt and the earlier return.
+Activity names, payloads, schedules, and EventWorkflow commands do not change.
+Joined Docker failures now reach activity retry; final exhaustion remains in
+the staging result's errors. See the [monitor ledger](./orchestration/monitor.md#stagingpollworkflow--as-shipped).
+
 ## Testing shape
 
 Client-level: unit tests exercise `NewClient` connection retries +

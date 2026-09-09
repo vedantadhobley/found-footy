@@ -387,3 +387,6 @@ fall back to the shared twitter service. `finalizeEvent` calls
 `ReleaseFirefox(EventID)` on normal completion when `FleetEnabled`, the
 happy-path teardown; the monitor's Step 4.5 release covers an event that never
 reaches finalize (decay/VAR cancellation). Both are idempotent.
+Checklist completion precedes happy-path release. If release exhausts retries,
+FF-073 therefore makes that browser eligible for the existing orphan sweep even
+while its fixture remains active; another pending checklist still protects it.
