@@ -10,7 +10,7 @@ found and locally repaired classification gaps. The
 is now reviewed: stable deferred null-score observations repeatedly flagged
 against retained zero scores and contaminated global recommendations. The
 [second classification repair](../../decisions/2026-09-08-postponed-score-absence-is-not-play-regression.md)
-is implemented locally, not deployed: only an unchanged empty PST scoreboard
+deployed on 2026-09-09 as `a7c9f53`: only an unchanged empty PST scoreboard
 is exempt from score clearing. Waiting for more unchanged polls is not the
 remaining design gate. FF-088 owns the separate deferred
 polling/reactivation policy. Current behavior is authoritative in the
