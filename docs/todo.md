@@ -496,6 +496,17 @@ the current branch.
   form an executable non-media corpus with full derived dHash sequences,
   retained metadata, human labels, and snapshots of current behavior. Tests
   replay current behavior without redefining it as the desired result.
+- **Picture-quality pilot (2026-09-09):** The isolated OpenCV BRISQUE baseline
+  completed two identical-score runs on ten saved clips and twenty generated
+  control scenarios. Shared-action scoring agrees with the Adams judgment and
+  tentative Palacios-A/Mariano-B presentation preferences, but added noise
+  improves its scores substantially; whole-clip/crop aggregation can reverse
+  preferences. Do not adopt it as a standalone keeper score. Learned-model
+  comparison is pending license-use confirmation. The same
+  [report](./design/audits/video-picture-quality-2026-09-09.md) records today's
+  Demirović hat-trick compilation replacing a dedicated third-goal cut: real
+  overlap plus unrelated extra duration must not imply a better substitute.
+  Palacios/Mariano replacement choices and all production policies remain open.
 - **Coverage-policy checkpoint (2026-08-31):** `Match` now delegates to a
   behavior-preserving `BestAlignment` primitive that also returns left/right
   offsets, aligned frames, and tolerated gaps. The offline audit reports each
@@ -542,9 +553,41 @@ the current branch.
   pairs, including never-public variants, outside ordinary media cleanup in a
   local research copy. The cadence-aware experiment changes 128 direct-pair
   decisions, but these are unreviewed predictions, not accepted winners.
-- **Next work:** Review those natural post-FF-082/083 pairs, then
-  evaluate the cadence-aware relation on rows that actually retain cadence and
-  label presentation defects that metadata cannot express. Do not change
+- **Bounded review (2026-09-08):** The
+  [five-pair review](./design/audits/video-cadence-review-2026-09-08.md)
+  verified all ten saved files and replayed current/experimental outcomes.
+  Every keeper has the same conspicuous watermark/framing family and more
+  exact-MD5 observations than its losing copy; frequency alone preserves all
+  five choices. Four win on duration; Palacios survives a tie despite cuts
+  with different footage. El Khannouss's 60-fps encoding contains alternating
+  near-repeated motion. The cadence experiment prefers Adams's cleaner copy
+  but keeps both on the other four. Derived hashes and metadata now form a
+  separate executable corpus; only Adams has a subsequent explicit user label.
+- **Adams acceptance and cadence experiment (2026-09-08):** The user chose
+  the shorter Adams copy as the sole keeper because it retains essentially all
+  useful content and looks better. Its label is pinned independently of current
+  behavior. The offline native-frame experiment detects factor-two repetition
+  in three El Khannouss windows but none in the four Adams 60-fps windows.
+  Controlled repeated, re-encoded, static, and interpolated motion demonstrates
+  the distinction between repeat evidence and proof of native FPS. No runtime
+  behavior changes. See the [results and limitations](./design/audits/video-cadence-review-2026-09-08.md#adams-acceptance-and-cadence-experiment).
+- **Aligned-section checkpoint (2026-09-08):** The offline report now exposes
+  each route's shared sections, unsupported edges/interior gaps, and supported
+  versus span coverage beside unchanged quality predictions and human labels.
+  Replaying both review corpora and 2,030 saved direct pairs confirms the
+  Palacios partial-overlap and Mariano containment distinction. Adams and the
+  accepted Mbappé keeper also show that stricter measured support must not
+  become a new automatic replacement threshold. No runtime changes. See the
+  [experiment and remaining boundaries](./design/audits/video-overlap-review-2026-09-08.md).
+- **Next work:** Agree replacement and presentation judgments for
+  Palacios and Mariano before changing the technical-quality relation.
+  The [content-tradeoff review](./design/audits/video-cadence-review-2026-09-08.md#palacios-and-mariano-content-tradeoffs)
+  also identifies the keep-both interaction with FF-078 singleton pruning,
+  public ordering, and single-credit popularity attribution. Retaining two
+  roots alone does not guarantee two public clips. These are policy questions,
+  not new accepted labels or runtime changes.
+  Account for misleading encoded cadence, presentation defects, and the
+  current format-level (not video-only) bitrate proxy. Do not change
   `IsUpgrade` or adopt direct-cover visibility until reliable presentation evidence
   resolves the FF-052 screen-detection gap. Any replacement must be a
   documented product policy, not fitted metadata weights. Separately repair
@@ -584,8 +627,10 @@ the current branch.
   accepted assets first seen in the September pre-rollout window retain
   cadence, including natural 30/50/60 fps values. Five approximately-60-fps
   variants and their 30-fps keepers are preserved locally for FF-081 review.
-- **Remaining acceptance:** Add reviewed cadence pairs before changing
-  `IsUpgrade`; persistence itself has natural production evidence. See the
+- **Remaining acceptance:** Natural cadence cases now have executable
+  snapshots and a bounded source-frame review; user quality judgments remain
+  open before changing `IsUpgrade`. Persistence itself has natural production
+  evidence. See the
   [quality checkpoint](./design/audits/pre-rollout-evidence-2026-09-08.md#ff-081082083-quality-evidence-now-supports-the-next-review).
 - **Decision:** [Video cadence is independent quality evidence](./decisions/2026-08-31-video-cadence-is-independent-quality-evidence.md).
 
@@ -629,7 +674,8 @@ the current branch.
   and their keepers were downloaded from exact Garage keys; all ten sizes and
   MD5s matched. The full metadata/hash export and review manifest are saved.
 - **Remaining acceptance:** Visually review the preserved natural pairs under
-  FF-081; no human labels or new keeper policy have been accepted. See the
+  FF-081; Adams now has a user label, but the other four pairs and a new keeper
+  policy remain unaccepted. See the
   [preserved evidence](./design/audits/pre-rollout-evidence-2026-09-08.md#preserved-local-review-material).
   Historical first-loss variants cannot be backfilled.
 - **Decision:** [Accepted variants form direct lineage, not perceptual clusters](./decisions/2026-08-31-accepted-variants-form-direct-lineage.md).

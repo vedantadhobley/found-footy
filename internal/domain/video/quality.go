@@ -16,10 +16,10 @@
 //     long clip is never DROPPED here — that's the hard filter's 90s max; it
 //     just stops benefiting from length).
 //  2. Spatial bitrate density — bitrate / (width × height). This is the deliberate improvement
-//     over the Python system, which ranked on raw file_size: a blurry
-//     source upscaled to 1080p has a high pixel count and a big file but few
-//     bits describing each pixel. Density catches that; raw size/resolution
-//     does not. See decisions.md 2026-08-05 (quality-aware dedup).
+//     over the Python system, which ranked on raw file_size. Density measures
+//     encoding budget per pixel, not source detail: it cannot reliably detect
+//     upscaling, blur, or added noise. See decisions.md 2026-08-05
+//     (quality-aware dedup) for the original heuristic rationale.
 //  3. Resolution — raw pixel count, final tiebreak.
 //
 // No absolute "too short" gate: the pre-download hard filter already floors
@@ -56,9 +56,10 @@ type ClipQuality struct {
 }
 
 // spatialBitrateDensity is bitrate / (width × height): bits per spatial pixel
-// per second. It separates a genuine HD encode from an upscaled or compressed
-// one, but deliberately says nothing about how those bits are divided across
-// frames. Returns zero when bitrate or dimensions are unknown.
+// per second. This is a compression-budget proxy, not a native-resolution or
+// sharpness detector, and says nothing about how those bits are divided across
+// frames. Bitrate may include audio/container overhead from ffprobe's format
+// value. Returns zero when bitrate or dimensions are unknown.
 func (q ClipQuality) spatialBitrateDensity() float64 {
 	if q.Bitrate == nil || *q.Bitrate <= 0 || q.Width <= 0 || q.Height <= 0 {
 		return 0

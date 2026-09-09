@@ -10,59 +10,6 @@ import (
 	dvideo "github.com/vedantadhobley/found-footy/internal/domain/video"
 )
 
-type reviewedPairCorpus struct {
-	SchemaVersion int             `json:"schema_version"`
-	CapturedAt    string          `json:"captured_at"`
-	HashCadenceMS int             `json:"hash_cadence_ms"`
-	Matcher       reviewedMatcher `json:"matcher"`
-	Cases         []reviewedPair  `json:"cases"`
-}
-
-type reviewedMatcher struct {
-	Primary   reviewedMatchRoute `json:"primary"`
-	Sustained reviewedMatchRoute `json:"sustained"`
-}
-
-type reviewedMatchRoute struct {
-	MaxHamming int `json:"max_hamming"`
-	MinRun     int `json:"min_run"`
-	MaxGaps    int `json:"max_gaps"`
-}
-
-type reviewedPair struct {
-	ID         string                 `json:"id"`
-	EventLabel string                 `json:"event_label"`
-	Left       reviewedAsset          `json:"left"`
-	Right      reviewedAsset          `json:"right"`
-	Human      reviewedHumanJudgment  `json:"human"`
-	Current    reviewedCurrentOutcome `json:"current"`
-}
-
-type reviewedAsset struct {
-	AssetID     string  `json:"asset_id"`
-	EventID     string  `json:"event_id"`
-	HashVersion string  `json:"hash_version"`
-	FrameHashes string  `json:"frame_hashes_hex"`
-	Width       int     `json:"width"`
-	Height      int     `json:"height"`
-	DurationMS  int     `json:"duration_ms"`
-	Bitrate     int     `json:"bitrate"`
-	FrameRate   float64 `json:"frame_rate"`
-	Popularity  int     `json:"popularity_at_capture"`
-}
-
-type reviewedHumanJudgment struct {
-	DedupDecision string   `json:"dedup_decision"`
-	QualityWinner string   `json:"quality_winner"`
-	Reasons       []string `json:"reasons"`
-	Notes         string   `json:"notes"`
-}
-
-type reviewedCurrentOutcome struct {
-	Matches           bool   `json:"matches"`
-	QualityPreference string `json:"quality_preference"`
-}
-
 // TestReviewedPairCorpusReplaysCurrentPolicy keeps production-derived hashes
 // and metadata executable without retaining copyrighted media. Current output
 // is a snapshot beside, never a substitute for, the human judgment.
@@ -256,14 +203,5 @@ func validateReviewedAsset(t *testing.T, item reviewedAsset) {
 	if item.Width <= 0 || item.Height <= 0 || item.DurationMS <= 0 || item.Bitrate <= 0 ||
 		item.FrameRate <= 0 || item.Popularity <= 0 {
 		t.Fatalf("invalid retained metadata for asset %s: %+v", item.AssetID, item)
-	}
-}
-
-func reviewedAssetForPolicy(item reviewedAsset) asset {
-	return asset{
-		id: item.AssetID, eventID: item.EventID,
-		hashVersion: dvideo.NormalizeFrameHashVersion(dvideo.FrameHashVersion(item.HashVersion)),
-		width:       item.Width, height: item.Height, durationMS: item.DurationMS,
-		bitrate: item.Bitrate, frameRate: item.FrameRate, popularity: item.Popularity,
 	}
 }

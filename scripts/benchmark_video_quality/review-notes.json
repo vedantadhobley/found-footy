@@ -1,0 +1,20 @@
+{
+  "schema_version": 1,
+  "reviewed_at": "2026-09-09",
+  "notes": [
+    {
+      "pair_id": "palacios-42",
+      "preferred_asset_id": "a2e66274-1978-5e92-b8b8-94661627114e",
+      "status": "tentative_presentation_preference",
+      "replacement_decision": "unresolved",
+      "observation": "User prefers the first review-page clip overall despite a little stutter. Same displayed resolution. File versus playback cause of stutter is unconfirmed."
+    },
+    {
+      "pair_id": "mariano-36",
+      "preferred_asset_id": "9f37ee38-4df8-595f-86c4-f61e29f73388",
+      "status": "tentative_presentation_preference",
+      "replacement_decision": "unresolved",
+      "observation": "User says the second review-page clip seems higher quality. This is the longer 30-fps captured keeper, not the corpus right-hand short 60-fps variant."
+    }
+  ]
+}

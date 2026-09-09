@@ -85,6 +85,54 @@ visible by retaining every asset. Equal minima prefer the sum of immutable
 exact-variant observations and then asset ID, solely to make audit output
 repeatable. That tiebreak is not accepted public behavior.
 
+## Aligned-section report
+
+`-overlap-json` emits one NDJSON record per scoped direct pair from the saved
+CSV. It skips graph permutations and does not select keepers. Combine it with
+`-pair-corpus` to read either checked-in pair JSON corpus from stdin instead;
+that mode also includes curated non-matches and copies existing human labels.
+It rejects changed matcher/sample contracts and current-policy snapshot drift.
+It never overwrites a corpus or fills missing labels. `-review-csv` and
+`-overlap-json` are mutually exclusive.
+
+Each `aligned-sections-v1` record preserves both qualified routes, their
+strongest-window offsets, section coordinates, brief tolerated misses,
+unassigned similar samples, and each side's unsupported prefix/suffix and
+interior gaps. Supported coverage counts similar hashes in qualifying sections;
+section-span coverage also includes their explicitly listed tolerated misses.
+The report retains earlier policy predictions and technical metadata beside
+these measurements, not as inferred human choices.
+
+A section groups hits separated by at most two failed samples, needs a span
+of ten samples, and needs 80% similarity within that span. Short/sparse groups
+remain unassigned. These are diagnostic grouping settings, not content or
+replacement gates. All positions are half-open sample indexes. Explicit v2
+100-ms hashes have `hash_cadence_ms: 100`; legacy rows have `null` and cannot be
+reported as measured seconds. Unsupported footage is not automatically an
+intro/outro or disposable. One strongest offset per route cannot resolve every
+replay, speed change, or insertion. See the
+[results and limitations](../../docs/design/audits/video-overlap-review-2026-09-08.md).
+
+For an offline replay using the already populated module cache:
+
+```bash
+docker run --rm -i --network=none --memory=6g --cpus=4 \
+  -e GOMEMLIMIT=5GiB -e GOMAXPROCS=4 \
+  -e GOCACHE=/gocache -e GOMODCACHE=/gomodcache \
+  -v "$PWD:/src:ro" \
+  -v "$HOME/.cache/found-footy/gocache:/gocache" \
+  -v "$HOME/.cache/found-footy/gomodcache:/gomodcache" \
+  -w /src golang:1.25.11-bookworm \
+  go run -buildvcs=false ./scripts/audit_video_quality \
+  -overlap-json -pair-corpus \
+  < scripts/audit_video_quality/testdata/cadence-pairs-2026-09-08.json \
+  > /tmp/ff081-overlap-natural.ndjson
+```
+
+Use `testdata/reviewed-pairs.json` for the August judgments. For a saved SQL
+CSV, remove `-pair-corpus` and redirect that local file to stdin. No new
+production export is needed for the preserved September data.
+
 ## Human review manifest
 
 Pass `-review-csv` to emit one stable row per direct perceptual match instead
@@ -103,7 +151,8 @@ leaves four reviewer-owned columns blank:
 Frame rate, spatial bitrate density, and bits per pixel per frame are separate
 evidence columns. Never infer the quality winner from one of them alone. A
 60 fps clip may spend fewer bits on each frame than a 30 fps clip and still be
-the better presentation because it retains twice the motion cadence.
+the better presentation if it retains more distinct motion frames. Encoded FPS
+alone does not establish that advantage.
 
 The source tweet URL is selected from immutable `observed_asset_id` when the
 FF-083 attribution exists, with old outcome detail as a historical fallback. A
@@ -130,3 +179,19 @@ independent product judgment. A known mismatch, such as J. King's visibly
 cleaner short cut losing to the duration-first comparator, is regression
 evidence rather than a failing assertion. This lets a future policy measure
 which accepted cases it improves without silently rewriting the labels.
+
+## Natural cadence evidence, partially reviewed
+
+[`testdata/cadence-pairs-2026-09-08.json`](./testdata/cadence-pairs-2026-09-08.json)
+preserves the five post-FF-082/083 first-loss pairs inspected in the
+[September cadence review](../../docs/design/audits/video-cadence-review-2026-09-08.md).
+It retains derived hashes, metadata, exact observations, source-copy checksums,
+frame diagnostics, and current/experimental outcome snapshots. It includes no
+media or URLs. Adams now has an explicit `human` label: collapse the pair and
+retain the shorter right copy. The other four pairs remain unlabelled.
+
+Tests replay the observed behavior and coverage experiments, not desired
+winners. Source-frame inspection and decimation diagnostics do not prove
+native motion FPS or substitute for user review. The separate
+[cadence experiment](../audit_video_cadence/README.md) measures repeated-frame
+patterns; its output never supplies a human label or changes keeper policy.

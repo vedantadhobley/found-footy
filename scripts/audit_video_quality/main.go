@@ -30,7 +30,17 @@ func run() error {
 	detailLimit := flag.Int("details", 30, "maximum prioritized components to print; -1 prints all")
 	reviewCSV := flag.Bool("review-csv", false,
 		"emit a stable direct-pair human-review manifest instead of the diagnostic report")
+	overlapJSON := flag.Bool("overlap-json", false,
+		"emit offline aligned-section NDJSON beside existing quality baselines; no keeper changes")
+	pairCorpus := flag.Bool("pair-corpus", false,
+		"read a reviewed-pair JSON corpus from stdin; requires -overlap-json")
 	flag.Parse()
+	if err := validateOverlapFlags(*reviewCSV, *overlapJSON, *pairCorpus); err != nil {
+		return err
+	}
+	if *pairCorpus {
+		return writePairCorpusOverlapJSON(os.Stdout, os.Stdin)
+	}
 	if *maxPermutations < 1 {
 		return fmt.Errorf("max-permutations must be positive")
 	}
@@ -42,10 +52,24 @@ func run() error {
 	if len(assets) == 0 {
 		return fmt.Errorf("empty asset corpus")
 	}
+	if *overlapJSON {
+		return writeOverlapJSON(os.Stdout, assets)
+	}
 	result := analyze(assets, *maxPermutations)
 	if *reviewCSV {
 		return writeReviewCSV(os.Stdout, result)
 	}
 	printReport(os.Stdout, result, *detailLimit)
+	return nil
+}
+
+// validateOverlapFlags prevents ambiguous output modes or accidental JSON-as-CSV reads.
+func validateOverlapFlags(reviewCSV, overlapJSON, pairCorpus bool) error {
+	if reviewCSV && overlapJSON {
+		return fmt.Errorf("review-csv and overlap-json are mutually exclusive")
+	}
+	if pairCorpus && !overlapJSON {
+		return fmt.Errorf("pair-corpus requires overlap-json")
+	}
 	return nil
 }

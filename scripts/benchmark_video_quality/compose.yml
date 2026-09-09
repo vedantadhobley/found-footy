@@ -1,0 +1,22 @@
+# Disposable offline CPU benchmark. Input media stays read-only; no prod networks or credentials.
+name: found-footy-quality-benchmark
+services:
+  benchmark:
+    image: found-footy-quality-benchmark:2026-09-09
+    network_mode: none
+    read_only: true
+    user: "1000:1000"
+    mem_limit: 4g
+    cpus: 2
+    pids_limit: 128
+    tmpfs:
+      - /tmp:rw,size=256m
+    environment:
+      OMP_NUM_THREADS: "2"
+      OPENBLAS_NUM_THREADS: "2"
+      MKL_NUM_THREADS: "2"
+    volumes:
+      - .:/tool:ro
+      - ../audit_video_quality/testdata:/corpus:ro
+      - ../../scratch-audit-2026-09-08:/evidence:ro
+      - ../../scratch-audit-2026-09-09/quality-benchmark:/output
