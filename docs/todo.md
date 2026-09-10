@@ -84,6 +84,10 @@ the current branch.
   [release evidence](./history/search-window-and-cleanup-rollout-2026-09-10.md).
 - **Next:** Observe a natural fixed-window search, shortcut transition, and recovery;
   measure actual timeline requests before claiming a rate/cost benefit.
+- **Completed baseline:** The [MLS audit](./design/audits/mls-search-recovery-2026-09-10.md)
+  reconciles 821 pre-fix probes; age stopped 636 of 712 later usable probes.
+  All 50 surviving events still completed 15 usable observations. This is not
+  post-fix recall validation.
 - **Boundary:** No migration, query-string change, frontend change, or production
   data repair. Three minutes is an initial buffer, not a guarantee against very late
   vendor reporting. X ordering/indexing/hydration still limit recall. Wider live
@@ -162,6 +166,10 @@ the current branch.
   Historical rows are not rewritten. Unit, workflow, serialization, and
   Postgres regressions cover the contract. See the
   [decision](./decisions/2026-09-08-vision-failures-retain-stage-and-timeout-kind.md).
+- **Natural evidence (2026-09-10):** Bruno Damiani 49′ retained a terminal
+  `model_request/timeout` cause; its event still surfaced other assets. The
+  [MLS audit](./design/audits/mls-search-recovery-2026-09-10.md) records the event
+  and timestamp. Admission/request correlation and other subtypes remain open.
 - **Boundary:** Diagnosis alone does not fix saturation. FF-037 owns the
   work-lane/admission follow-up; shared gateway changes need a Control handoff.
   Do not bypass vision, globally extend deadlines, or replay old events as
@@ -1683,6 +1691,12 @@ natural validation measured HTTP 429, limit 50, remaining 0, and a roughly
 15-minute reset window on the shared account/IP path. Any admission or backoff
 policy belongs inside FF-038's atomic fleet controller, not in an independent
 limiter.
+
+The [completed September 9 MLS audit](./design/audits/mls-search-recovery-2026-09-10.md)
+extends FF-038's evidence: 35 HTTP 429s across six reported reset values, with
+all surviving discoveries recovering their usable budget. Some observations
+arrive after their reset header. Model shared cooldown/recovery offline before
+choosing a policy; do not equate search attempts or scrolls with HTTP requests.
 
 ## Behavior that is intentional
 

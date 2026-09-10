@@ -3,11 +3,12 @@
 ## Scope and disposition
 
 Offline experiment for [FF-091](../../todo.md#ff-091--moving-search-age-window-can-skip-outage-period-posts).
-Production still uses a moving three-minute cutoff. The initial offline
+At experiment time, production used a moving three-minute cutoff. The initial offline
 experiment changed no runtime behavior and made no live X search or extra
 download/vision call. The subsequent local implementation is recorded in the
-[FF-091 decision](../../decisions/2026-09-10-search-window-follows-first-observation.md);
-it is not deployed. The baseline and synthetic observations below remain the
+[FF-091 decision](../../decisions/2026-09-10-search-window-follows-first-observation.md)
+and deployed in the [September 10 rollout](../../history/search-window-and-cleanup-rollout-2026-09-10.md).
+The baseline and synthetic observations below remain the
 experiment's evidence, not a replacement for that as-built contract.
 
 The tests support replacing the moving cutoff with an immutable event-relative

@@ -5,6 +5,9 @@ Every surviving finding must have a stable disposition in
 [`todo.md`](../../todo.md), and any old claim must be verified against current
 code before work begins.
 
+- [Completed MLS search/recovery audit — 2026-09-10 UTC](./mls-search-recovery-2026-09-10.md)
+  — full usable-search recovery, public clip outcomes, 429 reset evidence,
+  bounded candidate failures, and the next shared-admission design boundary.
 - [Twitter search-window experiment — 2026-09-10 UTC](./twitter-search-window-2026-09-10.md)
   — offline moving/fixed timestamp comparison, pre-observation and partial-scan
   counterexamples, real-loop conformance, and remaining coverage/cost limits.
