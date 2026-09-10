@@ -525,7 +525,12 @@ activity retry policy.
 
 `internal/contract/twittersearch/` owns the request, response, video, bounded
 result-state, and secret-free evidence types used on both sides of the HTTP
-boundary. The client maps a classified non-2xx response to a typed
+boundary. FF-091 adds the fixed `SearchWindow` value and its conservative
+next-probe shortcut rule there; new histories initialize the cutoff through
+`activity/discovery/search_window.go` using existing downstream metadata.
+Usable HTTP results must acknowledge the applied window. See the
+[fixed-window decision](./decisions/2026-09-10-search-window-follows-first-observation.md).
+The client maps a classified non-2xx response to a typed
 `SearchError`; the Discovery activity preserves its page state in a retryable
 Temporal application error. New workflows decode those details after one call
 and own retry cadence, while pre-FF-061 histories retain their activity retry

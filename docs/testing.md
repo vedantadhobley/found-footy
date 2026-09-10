@@ -101,6 +101,20 @@ checkpoint overwrite.
 The maintenance activity retains classified rendered evidence in Temporal and
 rejects every unavailable state as a failed canary.
 
+FF-091 adds runtime fixed-window tests beside the offline experiment. The real
+scroll loop recovers the synthetic capped-prefix and outage cases; handler/client
+tests verify the applied-window echo, reject mismatches/mixed bounds, preserve
+unavailable evidence, and keep timestamps out of the X query. Workflow tests
+cover cutoff stability, shortcut grant/revocation, 429 accounting, failed-run
+recovery with retained URLs, and legacy version-marker inputs. Real-Postgres
+tests cover concurrent initialization, unchanged cutoffs after config changes,
+idempotent and stale progress writes, unknown checklists, malformed metadata,
+and clearing prior shortcut permission on failed-run recovery.
+
+The adapter and scenario Postgres test helpers cap each temporary database at
+512 MiB, with 64 MiB shared buffers, 4 MiB work memory, and 64 MiB maintenance
+work memory. These are disposable test limits, not deployed database settings.
+
 FF-026 bootstrap tests reserve a real ephemeral TCP address and require an
 occupied metrics socket to reject startup before `Work` runs. A companion test
 executes the public `Run` boundary in a subprocess and requires exit status 1.
@@ -428,6 +442,17 @@ The files divide by responsibility:
   builder, rune-safe truncation, promoted age-cutoff handling, equal-bound
   jitter, cancellation during jitter, missing-feed classification, timeline
   URL recognition, and bounded/query-free evidence.
+- `search_window_model_test.go`, `search_window_test.go`, and
+  `search_window_conformance_test.go` — offline rolling/fixed experiments with
+  independent per-policy candidate histories, serialized experiment checkpoints,
+  outage/delayed-start and partial-scan counterexamples, exact/unknown timestamp
+  boundaries, and bounded-work checks. Conformance runs the real scroll loop on
+  a fake `Page.Evaluate` seam; it does not start Playwright or test DOM selectors.
+  See the [FF-091 evidence](./design/audits/twitter-search-window-2026-09-10.md)
+  for the distinction between synthetic coverage and unmeasured live recall/cost.
+- `search_fixed_window_test.go` and `search_window_http_test.go` — the implemented
+  browser policy and actual HTTP handler with synthetic Page/Locator seams,
+  including fixed-floor acknowledgement and guarded known-video early stops.
 
 `internal/activity/twittermaintenance` tests the forced-verify/search order,
 minimum feed/video evidence, and strict status-URL contract. The Temporal

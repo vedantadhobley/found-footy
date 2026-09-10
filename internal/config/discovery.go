@@ -34,10 +34,9 @@ type DiscoveryConfig struct {
 	// response time (10-25s) already provides natural spacing variance.
 	AttemptSpacing time.Duration `env:"DISCOVERY_ATTEMPT_SPACING" envDefault:"60s"`
 
-	// MaxAgeMinutes — client-side age filter passed to T/c's /search
-	// endpoint. Candidates whose tweet age at scrape time is greater
-	// than this get dropped by the twitter service before returning.
-	// Default 3 per twitter-search-query.md D4.
+	// MaxAgeMinutes retains its env/history name for compatibility. FF-091
+	// uses it once as the lookback before event.first_seen_at (default 3);
+	// old workflow histories still pass it as a moving relative age limit.
 	MaxAgeMinutes int `env:"DISCOVERY_MAX_AGE_MINUTES" envDefault:"3"`
 
 	// QueryTimeout — StartToCloseTimeout on a single SearchTweets

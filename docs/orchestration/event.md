@@ -25,7 +25,7 @@ timeout):
 `querybuilder.Build(player, canonical, nil)` → N usable observations × M
 spacing (`config.DiscoveryConfig`, default 15 × 60s) of
 `SearchTweets` with per-event `exclude_urls` accumulating across attempts
-(so attempts 2+ stop early on consecutive-already-seen). Each new
+(with early stopping gated by scan evidence for new FF-091 histories). Each new
 candidate becomes workflow-owned as `CandidateEvidence`. The producer submits
 all new candidates to `DownloadAndStage` before awaiting their concurrent
 `StoreCandidate` observation inserts, so Postgres does not gate clip launch.
@@ -38,9 +38,8 @@ wait behind one claimant instead of repeating ffmpeg work. After a successful
 hash, new histories retain those follower URLs until the shared validation path
 has a real terminal result (FF-065). Histories started before FF-022 retain the
 versioned `VideoWorkflow` child command sequence.
-Wall-clock
-`max_age_minutes` filter
-(decisions.md 2026-07-23).
+Old histories retain the wall-clock `max_age_minutes` filter; new FF-091
+histories use the fixed search-window contract below.
 
 `DownloadAndStage` resolves the tweet and downloads its selected CDN variant
 inside one retryable activity. A 403 from the metadata endpoint is terminal
@@ -77,6 +76,32 @@ Temporal application errors with typed output details. Pre-FF-061 histories
 therefore execute their original retry chain. New histories make one activity
 call, decode those details in EventWorkflow, and advance only the unavailable
 counter.
+
+**Fixed search-window contract (FF-091; implemented locally, not deployed).**
+`LoadEventRecoveryState` initializes absent `metadata.search_window` from the
+stored event's `first_seen_at` minus the configured lookback, default three
+minutes. It never overwrites an existing boundary. The legacy config name
+`DISCOVERY_MAX_AGE_MINUTES` remains, but new histories use it once as a buffer
+before observation. Missing old workflow-input timestamps therefore do not
+require a current-time fallback. Existing malformed window state fails.
+
+SearchTweets passes the typed absolute window through the shared HTTP contract,
+without adding a relative limit. Usable browser responses must echo the applied
+window; an old browser cannot silently substitute its rolling limit. Exclusions
+still skip owned URLs, but the three-known-video shortcut starts disabled.
+Reaching the time boundary enables it; a permitted seen-stop preserves it.
+Capped, empty, unavailable, or unrecognized results disable it. Progress stores
+next-probe eligibility monotonically beside the existing counters and rejects
+a changed cutoff. A failed-run restart keeps the cutoff but disables the
+shortcut until reaching it again, since later partial-scan URLs may already be
+durable. Ordinary Temporal replay reconstructs the same run from its history.
+
+The `ff-091-fixed-search-window` marker preserves old activity payloads and
+relative semantics. No new activity registration or schema migration is needed;
+maintenance retains its 24-hour relative canary. Search counts, spacing, caps,
+deadlines, query strings, and downstream video work are unchanged. See the
+[decision](../decisions/2026-09-10-search-window-follows-first-observation.md)
+for remaining chronology/indexing and live request-cost limits.
 
 **Candidate failure contract (FF-002 + FF-022 + FF-060).** `download_error`
 stamps the persisted candidate `failed`; no staging object exists. New
@@ -161,10 +186,12 @@ not add activities, alter retry policies, gate decisions, or change the
 Selector's serialized ownership rules. Activity-stage duration therefore
 includes task-queue admission and retry backoff by design.
 
-**Twitter feed-classification contract (FF-051 + FF-061).** Every discovery attempt
-sends the same broad Latest query and the configured local age cutoff; the
-workflow does not add server-side time operators or grow the age window across
-attempts. Search measurement lines record `max_age_minutes`, `result_state`,
+**Twitter feed-classification contract (FF-051 + FF-061 + FF-091).** Every attempt
+sends the same broad Latest query and applies its time bound locally. FF-091
+fixes the lower timestamp across attempts; legacy histories retain a moving age
+limit. No server-side time operator is added. Search measurement lines record
+the applied `search_window` (or null for legacy), calculated
+`next_allow_seen_stop`, legacy `max_age_minutes` (zero with a fixed window), `result_state`,
 `stop_reason`, `scrolls`, `initial_articles`, `tweets_parsed`, and
 `video_tweets`. An explicit X empty state is usable. A `feed_timeout` is
 `unknown_timeout` and does not advance the logical attempt. The HTTP client

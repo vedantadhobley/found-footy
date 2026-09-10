@@ -8,6 +8,8 @@ import (
 	"time"
 
 	"github.com/mxschmitt/playwright-go"
+
+	twittercontract "github.com/vedantadhobley/found-footy/internal/contract/twittersearch"
 )
 
 type searchStats struct {
@@ -20,6 +22,7 @@ func (s *Service) scrollAndExtract(
 	page playwright.Page,
 	excludeIDs map[string]struct{},
 	maxAgeMinutes int,
+	window *twittercontract.SearchWindow,
 ) (videos []VideoRef, stopReason string, scrolls int, stats searchStats, err error) {
 	processed := make(map[string]struct{}) // tweet IDs seen in this scroll session
 	consecutiveSeen := 0
@@ -59,11 +62,9 @@ func (s *Service) scrollAndExtract(
 				continue
 			}
 
-			// Stop #1: organic tweet older than max_age_minutes → stop scroll.
-			// Only meaningful if we have an age (t.AgeMinutes > 0);
-			// missing age falls through (rare — Twitter usually renders
-			// the <time datetime> attribute).
-			if shouldStopAtAge(t, maxAgeMinutes) {
+			// Fixed event boundaries never advance with extraction/retry time.
+			// Missing timestamps still cannot prove that the floor was reached.
+			if shouldStopAtTime(t, maxAgeMinutes, window) {
 				return videos, stopAge, scrollCount, stats, nil
 			}
 
@@ -75,13 +76,11 @@ func (s *Service) scrollAndExtract(
 				continue
 			}
 
-			// Stop #4 (NEW vs Python): consecutive_already_seen counter.
-			// Counter increments on each excluded tweet, RESETS on any
-			// new-to-us tweet. Kills late-attempt scrolls through mostly
-			// exclude_urls-covered feeds.
+			// Three known video IDs save work only when prior scan evidence
+			// permits it. Legacy relative-window callers retain their old rule.
 			if _, excluded := excludeIDs[tid]; excluded {
 				consecutiveSeen++
-				if consecutiveSeen >= s.consecutiveSeenStop {
+				if consecutiveSeen >= s.consecutiveSeenStop && (window == nil || window.AllowSeenStop) {
 					return videos, stopConsecutiveSeen, scrollCount, stats, nil
 				}
 				continue
@@ -122,6 +121,16 @@ func (s *Service) scrollAndExtract(
 
 	// Stop #2: max_scrolls exhausted (loop counter fell off the top).
 	return videos, stopMaxScrolls, s.maxScrolls, stats, nil
+}
+
+// shouldStopAtTime applies exactly one bound. Unknown times preserve legacy
+// eligibility; promoted placement never establishes chronological coverage.
+func shouldStopAtTime(tweet extractedTweet, maxAgeMinutes int, window *twittercontract.SearchWindow) bool {
+	if window == nil {
+		return shouldStopAtAge(tweet, maxAgeMinutes)
+	}
+	published, err := time.Parse(time.RFC3339, tweet.Datetime)
+	return err == nil && !tweet.IsPromoted && published.Before(window.EarliestTweetAt)
 }
 
 func shouldStopAtAge(tweet extractedTweet, maxAgeMinutes int) bool {

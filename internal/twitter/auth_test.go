@@ -55,9 +55,8 @@ func (f *fakeBrowser) GetCookies() ([]Cookie, error) {
 	return f.getCookiesResult, nil
 }
 
-// Navigate isn't used by the auth flow; return nil to satisfy the
-// interface. Search tests that need Navigate go through the real
-// *Browser via testcontainers, not this fake.
+// Navigate is unused by auth tests. Synthetic handler tests override it with
+// a Page stub; real navigation remains a separately approved browser smoke.
 func (f *fakeBrowser) Navigate(
 	_ context.Context, _ string, _ time.Duration, _ func(playwright.Page),
 ) (playwright.Page, error) {

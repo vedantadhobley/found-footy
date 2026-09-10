@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/moby/moby/api/types/container"
 	"github.com/testcontainers/testcontainers-go"
 	"github.com/testcontainers/testcontainers-go/modules/postgres"
 
@@ -34,6 +35,9 @@ func SetupPG(ctx context.Context, t *testing.T) (*pg.Pool, testcontainers.Contai
 		postgres.WithPassword("ffpass"),
 		postgres.WithInitScripts(schemaPath),
 		postgres.BasicWaitStrategies(),
+		// Scenario databases must not compete unboundedly with live services.
+		testcontainers.WithHostConfigModifier(func(h *container.HostConfig) { h.Memory = 512 << 20 }),
+		testcontainers.WithCmd("postgres", "-c", "shared_buffers=64MB", "-c", "work_mem=4MB", "-c", "maintenance_work_mem=64MB"),
 	)
 	if err != nil {
 		t.Fatalf("harness.SetupPG: container start: %v", err)

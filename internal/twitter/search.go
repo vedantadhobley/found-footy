@@ -107,6 +107,10 @@ func (s *Service) handleSearch(w http.ResponseWriter, r *http.Request) {
 		writeSearchError(w, http.StatusBadRequest, errClassEmptyQuery, "query is required")
 		return
 	}
+	if err := req.ValidateWindow(); err != nil {
+		writeSearchError(w, http.StatusBadRequest, errClassBadRequest, err.Error())
+		return
+	}
 
 	maxAgeMinutes := req.MaxAgeMinutes
 	if maxAgeMinutes <= 0 {
@@ -191,6 +195,7 @@ func (s *Service) handleSearch(w http.ResponseWriter, r *http.Request) {
 			s.SetState(StateDegraded, "search feed unavailable: "+string(resultState))
 		}
 		writeSearchOK(w, SearchResponse{
+			Window:      req.Window,
 			Status:      status,
 			ResultState: resultState,
 			Evidence:    evidence,
@@ -214,7 +219,7 @@ func (s *Service) handleSearch(w http.ResponseWriter, r *http.Request) {
 		Timeout: playwright.Float(2000),
 	})
 
-	videos, stopReason, scrolls, stats, extractErr := s.scrollAndExtract(r.Context(), page, excludeIDs, maxAgeMinutes)
+	videos, stopReason, scrolls, stats, extractErr := s.scrollAndExtract(r.Context(), page, excludeIDs, maxAgeMinutes, req.Window)
 	if extractErr != nil {
 		writeSearchError(w, http.StatusInternalServerError, errClassInternal, "extract: "+extractErr.Error())
 		return
@@ -225,6 +230,7 @@ func (s *Service) handleSearch(w http.ResponseWriter, r *http.Request) {
 	_ = s.BackupCookies(r.Context())
 
 	writeSearchOK(w, SearchResponse{
+		Window:          req.Window,
 		Status:          "success",
 		ResultState:     twittercontract.ResultRendered,
 		Evidence:        evidenceCollector.snapshot(page),

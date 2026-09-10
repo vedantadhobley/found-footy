@@ -1,7 +1,6 @@
-// Tests for the pure-Go helpers of the search endpoint. The scroll
-// loop + DOM extraction + HTTP handler are covered end-to-end via the
-// dev stack smoke tests — Playwright.Page's interface surface is
-// large enough that faking it here would be more code than value.
+// Tests for the pure-Go helpers of the search endpoint. Offline scroll-loop
+// conformance lives in search_window_conformance_test.go; real DOM extraction
+// and browser navigation still require separately approved dev smoke tests.
 package twitter
 
 import (

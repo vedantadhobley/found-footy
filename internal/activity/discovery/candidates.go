@@ -58,6 +58,9 @@ type LoadEventRecoveryStateInput struct {
 	EventID      uuid.UUID
 	WorkflowType string
 	WorkflowID   string
+	// Positive only for FF-091 histories; initialize the fixed floor from the
+	// stored event observation, never execution time. Zero retains legacy reads.
+	SearchLookbackMinutes int `json:"search_lookback_minutes,omitempty"`
 }
 
 // LoadEventRecoveryStateOutput is the durable progress a replacement
@@ -68,12 +71,14 @@ type LoadEventRecoveryStateOutput struct {
 	LastSearchState     twittercontract.ResultState
 	LastSearchEvidence  twittercontract.SearchEvidence
 	Candidates          []RecoveryCandidate
+	Window              *twittercontract.SearchWindow `json:"window,omitempty"`
 }
 
 // LoadEventRecoveryState reads the monotonic attempt checkpoint and every
 // candidate URL already owned by the event. The checklist row must exist before
 // spawn; failing closed here prevents an untracked recovery run from repeating
-// side effects without durable ownership state.
+// side effects without durable ownership state. FF-091 inputs also initialize
+// an absent fixed search window before returning recovery data.
 func (a *Activities) LoadEventRecoveryState(
 	ctx context.Context,
 	in LoadEventRecoveryStateInput,
@@ -82,6 +87,13 @@ func (a *Activities) LoadEventRecoveryState(
 	defer cancel()
 
 	var out LoadEventRecoveryStateOutput
+	if in.SearchLookbackMinutes != 0 {
+		window, err := a.loadSearchWindow(callCtx, in)
+		if err != nil {
+			return out, err
+		}
+		out.Window = &window
+	}
 	var evidenceJSON []byte
 	if err := a.Pool.QueryRow(callCtx, `
 		SELECT COALESCE((metadata->>'attempts_completed')::int, 0),
@@ -163,11 +175,13 @@ type RecordDiscoveryProgressInput struct {
 	UnavailableAttempts int                             `json:"unavailable_attempts,omitempty"`
 	LastSearchState     twittercontract.ResultState     `json:"last_search_state,omitempty"`
 	LastSearchEvidence  *twittercontract.SearchEvidence `json:"last_search_evidence,omitempty"`
+	Window              *twittercontract.SearchWindow   `json:"window,omitempty"`
 }
 
 // RecordDiscoveryProgress monotonically advances both counters. Older replayed
 // progress cannot replace the latest state/evidence. A missing checklist row is
-// an invariant failure because monitor must register before spawning.
+// an invariant failure because monitor must register before spawning. Fixed-
+// window progress may update eligibility, but cannot replace the chosen cutoff.
 func (a *Activities) RecordDiscoveryProgress(ctx context.Context, in RecordDiscoveryProgressInput) error {
 	callCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
@@ -179,6 +193,16 @@ func (a *Activities) RecordDiscoveryProgress(ctx context.Context, in RecordDisco
 	evidenceJSON, err := json.Marshal(evidence)
 	if err != nil {
 		return fmt.Errorf("discovery.RecordDiscoveryProgress: encode evidence: %w", err)
+	}
+	var windowJSON []byte
+	if in.Window != nil {
+		if err := in.Window.Validate(); err != nil {
+			return fmt.Errorf("discovery.RecordDiscoveryProgress: %w", err)
+		}
+		windowJSON, err = json.Marshal(in.Window)
+		if err != nil {
+			return fmt.Errorf("discovery.RecordDiscoveryProgress: encode window: %w", err)
+		}
 	}
 	tag, err := a.Pool.Exec(callCtx, `
 		UPDATE event_downstream_workflows
@@ -216,15 +240,24 @@ func (a *Activities) RecordDiscoveryProgress(ctx context.Context, in RecordDisco
 				ELSE COALESCE(metadata->'last_search_evidence', '{}'::jsonb)
 			END,
 			true
-		)
+		) || CASE
+			WHEN $8::jsonb IS NOT NULL AND $4::int + $5::int >=
+			     COALESCE((metadata->>'attempts_completed')::int, 0) +
+			     COALESCE((metadata->>'unavailable_attempts')::int, 0)
+			THEN jsonb_build_object('search_window', $8::jsonb)
+			ELSE '{}'::jsonb
+		END
 		WHERE event_id = $1 AND workflow_type = $2 AND workflow_id = $3
+		  AND ($8::jsonb IS NULL OR
+		       (metadata->'search_window'->>'earliest_tweet_at')::timestamptz =
+		       ($8::jsonb->>'earliest_tweet_at')::timestamptz)
 	`, in.EventID, in.WorkflowType, in.WorkflowID, in.Attempt,
-		in.UnavailableAttempts, in.LastSearchState, evidenceJSON)
+		in.UnavailableAttempts, in.LastSearchState, evidenceJSON, windowJSON)
 	if err != nil {
 		return fmt.Errorf("discovery.RecordDiscoveryProgress: event=%s attempt=%d: %w", in.EventID, in.Attempt, err)
 	}
 	if tag.RowsAffected() != 1 {
-		return fmt.Errorf("discovery.RecordDiscoveryProgress: checklist missing for event=%s workflow=%s",
+		return fmt.Errorf("discovery.RecordDiscoveryProgress: checklist missing or search boundary changed for event=%s workflow=%s",
 			in.EventID, in.WorkflowID)
 	}
 	return nil

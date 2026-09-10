@@ -132,6 +132,9 @@ func NewClient(cfg config.TwitterConfig, ins *Instruments) (*Client, error) {
 // addr uses the shared service (c.baseURL) — the pre-#160 path and the
 // fallback when the fleet is disabled. Bounded by cfg.SearchTimeout.
 func (c *Client) Search(ctx context.Context, addr string, req SearchRequest) (*SearchResponse, error) {
+	if err := req.ValidateWindow(); err != nil {
+		return nil, fmt.Errorf("twitter.Search: %w", err)
+	}
 	base := c.baseURL
 	if addr != "" {
 		base = addr
@@ -220,6 +223,15 @@ func (c *Client) Search(ctx context.Context, addr string, req SearchRequest) (*S
 	if out.ResultState != "" && !out.ResultState.Known() {
 		c.ins.calls.WithLabelValues("search", "failure").Inc()
 		return nil, fmt.Errorf("twitter.Search: unknown result_state %q", out.ResultState)
+	}
+	// Older browsers ignore unknown request fields. Never treat their rolling
+	// age stop as evidence that the requested fixed floor was reached. Preserve
+	// classified unavailable responses even without an echo: they cannot grant
+	// seen-stop eligibility or contribute candidates.
+	if req.Window != nil && (out.ResultState.Usable() || out.ResultState == "") &&
+		(out.Window == nil || !req.Window.Equal(*out.Window)) {
+		c.ins.calls.WithLabelValues("search", "failure").Inc()
+		return nil, fmt.Errorf("twitter.Search: browser did not apply the requested search window")
 	}
 	c.ins.calls.WithLabelValues("search", resultMetricOutcome(out.ResultState, "success")).Inc()
 	fields := []logging.Field{

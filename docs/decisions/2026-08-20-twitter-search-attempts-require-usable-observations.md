@@ -59,6 +59,9 @@ from an opaque activity chain to an explicit workflow-level classified probe.
 
 ## Consequences
 
+- [FF-091](./2026-09-10-search-window-follows-first-observation.md) later fixes
+  the event-relative time boundary and guards known-video early stops; the
+  usable/unavailable budgets in this decision remain unchanged.
 - Fifteen means 15 usable X observations, not 15 HTTP responses.
 - New histories remain bounded at 30 SearchTweets activity executions with
   default configuration. A failed per-event transport can add one static-service
