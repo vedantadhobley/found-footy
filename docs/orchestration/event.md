@@ -77,7 +77,7 @@ therefore execute their original retry chain. New histories make one activity
 call, decode those details in EventWorkflow, and advance only the unavailable
 counter.
 
-**Fixed search-window contract (FF-091; implemented locally, not deployed).**
+**Fixed search-window contract (FF-091; deployed 2026-09-10 as `e344cf6`).**
 `LoadEventRecoveryState` initializes absent `metadata.search_window` from the
 stored event's `first_seen_at` minus the configured lookback, default three
 minutes. It never overwrites an existing boundary. The legacy config name
