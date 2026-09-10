@@ -48,6 +48,10 @@ exclude `scratch-audit-*/` forensic artifacts.
 For a built headless image, run
 `bash scripts/smoke_twitter_storage.sh <test-image>`. This separately tests the
 final image metadata and a legacy-mount-to-writable-layer Compose transition.
+The image-volume template accepts omitted, null, or empty `Volumes` metadata
+as zero but still counts declared volumes for rejection. Offline tests execute
+the script's actual template with strict missing-key handling and reject absent
+or null image configuration rather than treating inspection failure as success.
 Synthetic cookie and profile sentinels prove that restart retains the private
 profile, recreation clears it, and cookie binds plus named login storage
 survive. The isolated, capped test containers have no network or real browser;

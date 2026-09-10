@@ -123,6 +123,8 @@ no implicit volumes. Cookie-directory binds and the VNC named profile remain
 persistent. Before rollout, run
 `bash scripts/smoke_twitter_storage.sh <built-headless-image>` against the
 candidate image. It uses isolated synthetic sentinels, not real authentication.
+The metadata guard treats omitted/null/empty image-volume maps as zero; declared
+volumes and image-inspection failures still fail before any test resources start.
 After an approved rollout, verify static and newly provisioned search containers
 have only the cookie bind and no `/data` mount. Already detached anonymous
 volumes require a separate ownership audit and deletion approval; rollout is
