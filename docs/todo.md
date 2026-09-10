@@ -51,7 +51,7 @@ the current branch.
 
 ### FF-091 — Moving search age window can skip outage-period posts
 
-- **Status:** `implemented`
+- **Status:** `validating`
 - **Severity:** P1
 - **Evidence:** `TestSearchWindowPolicies/five_minute_outage` reproduces unseen
   posts falling below the moving cutoff before a successful retry. The real
@@ -67,7 +67,7 @@ the current branch.
   reference. Removing all pre-observation allowance excludes posts that precede
   our poll observation. Tests and limits are in the
   [experiment](./design/audits/twitter-search-window-2026-09-10.md).
-- **Implementation (2026-09-10 UTC; local, not deployed):** New histories initialize
+- **Implementation (2026-09-10 UTC; deployed as `e344cf6`):** New histories initialize
   a fixed cutoff from stored event `first_seen_at` minus the configured buffer,
   default three minutes, in existing downstream metadata. The known-video
   shortcut starts disabled; reaching the floor grants it, an eligible seen-stop
@@ -79,11 +79,13 @@ the current branch.
 - **Verification:** Full `make check`, targeted race checks, synthetic HTTP and
   real scroll-loop cases, and real-Postgres initialization/progress/recovery
   regressions passed. Changed-document link targets and whitespace checks passed.
-- **Next:** Push, then separately approve a quiet-window worker/browser rollout.
-  Observe a natural fixed-window search, shortcut transition, and recovery;
+- **Rollout:** All four application processes verified `e344cf6`; health, REST,
+  authentication, cookie backup, and resumed polling passed. See the
+  [release evidence](./history/search-window-and-cleanup-rollout-2026-09-10.md).
+- **Next:** Observe a natural fixed-window search, shortcut transition, and recovery;
   measure actual timeline requests before claiming a rate/cost benefit.
 - **Boundary:** No migration, query-string change, frontend change, or production
-  mutation. Three minutes is an initial buffer, not a guarantee against very late
+  data repair. Three minutes is an initial buffer, not a guarantee against very late
   vendor reporting. X ordering/indexing/hydration still limit recall. Wider live
   captures need separate approval; shared rate admission remains FF-038.
 
@@ -119,6 +121,12 @@ the current branch.
   and its workflow removes the container normally. Audit
   existing anonymous volumes without assuming an unreferenced volume belongs
   to this project; deletion requires separate approval for proven targets.
+- **Tooling follow-up (2026-09-10):** The storage smoke's direct `.Config.Volumes`
+  template fails when Docker omits the absent map. The new image passed the full
+  smoke with an invocation-only `index`/`with` fallback treating absence as zero;
+  make that compatibility fix durable in the smoke script. Runtime storage is
+  unaffected. Details are in the
+  [September 10 release evidence](./history/search-window-and-cleanup-rollout-2026-09-10.md).
 - **Boundary:** The separately approved legacy named-volume cleanup reclaimed
   roughly 102 GB but does not fix this current path. Current anonymous-volume
   disk usage has not been attributed. See the
@@ -1045,7 +1053,7 @@ the current branch.
 | FF-070 | P2 | `implemented` | Typed activation, completion, detection, stability, and removal records now commit inside the owning Postgres state transaction. The standalone Composer and ignored-error call sites are gone; audit failure rolls state back for activity retry. | Release the worker and verify one natural event produces detected/stable rows while an idempotent monitor retry does not duplicate either transition. |
 | FF-071 | P2 | `implemented` | Composite foreign keys now enforce event/fixture identity across assets, shares, candidates, credits, and supersession. Named checks enforce complete removal state, media/hash shape, non-negative candidate measurements, and positive popularity; domain validation mirrors local value/state rules. The ordered migration preflights historical rows and refuses ambiguous repair. | Run the FF-071 migration before the application rollout; verify its ledger/stamp and one natural placement under the positive-popularity contract. |
 | FF-072 | P2 | `confirmed` | A new accepted candidate is copied from Garage `staging/` to its deterministic final `assets/` key before the placement transaction. An exhausted or ambiguous database failure can therefore leave final bytes without a `video_assets` owner row; FF-024 covers only `staging/`. | Make final-object reconciliation explicit: either prove retry ownership before copy or sweep only age-bounded final keys that have no matching durable asset, without deleting an in-flight placement. |
-| FF-073 | P2 | `implemented` | Browser ownership now follows debounce/checklists; sweeps pin inspected Docker IDs, preserve concurrent-not-found success, and join removal failures. Versioned staging cleanup has bounded retries and survives vendor-poll failure. | Full and targeted race gates passed. Separately approve worker rollout, then verify normal browser release and a natural eligible-orphan sweep. No schema change or old-volume deletion. |
+| FF-073 | P2 | `validating` | Browser ownership now follows debounce/checklists; sweeps pin inspected Docker IDs, preserve concurrent-not-found success, and join removal failures. Versioned staging cleanup has bounded retries and survives vendor-poll failure. | Deployed as `e344cf6` on September 10. Full and targeted race gates passed; verify normal browser release and a natural eligible-orphan sweep. No schema change or old-volume deletion. |
 | FF-074 | P3 | `confirmed` | The post-release audit must include durable-data minimization, not only code paths: unused tables/columns/indexes, duplicated or derivable fields, compatibility residue, retention gaps, and aggregates that should be combined may still remain after the rebuild. | Run a code-first schema ownership audit plus read-only production cardinality/null/age/index evidence. Turn each accepted removal or combination into a bounded migration issue; do not mutate production during the audit. |
 
 ### FF-062 — removed event reappearance was swallowed by its tombstone
@@ -1338,7 +1346,7 @@ the current branch.
   not merely event liveness. Reaping must attempt all eligible containers and
   return aggregated failures. Concurrent/double release must treat Docker
   remove-not-found as success after ownership has already been established.
-- **Implementation (2026-09-09, not deployed):** The existing rows now project
+- **Implementation (2026-09-09; deployed 2026-09-10 as `e344cf6`):** The existing rows now project
   warmup ownership across the debounce/spawn handoff and keep every pending
   downstream. Completed discovery no longer inherits fixture-wide ownership.
   The reaper targets the listed immutable Docker ID, rechecks its scope, and
@@ -1354,9 +1362,12 @@ the current branch.
   fleet activities, workflows, and targeted PG ownership cases. `make check`
   passed, including full integration/scenario tests; changed-document file links
   and whitespace checks also passed.
+- **Rollout:** Both production workers verified `e344cf6` with their existing
+  schedules and successful post-release polls. Natural eligible-orphan removal
+  and failure retry remain unobserved. See the
+  [release evidence](./history/search-window-and-cleanup-rollout-2026-09-10.md).
 - **Boundary:** Pending checklists are still conservative ownership, not proof
-  of Temporal liveness. No production rollout, data repair, or detached-volume
-  cleanup is part of this implementation.
+  of Temporal liveness. No data repair or detached-volume cleanup was performed.
 
 ### FF-074 — post-release durable-data minimization audit
 

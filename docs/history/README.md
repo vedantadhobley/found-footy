@@ -5,6 +5,9 @@ preserve sequence and rationale but do not define current behavior or work.
 Use the [`docs` routing index](../README.md) for current ledgers and
 [`todo.md`](../todo.md) for active issues.
 
+- [Search-window and cleanup rollout — 2026-09-10](./search-window-and-cleanup-rollout-2026-09-10.md)
+  — `e344cf6` deployment, fixed-window and Firefox ownership scope,
+  health/storage verification, and remaining natural-event acceptance.
 - [Storage and diagnostics rollout — 2026-09-09](./storage-and-diagnostics-rollout-2026-09-09.md)
   — `a7c9f53` deployment, disposable-profile checks, resumed polling, and
   remaining natural-event validation.

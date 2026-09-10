@@ -49,7 +49,7 @@ event browser still needs lifecycle verification. Previously detached volumes
 require separate, ownership-verified cleanup. See the
 [storage decision](./decisions/2026-09-09-search-profiles-follow-container-removal.md).
 
-FF-073 (implemented locally, not deployed) narrows reaper ownership to warmup
+FF-073 (deployed 2026-09-10 as `e344cf6`) narrows reaper ownership to warmup
 and unfinished downstream work. Cleanup pins the inspected container ID and
 surfaces joined failures for bounded Temporal retry. Completed discovery no longer
 retains a failed-release browser just because the fixture is active. See the
@@ -262,7 +262,7 @@ exhausted activity call to an unavailable probe.
 Scroll jitter is 250–500ms (tightened from 0.5–3s on 2026-08-05), accepts equal
 bounds without panic, and is cancellable through the request context.
 
-FF-091 is implemented locally, not deployed. Discovery begins with the shortcut
+FF-091 is deployed as `e344cf6` (2026-09-10). Discovery begins with the shortcut
 disabled and enables it after a rendered scan reaches the fixed cutoff. An
 eligible seen-stop preserves permission; every other stop or unavailable probe
 revokes it. Failed-run recovery keeps the timestamp but disables the shortcut
