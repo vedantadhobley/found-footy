@@ -244,9 +244,10 @@ type SearchTweetsInput struct {
 	// attempts. Empty on the first attempt. The Go Twitter service uses it for
 	// per-tweet skip and the consecutive-seen early stop.
 	ExcludeURLs []string
-	// MaxAgeMinutes bounds how far back Twitter scrolls. Default 5
-	// (Python's default) if zero.
+	// MaxAgeMinutes is the legacy moving age bound. Default 3 if zero and
+	// Window is absent; fixed-window callers must leave this field zero.
 	MaxAgeMinutes int
+	Window        *twittercontract.SearchWindow `json:"window,omitempty"`
 	// InstanceAddr targets a per-event Firefox instance (#160), e.g.
 	// http://ff-firefox-ev-<id>:8888. Empty → the shared twitter service
 	// (fleet disabled, or pre-#160). The EventWorkflow derives it from
@@ -291,14 +292,19 @@ func (a *Activities) SearchTweets(ctx context.Context, in SearchTweetsInput) (Se
 		return SearchTweetsOutput{}, fmt.Errorf("discovery.SearchTweets: empty query")
 	}
 	maxAge := in.MaxAgeMinutes
-	if maxAge == 0 {
+	if maxAge == 0 && in.Window == nil {
 		maxAge = fallbackMaxAgeMinutes
 	}
-	resp, err := a.Twitter.Search(ctx, in.InstanceAddr, twitter.SearchRequest{
+	req := twitter.SearchRequest{
 		Query:         in.Query,
 		ExcludeURLs:   in.ExcludeURLs,
 		MaxAgeMinutes: maxAge,
-	})
+		Window:        in.Window,
+	}
+	if err := req.ValidateWindow(); err != nil {
+		return SearchTweetsOutput{}, fmt.Errorf("discovery.SearchTweets: %w", err)
+	}
+	resp, err := a.Twitter.Search(ctx, in.InstanceAddr, req)
 	if err != nil {
 		var searchErr *twitter.SearchError
 		if errors.As(err, &searchErr) && searchErr.ResultState.Known() {

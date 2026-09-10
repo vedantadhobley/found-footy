@@ -5,6 +5,9 @@ import (
 	"context"
 	"errors"
 	"testing"
+	"time"
+
+	"github.com/stretchr/testify/require"
 
 	"go.temporal.io/sdk/temporal"
 
@@ -15,6 +18,34 @@ import (
 type fakeSearchClient struct {
 	out *twitter.SearchResponse
 	err error
+}
+
+// capturedWindowClient checks the activity's shared request, not a second wire DTO.
+type capturedWindowClient struct {
+	request twitter.SearchRequest
+}
+
+// Search records the request without touching a browser or shared X quota.
+func (f *capturedWindowClient) Search(_ context.Context, _ string, req twitter.SearchRequest) (*twitter.SearchResponse, error) {
+	f.request = req
+	return &twitter.SearchResponse{ResultState: twittercontract.ResultRendered, Window: req.Window}, nil
+}
+
+// TestSearchTweetsFixedWindowDoesNotAddRelativeDefault pins the activity/client boundary.
+func TestSearchTweetsFixedWindowDoesNotAddRelativeDefault(t *testing.T) {
+	client := &capturedWindowClient{}
+	activities := &Activities{Twitter: client}
+	window := &twittercontract.SearchWindow{EarliestTweetAt: time.Date(2026, 9, 9, 20, 0, 0, 0, time.UTC)}
+	_, err := activities.SearchTweets(context.Background(), SearchTweetsInput{Query: "goal", Window: window})
+	require.NoError(t, err)
+	require.Zero(t, client.request.MaxAgeMinutes)
+	require.Equal(t, window, client.request.Window)
+	_, err = activities.SearchTweets(context.Background(), SearchTweetsInput{Query: "goal", Window: window, MaxAgeMinutes: 3})
+	require.Error(t, err)
+	_, err = activities.SearchTweets(context.Background(), SearchTweetsInput{Query: "goal"})
+	require.NoError(t, err)
+	require.Nil(t, client.request.Window)
+	require.Equal(t, 3, client.request.MaxAgeMinutes)
 }
 
 func (f fakeSearchClient) Search(

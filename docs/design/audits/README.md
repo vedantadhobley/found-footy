@@ -5,6 +5,9 @@ Every surviving finding must have a stable disposition in
 [`todo.md`](../../todo.md), and any old claim must be verified against current
 code before work begins.
 
+- [Twitter search-window experiment — 2026-09-10 UTC](./twitter-search-window-2026-09-10.md)
+  — offline moving/fixed timestamp comparison, pre-observation and partial-scan
+  counterexamples, real-loop conformance, and remaining coverage/cost limits.
 - [Pre-rollout evidence — 2026-09-08](./pre-rollout-evidence-2026-09-08.md) —
   vision timeout/admission burst, deferred-fixture shadow contamination,
   durable download classification, and preserved cadence/variant review data.

@@ -49,6 +49,44 @@ the current branch.
 
 ## Confirmed issues
 
+### FF-091 — Moving search age window can skip outage-period posts
+
+- **Status:** `implemented`
+- **Severity:** P1
+- **Evidence:** `TestSearchWindowPolicies/five_minute_outage` reproduces unseen
+  posts falling below the moving cutoff before a successful retry. The real
+  scroll-loop conformance test pins the deployed baseline. September 9 Eastern
+  traffic also recorded a multi-event HTTP 429 window; later searches recovered,
+  but those summaries do not prove that a specific unique goal clip was lost.
+- **Cause:** Every extraction recalculates tweet age against wall time.
+  FF-061 preserves 15 usable observations but does not preserve their time
+  coverage. Three known-video IDs already stop a scan; an earlier partial scan
+  can therefore hide an older unseen post even with a fixed timestamp.
+- **Research (2026-09-10 UTC):** Offline cases compare rolling three minutes,
+  fixed `first_seen_at - 3m`, exact `first_seen_at`, and a bounded no-seen-stop
+  reference. Removing all pre-observation allowance excludes posts that precede
+  our poll observation. Tests and limits are in the
+  [experiment](./design/audits/twitter-search-window-2026-09-10.md).
+- **Implementation (2026-09-10 UTC; local, not deployed):** New histories initialize
+  a fixed cutoff from stored event `first_seen_at` minus the configured buffer,
+  default three minutes, in existing downstream metadata. The known-video
+  shortcut starts disabled; reaching the floor grants it, an eligible seen-stop
+  preserves it, and capped/empty/unavailable results revoke it. Failed-run
+  recovery restores the cutoff but disables the shortcut because uncheckpointed
+  URLs may already be durable. Usable browser responses must acknowledge the
+  applied window. Old histories and maintenance retain their relative windows.
+  See the [decision](./decisions/2026-09-10-search-window-follows-first-observation.md).
+- **Verification:** Full `make check`, targeted race checks, synthetic HTTP and
+  real scroll-loop cases, and real-Postgres initialization/progress/recovery
+  regressions passed. Changed-document link targets and whitespace checks passed.
+- **Next:** Push, then separately approve a quiet-window worker/browser rollout.
+  Observe a natural fixed-window search, shortcut transition, and recovery;
+  measure actual timeline requests before claiming a rate/cost benefit.
+- **Boundary:** No migration, query-string change, frontend change, or production
+  mutation. Three minutes is an initial buffer, not a guarantee against very late
+  vendor reporting. X ordering/indexing/hydration still limit recall. Wider live
+  captures need separate approval; shared rate admission remains FF-038.
+
 ### FF-090 — Firefox container removal leaves anonymous profile volumes
 
 - **Status:** `validating`

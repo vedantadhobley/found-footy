@@ -103,6 +103,8 @@ const (
 	ff085EventUpdateVersion           = workflow.Version(1)
 	ff087VisionFailureChangeID        = "ff-087-vision-failure-detail"
 	ff087VisionFailureVersion         = workflow.Version(1)
+	ff091SearchWindowChangeID         = "ff-091-fixed-search-window"
+	ff091SearchWindowVersion          = workflow.Version(1)
 
 	// Pre-FF-061 histories retain FF-017's roughly 0/10/30/60 activity retry
 	// chain for replay compatibility. New histories use one activity attempt
@@ -332,6 +334,9 @@ func EventWorkflow(ctx workflow.Context, in EventWorkflowInput) (EventWorkflowOu
 		workflow.DefaultVersion,
 		ff017BrowserRestartVersion,
 	) != workflow.DefaultVersion
+	fixedSearchWindow := workflow.GetVersion(ctx,
+		ff091SearchWindowChangeID, workflow.DefaultVersion, ff091SearchWindowVersion,
+	) != workflow.DefaultVersion && recoveryEnabled
 	workflowID := workflow.GetInfo(ctx).WorkflowExecution.ID
 	var recoveryOut discoveryactivity.LoadEventRecoveryStateOutput
 	if recoveryEnabled {
@@ -351,14 +356,33 @@ func EventWorkflow(ctx workflow.Context, in EventWorkflowInput) (EventWorkflowOu
 				MaximumAttempts: discoveryPGRetryAttempts,
 			},
 		})
+		recoveryInput := discoveryactivity.LoadEventRecoveryStateInput{
+			EventID: in.EventID, WorkflowType: "discovery", WorkflowID: workflowID,
+		}
+		if fixedSearchWindow {
+			recoveryInput.SearchLookbackMinutes = cfgOut.MaxAgeMinutes
+			if recoveryInput.SearchLookbackMinutes <= 0 {
+				recoveryInput.SearchLookbackMinutes = 3
+			}
+		}
 		if err := workflow.ExecuteActivity(recoveryCtx,
 			(*discoveryactivity.Activities).LoadEventRecoveryState,
-			discoveryactivity.LoadEventRecoveryStateInput{
-				EventID: in.EventID, WorkflowType: "discovery", WorkflowID: workflowID,
-			},
+			recoveryInput,
 		).Get(recoveryCtx, &recoveryOut); err != nil {
 			return out, err
 		}
+	}
+	var searchWindow *twittercontract.SearchWindow
+	if fixedSearchWindow {
+		if recoveryOut.Window == nil {
+			return out, fmt.Errorf("fixed search window missing from recovery")
+		}
+		if err := recoveryOut.Window.Validate(); err != nil {
+			return out, err
+		}
+		window := *recoveryOut.Window
+		window.AllowSeenStop = false // Failed-run recovery never trusts partial-scan exclusions.
+		searchWindow = &window
 	}
 
 	// Exclusions are now durable across failed executions, not only replay of
@@ -439,6 +463,7 @@ func EventWorkflow(ctx workflow.Context, in EventWorkflowInput) (EventWorkflowOu
 					EventID: in.EventID, WorkflowType: "discovery", WorkflowID: workflowID,
 					Attempt: completedAttempts, UnavailableAttempts: unavailableAttempts,
 					LastSearchState: state, LastSearchEvidence: evidence,
+					Window: searchWindow,
 				},
 			).Get(storeOptions, nil)
 		}
@@ -456,13 +481,19 @@ func EventWorkflow(ctx workflow.Context, in EventWorkflowInput) (EventWorkflowOu
 			(!availabilityAwareSearch || unavailableAttempts < maxUnavailableAttempts) {
 			var searchOut discoveryactivity.SearchTweetsOutput
 			searchStartedAt := workflow.Now(gctx)
+			searchInput := discoveryactivity.SearchTweetsInput{
+				EventID: in.EventID, FixtureID: in.FixtureID, Query: query,
+				ExcludeURLs: excludeURLs, MaxAgeMinutes: cfgOut.MaxAgeMinutes,
+				InstanceAddr: instanceAddr,
+			}
+			if searchWindow != nil {
+				applied := *searchWindow
+				searchInput.Window = &applied
+				searchInput.MaxAgeMinutes = 0
+			}
 			searchErr := workflow.ExecuteActivity(searchOptions,
 				(*discoveryactivity.Activities).SearchTweets,
-				discoveryactivity.SearchTweetsInput{
-					EventID: in.EventID, FixtureID: in.FixtureID, Query: query,
-					ExcludeURLs: excludeURLs, MaxAgeMinutes: cfgOut.MaxAgeMinutes,
-					InstanceAddr: instanceAddr,
-				}).Get(searchOptions, &searchOut)
+				searchInput).Get(searchOptions, &searchOut)
 			if availabilityAwareSearch && searchErr != nil {
 				if classified, ok := classifiedSearchFailure(searchErr); ok {
 					searchOut = classified
@@ -507,6 +538,14 @@ func EventWorkflow(ctx workflow.Context, in EventWorkflowInput) (EventWorkflowOu
 				}
 			}
 			searchFinishedAt := workflow.Now(gctx)
+			if searchWindow != nil {
+				nextState := resultState
+				if searchErr != nil || !usableObservation {
+					nextState = twittercontract.ResultUnknownTimeout
+				}
+				next := searchWindow.After(nextState, searchOut.StopReason)
+				searchWindow = &next
+			}
 			emitWorkflowMeasurement(log, vocabulary.ActionEventSearchMeasured,
 				"event search attempt measured",
 				"event_id", in.EventID,
@@ -517,7 +556,9 @@ func EventWorkflow(ctx workflow.Context, in EventWorkflowInput) (EventWorkflowOu
 				"result_state", resultState,
 				"duration_ms", elapsedMilliseconds(searchStartedAt, searchFinishedAt),
 				"event_elapsed_ms", elapsedMilliseconds(startedAt, searchFinishedAt),
-				"max_age_minutes", cfgOut.MaxAgeMinutes,
+				"max_age_minutes", searchInput.MaxAgeMinutes,
+				"search_window", searchInput.Window,
+				"next_allow_seen_stop", searchWindow != nil && searchWindow.AllowSeenStop,
 				"videos_returned", searchOut.Count,
 				"stop_reason", searchOut.StopReason,
 				"scrolls", searchOut.Scrolls,

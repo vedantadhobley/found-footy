@@ -11,6 +11,7 @@
 package workflow_test
 
 import (
+	"context"
 	"sync"
 	"testing"
 	"time"
@@ -25,6 +26,7 @@ import (
 	livefeedactivity "github.com/vedantadhobley/found-footy/internal/activity/livefeed"
 	videoactivity "github.com/vedantadhobley/found-footy/internal/activity/video"
 	visionactivity "github.com/vedantadhobley/found-footy/internal/activity/vision"
+	twittercontract "github.com/vedantadhobley/found-footy/internal/contract/twittersearch"
 	"github.com/vedantadhobley/found-footy/internal/infra/twitter"
 	"github.com/vedantadhobley/found-footy/internal/workflow"
 )
@@ -226,7 +228,15 @@ func baseEventEnvWithOptions(
 			Found:         true,
 		}, nil).Maybe()
 	env.OnActivity("LoadEventRecoveryState", mock.Anything, mock.Anything).
-		Return(recovery, nil).Maybe()
+		Return(func(_ context.Context, in discoveryactivity.LoadEventRecoveryStateInput) (discoveryactivity.LoadEventRecoveryStateOutput, error) {
+			out := recovery
+			if in.SearchLookbackMinutes > 0 && out.Window == nil {
+				out.Window = &twittercontract.SearchWindow{
+					EarliestTweetAt: time.Date(2026, 9, 9, 20, 0, 0, 0, time.UTC).Add(-time.Duration(in.SearchLookbackMinutes) * time.Minute),
+				}
+			}
+			return out, nil
+		}).Maybe()
 	env.OnActivity("RecordDiscoveryProgress", mock.Anything, mock.Anything).
 		Return(nil).Maybe()
 	env.OnActivity("LoadEventAssets", mock.Anything, mock.Anything).

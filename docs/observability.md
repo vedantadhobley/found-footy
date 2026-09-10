@@ -130,6 +130,13 @@ counter. The Twitter HTTP client emits the same result fields plus bounded,
 secret-free evidence: final route/title, app-shell/empty/error bits,
 SearchTimeline status/failure, and rate-limit headers when present.
 
+FF-091 adds the applied `search_window` object and calculated
+`next_allow_seen_stop` to the existing workflow search measurement. The window
+contains the absolute timestamp and the permission used for that probe;
+`max_age_minutes` is zero for fixed-window requests and retains its relative
+value for legacy requests. These are log fields, not metric labels. Durable
+next-probe eligibility only advances when its progress checkpoint succeeds.
+
 `found_footy_twitter_calls_total{op,outcome}` uses `rendered`,
 `explicit_empty`, `login`, `upstream_error`, or `unknown_timeout` for a
 classified search response; transport/decode failures remain `failure` and an

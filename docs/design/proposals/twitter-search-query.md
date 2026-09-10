@@ -143,6 +143,10 @@ If empirical data later shows systematic false positives (e.g. player-team match
 
 ### D4 — Time bounds
 
+For new event histories, the [FF-091 decision](../../decisions/2026-09-10-search-window-follows-first-observation.md)
+supersedes the moving age rule below with a fixed pre-observation cutoff.
+Legacy histories and the independent maintenance canary retain relative limits.
+
 - **Client-side age cutoff: 3 minutes** — matches Python's `TWITTER_SEARCH_MAX_AGE_MINUTES = 3`. Preserved via config env var `TWITTER_SEARCH_MAX_AGE_MINUTES` (default 3, unit: minutes) so ops can tune per-match if needed.
 - **No server-side time filter** (no `since:` or `until:` in the query). Twitter's server-side time operators are unreliable for freshness; scroll-with-age-check is deterministic.
 - **Sort order** — always `&f=live` (Latest). The service reads tweets newest-first, walks until a tweet exceeds 3 min age, stops.

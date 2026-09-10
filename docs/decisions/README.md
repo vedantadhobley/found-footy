@@ -14,6 +14,9 @@ its historical heading anchors valid.
 
 New decisions after the frozen archive:
 
+- [Search windows follow the first event observation](./2026-09-10-search-window-follows-first-observation.md)
+  — FF-091 fixes a durable event-relative cutoff, guards known-video early
+  stops with scan evidence, and preserves old histories and maintenance.
 - [Firefox cleanup follows discovery ownership](./2026-09-09-firefox-cleanup-follows-discovery-ownership.md)
   — FF-073 derives browser ownership from debounce/checklists, pins removal to
   inspected container IDs, and retries sweep failures independently of vendor polling.

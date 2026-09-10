@@ -98,13 +98,13 @@ Registered in `service.go RegisterHandlers`:
 |---|---|---|
 | `/health` | GET | Browser/auth readiness: 200 only in `healthy`; otherwise 503 with state and reason. |
 | `/status` | GET | State, reason, busy flag, fingerprint and load time, nested cookie backup/reload attempt-success-error evidence, startup time, and build identity. Read-only; the release command verifies `build`. |
-| `/search` | POST | `SearchRequest{query, max_age_minutes, exclude_urls}` → `SearchResponse` (below). |
+| `/search` | POST | `SearchRequest{query, exclude_urls, window?}` or legacy `max_age_minutes` → `SearchResponse` (below); absolute and relative bounds are mutually exclusive. |
 | `/authenticate` | GET | Read-only auth status plus the raw-Firefox VNC URL and environment-explicit Compose command. Does **not** force re-auth. |
 | `/auth/verify` | POST | Force a live session check, bypassing the 60-second warm path, and require the verified cookie snapshot to persist. Used by maintenance and eventual operator recovery. |
 
 **`SearchResponse`:** `{status, result_state, evidence,
 videos:[VideoRef], count, query, stop_reason, scrolls, initial_articles,
-tweets_parsed, video_tweets, elapsed}`, where
+tweets_parsed, video_tweets, elapsed, window?}`, where
 `VideoRef = {tweet_url, tweet_text, video_page_url, duration_seconds, username,
 age_minutes}`. The three feed counters distinguish no rendered feed from a
 rendered feed with no hydrated video evidence. Note `video_page_url` is the
@@ -225,19 +225,28 @@ Maintenance preserves and diagnoses a session; raw-Firefox VNC owns new login.
 
 The browser sends the broad query exactly as built by Discovery, plus
 `src=typed_query&f=live`. It never adds `since:` or `until:`. The service parses
-each tweet's timestamp and applies `max_age_minutes` locally; the production
-default remains a wall-clock-relative three minutes. This preserves the
+each tweet's timestamp locally. New FF-091 event histories supply
+`window: {earliest_tweet_at, allow_seen_stop}`: a fixed timestamp, defaulting to
+three minutes before the stored event's first observation, and permission for
+the known-video shortcut. The browser echoes that window on HTTP-200 responses;
+the client rejects usable results without a matching echo. Legacy callers use
+`max_age_minutes` (default three); maintenance retains 1440 minutes. Supplying
+both modes or a window with no timestamp returns 400 before browser work. This preserves the
 recall-tested [query decision](./design/proposals/twitter-search-query.md#d4).
 
-Rendered searches return one of five terminal `stop_reason` values
-(`search.go`):
+Rendered searches return these terminal `stop_reason` values
+(`search_scroll.go`):
 
-- **`age`** — a non-promoted tweet older than `max_age_minutes` is reached
-  (results are reverse-chronological, so everything past it is older too).
-  Promoted posts do not terminate the scan because their placement is not
-  chronological.
-- **`consecutive_seen`** — N consecutive already-seen tweets (from `exclude_urls`
-  accumulated across the event's prior attempts) → the good hits are exhausted.
+- **`age`** — a non-promoted tweet before the selected time boundary is reached
+  before the video filter. This assumes reverse chronological organic results;
+  it does not prove everything below is older. Promoted posts do not terminate
+  the scan because their placement is not chronological.
+- **`consecutive_seen`** — N distinct already-seen video tweets (default three,
+  from `exclude_urls` accumulated across prior attempts), reset on a new eligible
+  video. Ignored text/promoted entries and repeated DOM IDs do not reset it.
+  This saves work but does not prove coverage: earlier partial scans may have
+  returned those three without reaching an older unseen candidate. New fixed-
+  window requests require `allow_seen_stop`; legacy requests retain their rule.
 - **`max_scrolls`** — the hard scroll cap.
 - **`feed_exhausted`** — a feed rendered, then produced no articles after a
   scroll.
@@ -252,6 +261,15 @@ exhausted activity call to an unavailable probe.
 
 Scroll jitter is 250–500ms (tightened from 0.5–3s on 2026-08-05), accepts equal
 bounds without panic, and is cancellable through the request context.
+
+FF-091 is implemented locally, not deployed. Discovery begins with the shortcut
+disabled and enables it after a rendered scan reaches the fixed cutoff. An
+eligible seen-stop preserves permission; every other stop or unavailable probe
+revokes it. Failed-run recovery keeps the timestamp but disables the shortcut
+because candidate URLs can outlive an uncheckpointed partial scan. See the
+[decision](./decisions/2026-09-10-search-window-follows-first-observation.md)
+and [experiment](./design/audits/twitter-search-window-2026-09-10.md).
+This does not solve shared rate limits or prove lossless search coverage.
 
 ## Error taxonomy
 

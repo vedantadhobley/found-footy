@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/moby/moby/api/types/container"
 	"github.com/testcontainers/testcontainers-go"
 	tcpostgres "github.com/testcontainers/testcontainers-go/modules/postgres"
 
@@ -54,6 +55,9 @@ func runTestPostgres(ctx context.Context, t *testing.T) string {
 		tcpostgres.WithPassword("ffpass"),
 		tcpostgres.WithInitScripts("schema.sql"),
 		tcpostgres.BasicWaitStrategies(),
+		// Disposable database tests share the host with live services.
+		testcontainers.WithHostConfigModifier(func(h *container.HostConfig) { h.Memory = 512 << 20 }),
+		testcontainers.WithCmd("postgres", "-c", "shared_buffers=64MB", "-c", "work_mem=4MB", "-c", "maintenance_work_mem=64MB"),
 	)
 	if err != nil {
 		t.Fatalf("start postgres container: %v", err)

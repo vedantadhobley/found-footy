@@ -84,10 +84,9 @@ type ServiceOptions struct {
 	// Safety valve against runaway scrolling on abnormal feed shape.
 	MaxScrolls int
 
-	// ConsecutiveSeenStop is the fourth stop condition (NEW vs Python).
-	// After N consecutive tweets whose IDs are in exclude_urls, stop
-	// scrolling — late-attempt searches walk through mostly-known
-	// tweets and this cuts the waste. Default: 3.
+	// ConsecutiveSeenStop bounds a known-video prefix when early stopping is
+	// allowed. Fixed-window callers must grant that permission from prior scan
+	// evidence; legacy relative callers retain unconditional use. Default: 3.
 	ConsecutiveSeenStop int
 
 	// ScrollJitterMin / ScrollJitterMax bound the random sleep between

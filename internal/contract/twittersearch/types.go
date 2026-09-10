@@ -58,9 +58,10 @@ type VideoRef struct {
 
 // SearchRequest is the JSON body of POST /search.
 type SearchRequest struct {
-	Query         string   `json:"query"`
-	ExcludeURLs   []string `json:"exclude_urls,omitempty"`
-	MaxAgeMinutes int      `json:"max_age_minutes,omitempty"`
+	Query         string        `json:"query"`
+	ExcludeURLs   []string      `json:"exclude_urls,omitempty"`
+	MaxAgeMinutes int           `json:"max_age_minutes,omitempty"`
+	Window        *SearchWindow `json:"window,omitempty"`
 }
 
 // SearchResponse is returned for every browser page result, including an
@@ -78,6 +79,7 @@ type SearchResponse struct {
 	TweetsParsed    int            `json:"tweets_parsed,omitempty"`
 	VideoTweets     int            `json:"video_tweets,omitempty"`
 	Elapsed         string         `json:"elapsed,omitempty"`
+	Window          *SearchWindow  `json:"window,omitempty"`
 }
 
 // SearchErrorBody is the structured non-2xx response. ResultState is present
