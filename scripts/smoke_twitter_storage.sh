@@ -6,7 +6,8 @@ readonly SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 export FF_STORAGE_IMAGE="${1:?usage: bash scripts/smoke_twitter_storage.sh <built-headless-image>}"
 
 # Inspect the final image, including inherited metadata, not just our Dockerfile.
-volume_count="$(docker image inspect "$FF_STORAGE_IMAGE" --format '{{len .Config.Volumes}}')"
+# Docker may omit or null the Volumes map when the image declares no volumes.
+volume_count="$(docker image inspect "$FF_STORAGE_IMAGE" --format '{{with index .Config "Volumes"}}{{len .}}{{else}}0{{end}}')"
 [[ "$volume_count" == 0 ]] || { printf 'storage smoke failed: image declares implicit volumes\n' >&2; exit 1; }
 
 FF_STORAGE_COOKIE_DIR="$(mktemp -d /tmp/ff-storage-smoke.XXXXXXXX)"

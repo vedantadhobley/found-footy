@@ -121,11 +121,14 @@ the current branch.
   and its workflow removes the container normally. Audit
   existing anonymous volumes without assuming an unreferenced volume belongs
   to this project; deletion requires separate approval for proven targets.
-- **Tooling follow-up (2026-09-10):** The storage smoke's direct `.Config.Volumes`
-  template fails when Docker omits the absent map. The new image passed the full
-  smoke with an invocation-only `index`/`with` fallback treating absence as zero;
-  make that compatibility fix durable in the smoke script. Runtime storage is
-  unaffected. Details are in the
+- **Tooling fix (2026-09-10):** The storage smoke now uses `index`/`with` to treat
+  omitted/null/empty volume maps as zero. Declared volumes still fail the guard;
+  missing image configuration and inspection errors do not become successful
+  checks. Regression cases reproduced the omitted/null failures before the fix.
+  This makes the rollout's invocation-only workaround durable without changing
+  runtime storage or requiring a deployment. The fast gate and unmodified-script
+  real-Docker smoke passed; declared-volume and missing images failed before
+  resource creation. Original evidence is in the
   [September 10 release evidence](./history/search-window-and-cleanup-rollout-2026-09-10.md).
 - **Boundary:** The separately approved legacy named-volume cleanup reclaimed
   roughly 102 GB but does not fix this current path. Current anonymous-volume
