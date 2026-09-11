@@ -346,6 +346,15 @@ supersession edge while forbidding immediate object reclamation. A
 pre-existing deterministic asset with mismatched immutable storage identity
 still fails closed.
 
+FF-092 retains the [exact Mastantuono hash triangle](../internal/workflow/testdata/README.md).
+The workflow regression covers all six arrival permutations, two restored
+keeper orders, exact followers and recurrence, placement retry, event updates,
+and DefaultVersion commands for both atomic and compatibility paths. Winning
+bridge orders remain explicit characterization of the unchanged policy, not
+an assertion of arrival-independent coverage. Offline Temporal SDK replay
+against the saved Mastantuono and Lens histories also passes; these private
+history exports are not committed test fixtures.
+
 The FF-080 EventWorkflow test rediscovers the MD5 of a superseded asset and
 requires one `CommitClipPlacement` against its restored live root, one
 placement `event.update` plus one completion `event.update`, and zero hash,
@@ -385,6 +394,11 @@ share, records candidates against both immutable observation and live credit,
 keeps aggregate root popularity retry-idempotent, and proves an exact
 recurrence adds one observed candidate and one root credit. Public reads
 continue to expose only the active root.
+
+FF-092 adds an independent second keeper to that boundary. Real Postgres must
+leave its asset and share untouched by losing-variant placement, preserve its
+old source credits, and restore its own exact alias. A subsequent exact vote
+changes only that keeper's popularity/rank, even when both placements retry.
 
 Enablement mechanics:
 - `--network=host` on the `test` make target — testcontainers-go

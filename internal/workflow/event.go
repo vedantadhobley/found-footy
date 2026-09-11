@@ -105,6 +105,8 @@ const (
 	ff087VisionFailureVersion         = workflow.Version(1)
 	ff091SearchWindowChangeID         = "ff-091-fixed-search-window"
 	ff091SearchWindowVersion          = workflow.Version(1)
+	ff092PreserveIncumbentsChangeID   = "ff-092-preserve-incumbents-on-loss"
+	ff092PreserveIncumbentsVersion    = workflow.Version(1)
 
 	// Pre-FF-061 histories retain FF-017's roughly 0/10/30/60 activity retry
 	// chain for replay compatibility. New histories use one activity attempt
@@ -300,6 +302,13 @@ func EventWorkflow(ctx workflow.Context, in EventWorkflowInput) (EventWorkflowOu
 		workflow.DefaultVersion,
 		ff087VisionFailureVersion,
 	) != workflow.DefaultVersion
+	// Placement payloads and alias redirects are history-owned. New executions
+	// preserve other keepers when a candidate loses; replay retains old decisions.
+	preserveIncumbentsOnLoss := workflow.GetVersion(ctx,
+		ff092PreserveIncumbentsChangeID,
+		workflow.DefaultVersion,
+		ff092PreserveIncumbentsVersion,
+	) != workflow.DefaultVersion
 	p := newPipeline(ctx, in, pipelineConfig{
 		maxHamming: cfgOut.MaxHamming, minRun: cfgOut.MinRunFrames, maxGaps: cfgOut.MaxGapFrames,
 		longMaxHamming: cfgOut.LongMaxHamming, longMinRun: cfgOut.LongMinRunFrames, longMaxGaps: cfgOut.LongMaxGapFrames,
@@ -313,6 +322,7 @@ func EventWorkflow(ctx workflow.Context, in EventWorkflowInput) (EventWorkflowOu
 		canonicalExactAliases:      canonicalExactAliases,
 		cadenceMetadata:            cadenceMetadata,
 		variantEvidence:            variantEvidence,
+		preserveIncumbentsOnLoss:   preserveIncumbentsOnLoss,
 		eventUpdateContract:        eventUpdateContract,
 		startedAt:                  startedAt,
 	}, log)

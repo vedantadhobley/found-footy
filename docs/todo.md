@@ -49,6 +49,52 @@ the current branch.
 
 ## Confirmed issues
 
+### FF-092 — losing bridge retires a kept clip that the winner does not match
+
+- **Status:** `implemented`
+- **Severity:** P1
+- **Observed:** Venezia–Fiorentina fixture `1550126`, Mastantuono 30′ event
+  `d7db1660-1055-4651-b3ef-75d4e6dc3ad3`, September 11 at 19:23:16 UTC.
+  The correct second-goal cut B was already public. A later two-goal bridge C
+  matched both B and an admitted first-goal cut A. C lost the duration-led
+  comparison to A, and placement nevertheless retired B onto A.
+- **Reproduction:** Stored hashes show A/B fails both routes; C/A passes only
+  45/50 at Hamming 16; C/B passes both current routes. The result is unchanged
+  with inputs reversed. Temporal records A as the selected existing winner
+  and B in `LoserAssetIDs`. Five later B observations credited A, so the
+  mistake persisted beyond the original placement. See the
+  [exact incident](./design/audits/mastantuono-bridge-removal-2026-09-11.md).
+- **Cause:** `dedupAndCommit` and the compatibility path build the loser list
+  from assets matched by the incoming candidate, not by the eventual winner.
+  A shared intermediary is incorrectly sufficient to retire an unmatched
+  incumbent. Clock tolerance admitted adjacent first-goal footage, but a
+  better validator would only mask this independent graph correctness bug.
+- **Required invariant:** A losing bridge cannot retire other kept clips
+  solely because it matches them. Never infer a winner-to-loser replacement
+  edge through another candidate. Direct evidence is necessary but does not
+  settle FF-081's broader content/quality policy.
+- **Implementation:** New executions collapse only the losing candidate and
+  its exact followers onto their chosen keeper. Other kept assets retain
+  shares, popularity and aliases. `ff-092-preserve-incumbents-on-loss` preserves
+  the previous atomic and compatibility commands for old histories. No schema,
+  hash-threshold, quality, clock, visibility or frontend change. See the
+  [decision](./decisions/2026-09-11-losing-candidates-preserve-existing-keepers.md).
+- **Verification:** The checked-in A/B/C hashes reproduce the original failure;
+  the corrected workflow tests pass, including all arrival permutations,
+  recovery, exact followers, retries and public updates. The saved Mastantuono
+  and Lens histories pass offline SDK replay. Full `make check`, including
+  real-Postgres credit/recovery coverage, passed; targeted workflow/video race
+  checks and 20 repeated bridge-regression runs also passed. Changed-document
+  local links and whitespace checks passed.
+- **Next step:** Commit/release after verification. Production data repair is
+  separate and requires explicit approval; do not repair only the share flag.
+  Old executions already past the version marker retain the old policy.
+- **Source relation:** This isolates a concrete public-content loss from
+  FF-081's known non-transitive bridge risk. Keep FF-081 open for selection
+  policy and FF-003 open for adjacent-event semantic admission. No production
+  repair or deployment has occurred. Winning-bridge arrival orders
+  remain an explicit FF-081 boundary, not solved by this losing-branch fix.
+
 ### FF-091 — Moving search age window can skip outage-period posts
 
 - **Status:** `validating`
@@ -526,6 +572,11 @@ the current branch.
   another persisted cycle. It does not make keeper quality order-independent.
   FF-080 prevents recurring exact variants from exercising a retired winner;
   it deliberately does not change public keeper policy.
+- **Urgent correctness slice:** [FF-092](#ff-092--losing-bridge-retires-a-kept-clip-that-the-winner-does-not-match)
+  now has a concrete Mastantuono second-goal loss: an incoming bridge lost,
+  but two nonmatching incumbents still consolidated. The bounded placement
+  correction is implemented locally, independently of this issue's unresolved quality and
+  public-set policy; no further crop or model benchmark is needed for it.
 - **Research checkpoint (2026-08-31):** The read-only retained corpus contains
   1,815 assets and 376 reconstructed match/supersession components. Only the
   legacy Danso component has a quality cycle. Fifty-four components contain a

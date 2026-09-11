@@ -14,6 +14,9 @@ its historical heading anchors valid.
 
 New decisions after the frozen archive:
 
+- [Losing candidates preserve existing keepers](./2026-09-11-losing-candidates-preserve-existing-keepers.md)
+  — FF-092 stops a losing bridge from retiring other kept clips, preserves
+  old Temporal histories, and leaves broader keeper selection separate.
 - [Search windows follow the first event observation](./2026-09-10-search-window-follows-first-observation.md)
   — FF-091 fixes a durable event-relative cutoff, guards known-video early
   stops with scan evidence, and preserves old histories and maintenance.

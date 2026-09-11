@@ -5,6 +5,9 @@ Every surviving finding must have a stable disposition in
 [`todo.md`](../../todo.md), and any old claim must be verified against current
 code before work begins.
 
+- [Mastantuono second-goal bridge removal — 2026-09-11](./mastantuono-bridge-removal-2026-09-11.md)
+  — exact non-transitive match triangle, wrong incumbent consolidation,
+  adjacent-clock admission, and persistent misattribution after removal.
 - [Completed MLS search/recovery audit — 2026-09-10 UTC](./mls-search-recovery-2026-09-10.md)
   — full usable-search recovery, public clip outcomes, 429 reset evidence,
   bounded candidate failures, and the next shared-admission design boundary.

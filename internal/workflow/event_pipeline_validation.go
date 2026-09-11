@@ -131,11 +131,11 @@ func (p *pipeline) matchMD5(c clip) (idx int, isAsset, matched bool) {
 // matchAssets returns the indices of ALL kept assets in c's OWN category
 // (verified↔verified, unverified↔unverified) that c perceptually matches.
 // Category scoping is load-bearing: one broadcast yields visually-similar frames
-// across DIFFERENT goals, so an unverified different-moment clip can dHash-match
-// the verified clip of THIS goal — the clock (category) is the only ground-truth
-// pinning a clip to this goal (decisions.md 2026-08-09). Never early-returns:
+// across DIFFERENT goals; unverified footage must not displace a clock-verified
+// keeper (decisions.md 2026-08-09). Verification is not exact event identity:
+// adjacent goal windows can overlap (FF-003). Never early-returns:
 // dHash isn't transitive, so a clip can bridge two assets that don't match each
-// other, and every bridged asset must consolidate.
+// other. These matches belong to c, not to any eventual incumbent winner.
 func (p *pipeline) matchAssets(c clip) []int {
 	var out []int
 	for i := range p.assets {
@@ -279,10 +279,10 @@ func (p *pipeline) onVisionDone(c clip) func(workflow.Future) {
 // dedupAndPromote is the POST-vision dedup + which-to-keep step (#171). It
 // perceptually dedups the vision-passed clip WITHIN its own category pool, then
 // either promotes it (unique, or the cluster's quality winner) or collapses it
-// (a better clip already exists). dHash isn't transitive, so a clip can match
-// several assets at once (a bridge) — all of them consolidate onto the single
-// winner, popularity merging. Verified vs unverified never mix (matchAssets
-// scopes by category); across pools it's pure ranking, verified always above.
+// (a better clip already exists). A winning candidate can supersede its direct
+// matches; a losing candidate leaves other keepers alone under FF-092. Verified
+// vs unverified never mix (matchAssets scopes by category); across pools it's
+// pure ranking, verified always above.
 func (p *pipeline) dedupAndPromote(c clip, vout visionactivity.ValidateClipOutput) {
 	if p.atomicPlacement {
 		p.dedupAndCommit(c, vout)
@@ -315,15 +315,17 @@ func (p *pipeline) dedupAndPromote(c clip, vout visionactivity.ValidateClipOutpu
 		return
 	}
 
-	// An existing asset wins. c collapses onto it (bump + drop); any OTHER
-	// matched assets (a bridge c revealed) also consolidate onto that winner.
+	// An existing asset wins. c collapses onto it (bump + drop). Only old
+	// histories also retire other matches, preserving their recorded commands.
 	winnerID := p.assets[best].assetID
 	p.rememberExactRoot(c.md5, winnerID)
 	p.duplicateExactCluster(c, winnerID)
 	var losers []uuid.UUID
-	for _, idx := range matched {
-		if idx != best {
-			losers = append(losers, p.assets[idx].assetID)
+	if !p.preserveIncumbentsOnLoss {
+		for _, idx := range matched {
+			if idx != best {
+				losers = append(losers, p.assets[idx].assetID)
+			}
 		}
 	}
 	p.bumpPopularity(winnerID, c.popularity)
