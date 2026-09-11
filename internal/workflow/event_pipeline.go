@@ -85,6 +85,7 @@ type pipeline struct {
 	canonicalExactAliases                   bool
 	cadenceMetadata                         bool
 	variantEvidence                         bool
+	preserveIncumbentsOnLoss                bool
 	eventUpdateContract                     bool
 
 	// activity option ctxs
@@ -129,6 +130,7 @@ func newPipeline(ctx workflow.Context, in EventWorkflowInput, cfg pipelineConfig
 		canonicalExactAliases:      cfg.canonicalExactAliases,
 		cadenceMetadata:            cfg.cadenceMetadata,
 		variantEvidence:            cfg.variantEvidence,
+		preserveIncumbentsOnLoss:   cfg.preserveIncumbentsOnLoss,
 		eventUpdateContract:        cfg.eventUpdateContract,
 		downloadCtx:                videoDownloadActivityContext(ctx),
 		hashCtx:                    videoHashActivityContext(ctx),
@@ -161,6 +163,7 @@ type pipelineConfig struct {
 	canonicalExactAliases                   bool
 	cadenceMetadata                         bool
 	variantEvidence                         bool
+	preserveIncumbentsOnLoss                bool
 	eventUpdateContract                     bool
 	startedAt                               time.Time
 }

@@ -297,9 +297,16 @@ dense hashing, then two dedup stages straddle vision (#171 shipped 2026-08-09):
   ≤12 or 45 of 50 at Hamming ≤16. The 30-frame route remains hash admission and
   fallback for shorter sequences; a historical config result with no sustained
   fields disables only the 50-frame route. Dedup then runs
-  which-to-keep. New histories send the entire accepted cluster to
+  which-to-keep. Under FF-092, a losing candidate credits only itself and its
+  exact followers to the selected keeper; other existing keepers and their
+  shares, popularity and aliases remain unchanged. Matches belong to the
+  incoming candidate, not to the eventual existing winner. A winning candidate
+  still supersedes its direct matches under the current quality policy; this
+  is not a whole-graph coverage guarantee. See the
+  [losing-candidate decision](../decisions/2026-09-11-losing-candidates-preserve-existing-keepers.md).
+  New histories send the entire accepted exact-byte cluster to
   `CommitClipPlacement`: candidate outcome and asset attribution, newly
-  credited popularity, conflict-safe asset/share creation, and bridged-loser
+  credited popularity, conflict-safe asset/share creation, and selected-loser
   supersession commit under one event-locked Postgres transaction. A unique or
   better cluster winner uses a deterministic asset UUID and S3 key; the
   activity copies staging before the transaction. An existing winner receives
@@ -334,6 +341,10 @@ dense hashing, then two dedup stages straddle vision (#171 shipped 2026-08-09):
   `ff-083-accepted-variant-evidence` separately enables the observed-variant
   payload and persistence; pre-FF-083 histories retain the former first-loss
   behavior.
+  `ff-092-preserve-incumbents-on-loss` controls the losing-candidate rule at
+  pipeline initialization. DefaultVersion retains former consolidation,
+  command payloads and alias redirects in both placement paths; new executions
+  preserve independent keepers. It does not repair pre-existing bad edges.
 - **Visibility and rank:** The API derives both from current evidence on every
   read. A verified clip at popularity three suppresses all popularity-one
   clips; an unverified clip at three suppresses only unverified

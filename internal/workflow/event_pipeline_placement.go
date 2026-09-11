@@ -65,20 +65,27 @@ func (p *pipeline) dedupAndCommit(c clip, vout visionactivity.ValidateClipOutput
 	}
 
 	winnerID := p.assets[best].assetID
-	var loserIDs []uuid.UUID
-	for _, idx := range matched {
-		if idx != best {
-			loserIDs = append(loserIDs, p.assets[idx].assetID)
+	// A losing candidate proves only its own match to the selected winner.
+	// Its other matches do not authorize winner-to-incumbent replacement.
+	// Retain the former consolidation only for recorded pre-FF-092 histories.
+	var loserIndices []int
+	if !p.preserveIncumbentsOnLoss {
+		for _, idx := range matched {
+			if idx != best {
+				loserIndices = append(loserIndices, idx)
+			}
 		}
+	}
+	var loserIDs []uuid.UUID
+	if len(loserIndices) > 0 {
+		loserIDs = p.assetIDsAt(loserIndices)
 	}
 	if _, ok := p.commitClipPlacement(c, vout, false, winnerID, loserIDs); !ok {
 		return
 	}
 	popularity := 1 + len(c.exactFollowers)
-	for _, idx := range matched {
-		if idx != best {
-			popularity += p.assets[idx].popularity
-		}
+	for _, idx := range loserIndices {
+		popularity += p.assets[idx].popularity
 	}
 	p.assets[best].popularity += popularity
 	p.dropAssets(loserIDs)
