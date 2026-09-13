@@ -3,6 +3,7 @@ package workflow
 
 import (
 	"encoding/json"
+	"fmt"
 
 	"github.com/google/uuid"
 	"go.temporal.io/sdk/workflow"
@@ -181,7 +182,9 @@ func (p *pipeline) collapseExact(loser clip, idx int, isAsset bool) {
 		winnerID := p.assets[idx].assetID
 		if p.atomicPlacement {
 			if _, ok := p.commitClipPlacement(loser, visionactivity.ValidateClipOutput{}, false, winnerID, nil); ok {
-				p.assets[idx].popularity += 1 + len(loser.exactFollowers)
+				if !p.reversibleSelection {
+					p.assets[idx].popularity += 1 + len(loser.exactFollowers)
+				}
 				p.duplicates += 1 + len(loser.exactFollowers)
 			}
 			return
@@ -210,12 +213,16 @@ func (p *pipeline) fireVision(c clip) {
 		extra = *p.in.Extra
 	}
 	c.visionStartedAt = workflow.Now(p.ctx)
+	input := visionactivity.ValidateClipInput{
+		EventID: p.in.EventID, FixtureID: p.in.FixtureID,
+		StagingKey: c.stagingKey, APIElapsed: p.in.Minute, APIExtra: extra,
+	}
+	if p.durableValidation {
+		input.CaptureEvidence, input.MD5 = true, c.md5
+	}
 	fut := workflow.ExecuteActivity(p.visionCtx,
 		(*visionactivity.Activities).ValidateClip,
-		visionactivity.ValidateClipInput{
-			EventID: p.in.EventID, FixtureID: p.in.FixtureID,
-			StagingKey: c.stagingKey, APIElapsed: p.in.Minute, APIExtra: extra,
-		})
+		input)
 	p.inFlight++
 	p.selector.AddFuture(fut, p.onVisionDone(c))
 }
@@ -258,6 +265,10 @@ func (p *pipeline) onVisionDone(c clip) func(workflow.Future) {
 
 		switch vout.Outcome {
 		case string(dvision.OutcomeVerified), string(dvision.OutcomeUnverified):
+			if p.durableValidation && vout.Evidence == nil {
+				p.setTerminalError(fmt.Errorf("accepted vision result lacks durable validation evidence"))
+				return
+			}
 			c.verified = vout.Outcome == string(dvision.OutcomeVerified)
 			p.dedupAndPromote(c, vout)
 		default: // rejected — not soccer / screen recording / wrong clock

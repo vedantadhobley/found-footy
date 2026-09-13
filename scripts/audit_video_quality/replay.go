@@ -9,9 +9,10 @@ import (
 	dvideo "github.com/vedantadhobley/found-footy/internal/domain/video"
 )
 
-// simulateCurrentPolicy replays EventWorkflow's live-set reducer for one asset
-// arrival order over a precomputed match graph.
-func simulateCurrentPolicy(assets []asset, match [][]bool, order []int) string {
+// simulatePreFF092Policy preserves the PRE-FF-092 live-set reducer for the
+// original audit reports and their frozen baselines. It is not the deployed
+// losing-bridge policy; restoration.go provides an explicit FF-092 comparison.
+func simulatePreFF092Policy(assets []asset, match [][]bool, order []int) string {
 	var live []int
 	for _, candidate := range order {
 		var matchedPositions []int

@@ -40,6 +40,8 @@ type asset struct {
 	homeTeam           string
 	awayTeam           string
 	sourceTweetURL     string
+	eventRemoved       bool
+	objectReclaimedAt  string
 }
 
 // quality projects retained metadata through the production keeper policy.
@@ -186,6 +188,13 @@ func parseAsset(record []string, columns map[string]int) (asset, error) {
 	if err != nil {
 		return asset{}, fmt.Errorf("parse timestamp_verified: %w", err)
 	}
+	eventRemoved := false
+	if raw := optionalValue("event_removed"); raw != "" {
+		eventRemoved, err = strconv.ParseBool(raw)
+		if err != nil {
+			return asset{}, fmt.Errorf("parse event_removed: %w", err)
+		}
+	}
 	fixtureID, err := parseInt64("fixture_id")
 	if err != nil {
 		return asset{}, err
@@ -211,6 +220,7 @@ func parseAsset(record []string, columns map[string]int) (asset, error) {
 		fixtureID: fixtureID, playerName: value("player_name"), minute: minute,
 		extra: value("extra"), homeTeam: value("home_team_name"),
 		awayTeam: value("away_team_name"), sourceTweetURL: optionalValue("source_tweet_url"),
+		eventRemoved: eventRemoved, objectReclaimedAt: optionalValue("object_reclaimed_at"),
 	}, nil
 }
 

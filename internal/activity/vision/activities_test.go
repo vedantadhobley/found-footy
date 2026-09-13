@@ -53,6 +53,7 @@ func (f fakeS3) Download(_ context.Context, _ string) (io.ReadCloser, int64, err
 
 type fakeLLM struct {
 	resp    string
+	model   string
 	err     error
 	lastReq llm.ChatRequest
 }
@@ -62,7 +63,7 @@ func (f *fakeLLM) Chat(_ context.Context, req llm.ChatRequest) (*llm.ChatRespons
 	if f.err != nil {
 		return nil, f.err
 	}
-	return &llm.ChatResponse{Content: f.resp}, nil
+	return &llm.ChatResponse{Content: f.resp, Model: f.model}, nil
 }
 
 func newActivities(t *testing.T, llmResp string, llmErr error) (*Activities, *fakeFFmpeg, *fakeLLM) {

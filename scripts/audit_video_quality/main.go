@@ -34,7 +34,22 @@ func run() error {
 		"emit offline aligned-section NDJSON beside existing quality baselines; no keeper changes")
 	pairCorpus := flag.Bool("pair-corpus", false,
 		"read a reviewed-pair JSON corpus from stdin; requires -overlap-json")
+	restorationJSON := flag.Bool("restoration-json", false,
+		"compare FF-092 placement with offline direct-match restoration; no production changes")
+	popularityJSON := flag.Bool("popularity-json", false,
+		"audit exact support and alternate source ownership on recorded selected roots; no policy changes")
+	directSupportJSON := flag.Bool("direct-support-json", false,
+		"compare exclusive assigned support with non-exclusive direct support offline")
 	flag.Parse()
+	if err := validateDirectSupportFlags(*directSupportJSON, *popularityJSON, *restorationJSON, *reviewCSV, *overlapJSON, *pairCorpus); err != nil {
+		return err
+	}
+	if err := validatePopularityFlags(*popularityJSON, *restorationJSON, *reviewCSV, *overlapJSON, *pairCorpus); err != nil {
+		return err
+	}
+	if err := validateRestorationFlags(*restorationJSON, *reviewCSV, *overlapJSON, *pairCorpus); err != nil {
+		return err
+	}
 	if err := validateOverlapFlags(*reviewCSV, *overlapJSON, *pairCorpus); err != nil {
 		return err
 	}
@@ -52,6 +67,15 @@ func run() error {
 	if len(assets) == 0 {
 		return fmt.Errorf("empty asset corpus")
 	}
+	if *popularityJSON {
+		return writePopularityJSON(os.Stdout, assets)
+	}
+	if *directSupportJSON {
+		return writeSupportReport(os.Stdout, assets, true)
+	}
+	if *restorationJSON {
+		return writeRestorationJSON(os.Stdout, assets, *maxPermutations)
+	}
 	if *overlapJSON {
 		return writeOverlapJSON(os.Stdout, assets)
 	}
@@ -60,6 +84,15 @@ func run() error {
 		return writeReviewCSV(os.Stdout, result)
 	}
 	printReport(os.Stdout, result, *detailLimit)
+	return nil
+}
+
+// validateRestorationFlags gives the topology experiment a distinct output
+// contract; it cannot silently replace a review or overlap report.
+func validateRestorationFlags(restoration, review, overlap, pair bool) error {
+	if restoration && (review || overlap || pair) {
+		return fmt.Errorf("restoration-json cannot be combined with review-csv, overlap-json or pair-corpus")
+	}
 	return nil
 }
 

@@ -49,6 +49,43 @@ the current branch.
 
 ## Confirmed issues
 
+### FF-093 — accepted vision evidence expires with workflow history
+
+- **Status:** `implemented` locally; not deployed
+- **Severity:** P2
+- **Evidence:** The September 12 fourteen-date review found no raw frame
+  arrays on 909 promoted, 471 superseded or 7,486 duplicate
+  candidate rows. Rejected rows do retain them. Live Temporal retention is
+  24 hours with archival disabled; an ordinary September 10 Cristante workflow
+  no longer returns its history. Counts are candidate outcomes, not separate
+  evaluations or confirmed bad clips.
+- **Cause:** `onVisionDone` persists full validation observations for rejects;
+  accepted placement retains compact identity/verification results. A share's
+  first matching minute cannot recover the other samples, original API time,
+  or model response after workflow-history expiry.
+- **Required invariant:** Preserve bounded validation evidence once per actual
+  evaluation, associated with the event/MD5 and exact followers, including the
+  original expected time, observations, verdict and evaluation provenance.
+  Do not replicate JPEGs/full histories on every tweet or invent past readings.
+- **Implementation (2026-09-12):** A bounded record now follows each acknowledged
+  accepted evaluation into `video_asset_validations` in the existing placement
+  transaction. It carries the exact event/MD5, original model observations,
+  expected time, verdict, actual returned model identity and sampling/provenance.
+  Exact followers share the asset association; later exact sightings do not
+  invent evaluations. Retry conflicts roll back; reclamation preserves SQL
+  evidence; old histories and old assets acquire no fabricated proof. See the
+  [decision](./decisions/2026-09-12-accepted-validation-follows-exact-assets.md).
+- **Validation:** Full Go/Postgres suite, affected race tests, saved clock/quality
+  regressions and both saved incident SDK replays pass. No fresh production
+  query or model call was used.
+- **Next:** Apply the pending migration chain and release the worker with
+  FF-081 after separate approvals; verify a natural accepted losing variant,
+  exact followers and retry before closing. This fixes an auditability gap,
+  not failed Temporal execution durability or keeper selection.
+  The [reversible-selection proposal](./design/proposals/reversible-video-selection.md)
+  shares this foundation: never-public variants need their own acceptance
+  evidence before promotion, not a timestamp inherited from their old keeper.
+
 ### FF-092 — losing bridge retires a kept clip that the winner does not match
 
 - **Status:** `implemented`
@@ -687,7 +724,7 @@ the current branch.
   accepted Mbappé keeper also show that stricter measured support must not
   become a new automatic replacement threshold. No runtime changes. See the
   [experiment and remaining boundaries](./design/audits/video-overlap-review-2026-09-08.md).
-- **Next work:** Agree replacement and presentation judgments for
+- **Quality-policy follow-up:** Agree replacement and presentation judgments for
   Palacios and Mariano before changing the technical-quality relation.
   The [content-tradeoff review](./design/audits/video-cadence-review-2026-09-08.md#palacios-and-mariano-content-tradeoffs)
   also identifies the keep-both interaction with FF-078 singleton pruning,
@@ -704,6 +741,93 @@ the current branch.
   audit](./design/audits/video-quality-2026-08-31.md).
   Correct the offline report's unconditional legacy limitation labels: cadence
   and first-loss evidence are absent in old rows, not in every exported row.
+
+- **Restoration checkpoint (2026-09-12):** The user agreed to start reversible
+  selection: A must be reconsidered when A → C → B leaves selected B without
+  direct replacement evidence for A. The new offline mode preserves both
+  endpoints in all six saved Mastantuono arrival orders; FF-092 alone does so
+  in four. Across 479 saved multi-node components, five first-observation-order
+  final sets change; these are simulations, not confirmed production losses.
+  General arrival dependence remains. The
+  [audit](./design/audits/video-restoration-2026-09-12.md) records the full scope
+  and the [proposal](./design/proposals/reversible-video-selection.md) separates
+  overlap, replacement suitability and selected-set enforcement.
+- **Implementation checkpoint (2026-09-12):** FF-093's accepted evidence and
+  FF-081's pure planner plus atomic reselection repository are implemented
+  locally, not deployed. The new operation handles already accepted data,
+  preserves share/clock identity, splits complete observed-source credit and
+  records immutable previous topology with retry-safe receipts. Incomplete
+  historical attribution returns a typed error instead of a fabricated split.
+  See the [decision](./decisions/2026-09-12-restored-clips-keep-one-source-owner.md).
+  Saved-data topology matches the experiment across 479 components and 1,490
+  prefixes using explicitly synthetic acceptance/votes; PostgreSQL tests cover
+  actual credit, visibility, retries, stale plans, rollback and removal.
+- **Workflow integration (2026-09-12):** Incoming placement and reselection now
+  share one transaction, with bounded real object checks, retry receipts and
+  current-state recovery. The workflow replaces roots/aliases before publication,
+  and exact recurrence does not double-increment the returned source count.
+  Revocation shares the event lock; removed-event retries do not require staged
+  bytes. Incomplete old attribution explicitly skips only graph repair, keeping
+  ordinary accepted placement durable. See the
+  [integration decision](./decisions/2026-09-12-selection-commits-with-incoming-placement.md).
+  No never-public variant inherits its winner's clock. The user confirmed on September
+  12 that FF-078 stays unchanged: restoration and independent content do not
+  exempt a popularity-one keeper from the existing threshold/asymmetry rule.
+  Test visibility from the recomputed credits, including a restored clip moving
+  from one to two. This visibility question is settled, not an implementation
+  blocker; credit assignment is now specified, while whole-video replacement
+  suitability remains separate from the direct-support topology correction.
+  A learned quality model is not a prerequisite for the topology correction.
+  The selector is now wired behind a Temporal marker; review also adds the
+  event-leading accepted-validation index to prevent unrelated-history scans
+  during placement. Its index-only migration leaves evidence and votes unchanged.
+  Targeted index/migration and saved-corpus checks pass. The complete PostgreSQL
+  package rerun also passed with an explicit 30-minute budget and retained output,
+  clearing the earlier ten-minute timeout without a source correction; see the
+  [review verification](./design/audits/video-restoration-2026-09-12.md#review-correction-event-local-validation-lookup).
+- **Support-scoring review (2026-09-12):** The user requested correct exact and
+  assigned support semantics, independently of keeper quality and compatibility.
+  The [offline historical audit](./design/audits/video-popularity-2026-09-12.md)
+  reconciles 278 September 11 events and projects the actual local planner.
+  Two restoration cases expose ambiguous support; conditional reassignment in
+  Maitland-Niles changes singleton visibility without changing quality. The
+  missing own validation remains unknown; this is not an approved repair.
+  The initial review preserved one source owner and the current FF-078 threshold.
+  Representative ownership remained separate from popularity feedback or an
+  accidental old aggregate. No owner/quality policy was adopted in that review.
+  The offline tool and regression tests are local only.
+- **Direct-support comparison (2026-09-13):** At the user's request, compared
+  exclusive assigned popularity with non-exclusive direct source support on
+  fixed recorded and restoration-projected sets. In the 278 attributable
+  events, conditional scores agree for 276. After restoration, Maitland-Niles
+  changes from 31/1 to 31/6 and exposes one more clip; Mastantuono changes from
+  27/9 to 22/19 without changing order. Missing own validation remains explicit;
+  these are not safe historical repairs or proven display improvements. The
+  [audit](./design/audits/video-direct-support-2026-09-13.md) records the counting
+  semantics, evidence gaps and tests. This reopens discussion of the public
+  score's meaning, not the graph foundation or keeper quality. The one-owner
+  runtime policy was the baseline for this experiment; the subsequent decision
+  below changes scoring, while FF-078 thresholds remain unchanged.
+  The pending migration chain remains unapplied. Production is unchanged.
+- **Direct support adopted (2026-09-13):** The user chose direct rather than
+  assigned support. The local planner now counts accepted observations once per
+  directly matching selected clip, independently of canonical alias routing.
+  Scores overlap across clips and cannot be summed into unique event sources.
+  Exact repeats, multi-keeper replacement, recovery and notifications use the
+  existing combined transaction; quality and FF-078 are unchanged. Own acceptance
+  is required, while missing/reclaimed source bytes do not erase retained evidence.
+  Unknown attribution retains the explicit legacy fallback; deployment does not
+  automatically rescore old events. See the
+  [decision](./decisions/2026-09-13-popularity-counts-direct-support.md).
+  No new fields are needed; a migration extends the receipt-version CHECK and
+  updates column descriptions without rewriting scores or receipts.
+  The complete race-enabled Go/integration suite, saved-corpus checks, build,
+  vet and scoped lint pass. The saved comparison report remains byte-identical;
+  implementation and migrations remain local and undeployed.
+- **Next:** Separately approve migrations plus deployment.
+  Validate natural restoration, per-clip direct counts, exact recurrence and frontend
+  updates, and measure placement/HEAD latency and Temporal payload/history growth.
+  Do not apply simulated corpus changes as automatic historical repairs.
 
 ### FF-082 — retain cadence as independent keeper-quality evidence
 

@@ -22,6 +22,8 @@ var requiredIndexes = []string{
 	"events_fixture", "events_pending_work", "events_by_first_seen",
 	"event_downstream_workflows_pending", "video_assets_event_popularity",
 	"video_assets_unreclaimed_event", "video_assets_unreclaimed_fixture_event",
+	"video_asset_validations_asset", "video_asset_validations_event",
+	"video_selection_commits_event",
 	"video_shares_event_rank_active", "video_shares_event_asset", "video_shares_event",
 	"video_shares_asset", "event_search_candidates_event", "event_search_candidates_fixture",
 	"event_search_candidates_discovered_at", "event_search_candidates_credited_asset",
@@ -45,6 +47,8 @@ var requiredConstraints = []string{
 	"video_assets_event_fixture_fkey", "video_assets_superseded_identity_fkey",
 	"video_assets_media_shape", "video_assets_popularity_positive", "video_assets_supersession_not_self",
 	"video_assets_frame_rate_positive", "video_assets_reclaimed_after_seen",
+	"video_asset_validations_pkey", "video_asset_validations_asset_fkey", "video_asset_validations_evidence",
+	"video_selection_commits_pkey", "video_selection_commits_event_fkey", "video_selection_commits_record",
 	"video_shares_asset_event_fkey", "video_shares_removed_state",
 	"event_search_candidates_event_fixture_fkey", "event_search_candidates_credited_identity_fkey",
 	"event_search_candidates_observed_identity_fkey",
@@ -98,6 +102,14 @@ func verifyCurrentSchema(ctx context.Context, tx pgx.Tx) error {
 	if err := verifyBaselineSchema(ctx, tx); err != nil {
 		return err
 	}
+	// New tables belong to the post-migration contract, not the historical
+	// baseline: old durable environments must be able to create them first.
+	if err := requireRelation(ctx, tx, "video_asset_validations"); err != nil {
+		return err
+	}
+	if err := requireRelation(ctx, tx, "video_selection_commits"); err != nil {
+		return err
+	}
 	for _, name := range requiredIndexes {
 		if err := requireRelation(ctx, tx, name); err != nil {
 			return err
@@ -110,6 +122,14 @@ func verifyCurrentSchema(ctx context.Context, tx pgx.Tx) error {
 		{"event_search_candidates", "observed_asset_id"},
 		{"video_assets", "object_reclaimed_at"},
 		{"video_assets", "frame_rate"},
+		{"video_asset_validations", "evidence"},
+		{"video_asset_validations", "recorded_at"},
+		{"video_selection_commits", "request_hash"},
+		{"video_selection_commits", "snapshot_hash"},
+		{"video_selection_commits", "policy"},
+		{"video_selection_commits", "before_state"},
+		{"video_selection_commits", "result"},
+		{"video_selection_commits", "committed_at"},
 	} {
 		var exists bool
 		if err := tx.QueryRow(ctx, `

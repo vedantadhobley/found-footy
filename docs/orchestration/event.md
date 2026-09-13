@@ -330,6 +330,18 @@ dense hashing, then two dedup stages straddle vision (#171 shipped 2026-08-09):
   terminal verdict remains durable even when it has no asset credit. A
   placement that commits first remains owned by the monitor's subsequent
   `DestroyEvent` teardown.
+- **Accepted validation (FF-093, local, not deployed):** new histories request
+  capture of the accepted evaluation's own observations, expected clock,
+  tolerance, sampling positions, actual model identity and provenance.
+  `ValidateClip` returns one bounded record with a new evaluation UUID;
+  `CommitClipPlacement` retains it with the observed asset in the same
+  transaction as its exact followers. A placement retry reuses that identity.
+  Later exact recurrence does not run vision or invent another record. Missing
+  required evidence fails new-history placement; older histories retain their
+  absent evidence. A losing variant keeps its own matched minute, never the
+  winner's. Reclamation preserves this SQL history, and migration backfills
+  nothing. No admission, selection or notification policy changes. See the
+  [decision](../decisions/2026-09-12-accepted-validation-follows-exact-assets.md).
 - **Compatibility:** `ff-066-atomic-clip-placement` version 1 selects that path.
   Older histories retain independent `PromoteAndPersist`,
   `BumpAssetPopularity`, `SupersedeAssets`, terminal-outcome, and
@@ -345,6 +357,9 @@ dense hashing, then two dedup stages straddle vision (#171 shipped 2026-08-09):
   pipeline initialization. DefaultVersion retains former consolidation,
   command payloads and alias redirects in both placement paths; new executions
   preserve independent keepers. It does not repair pre-existing bad edges.
+  `ff-093-accepted-validation-evidence` enables the new capture and placement
+  fields only with atomic placement and accepted-variant retention. DefaultVersion
+  omits those fields; recorded histories do not need synthetic validation.
 - **Visibility and rank:** The API derives both from current evidence on every
   read. A verified clip at popularity three suppresses all popularity-one
   clips; an unverified clip at three suppresses only unverified
@@ -382,7 +397,7 @@ These are separate policies over different sets. Do not merge their criteria:
 | Public visibility | Distinct active shares for one event after dedup | Verified popularity ≥3 suppresses every popularity-one share; unverified popularity ≥3 suppresses only unverified popularity-one shares | Omits low-evidence alternatives from the event projection without changing durable state or direct URLs. |
 | Public ranking | Shares that survive public visibility | [`CompareShares`](../../internal/domain/video/rank.go): verified, popularity, file size, older creation time, then share ID | Assigns contiguous frontend order. It does not supersede assets or decide whether two clips are duplicates. |
 
-When a better duplicate supersedes an incumbent, placement merges the loser's
+On the legacy assigned-score path, when a better duplicate supersedes an incumbent, placement merges the loser's
 popularity into the keeper, moves candidate attribution, and retires the
 loser's shares. Read-derived rank immediately reflects the surviving active
 set. This preserves accumulated source votes without allowing popularity to
@@ -394,8 +409,42 @@ the threshold clip leaves the active set.
 FF-083 separates evidence identity from public credit. Every accepted MD5 is a
 node, each committed supersession is a directed edge, and only graph roots are
 eligible for public shares. Exact-byte frequency is the count of candidate
-observations for a node; root popularity remains aggregate public credit.
+observations for a node; legacy root popularity remains aggregate public credit.
 Neither recovery nor the audit treats a connected dHash graph as one identity.
+
+FF-081's planner now runs within new-history `CommitClipPlacement`, not through
+a second `CommitSelection` activity. It restores unsupported eligible variants,
+retains share IDs/own timestamps and records prior
+topology in one transaction with incoming placement. The activity checks real
+objects with at most four concurrent HEADs, then supplies a consistent current
+root/alias snapshot after staging cleanup. It never returns a receipt's old set
+as current state. New retained variants require their own proof and present bytes;
+missing hidden historical media stays ineligible, and HEAD errors retry.
+
+The September 13 [direct-support decision](../decisions/2026-09-13-popularity-counts-direct-support.md)
+changes scoring inside that transaction. Each accepted source counts once per
+directly matching selected clip, including exact self-support. Alias/credit
+routing remains exclusive but does not allocate scores. A hidden bridge's exact
+recurrence can update several keepers. A replacement recomputes from source
+records instead of summing overlapping old scores. Unknown/removed own acceptance
+does not contribute; retained acceptance/hashes can contribute after source bytes
+disappear. No transitive matching, quality change or extra vision/hash call is added.
+
+The workflow replaces roots and exact aliases before publication/another
+placement. Surviving incumbents keep their tournament order; incoming/restored
+roots append deliberately. Exact recurrence takes the returned popularity
+without another increment. `ff-081-reversible-selection` gates these payloads and
+consistent `LoadEventAssets` recovery, requiring FF-066/080/083/092/093 support.
+DefaultVersion retains old commands. Only incomplete historical source attribution
+skips reselection/direct scoring, with an immutable `incomplete_credits` receipt and warning;
+ordinary placement still completes with legacy assigned scoring. Invalid topology/media/state remains an error.
+
+Share revocation now holds the event lock, so it cannot miss concurrently minted
+or restored shares. A revoked root set cannot be republished. New histories that
+observe event removal skip copying and can finish orphan/staging cleanup even
+after a previous attempt deleted staging. Existing notification and FF-078
+visibility contracts stay unchanged. Implemented locally, not deployed; see the
+[integration decision](../decisions/2026-09-12-selection-commits-with-incoming-placement.md).
 
 On completion—and only after every workflow-owned candidate is durably
 terminal—`finalizeEvent` marks the `event_downstream_workflows` row

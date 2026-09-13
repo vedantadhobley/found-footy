@@ -107,6 +107,10 @@ const (
 	ff091SearchWindowVersion          = workflow.Version(1)
 	ff092PreserveIncumbentsChangeID   = "ff-092-preserve-incumbents-on-loss"
 	ff092PreserveIncumbentsVersion    = workflow.Version(1)
+	ff093AcceptedValidationChangeID   = "ff-093-accepted-validation-evidence"
+	ff093AcceptedValidationVersion    = workflow.Version(1)
+	ff081ReversibleSelectionChangeID  = "ff-081-reversible-selection"
+	ff081ReversibleSelectionVersion   = workflow.Version(1)
 
 	// Pre-FF-061 histories retain FF-017's roughly 0/10/30/60 activity retry
 	// chain for replay compatibility. New histories use one activity attempt
@@ -309,6 +313,10 @@ func EventWorkflow(ctx workflow.Context, in EventWorkflowInput) (EventWorkflowOu
 		workflow.DefaultVersion,
 		ff092PreserveIncumbentsVersion,
 	) != workflow.DefaultVersion
+	durableValidation := workflow.GetVersion(ctx, ff093AcceptedValidationChangeID,
+		workflow.DefaultVersion, ff093AcceptedValidationVersion) != workflow.DefaultVersion
+	reversibleSelection := workflow.GetVersion(ctx, ff081ReversibleSelectionChangeID,
+		workflow.DefaultVersion, ff081ReversibleSelectionVersion) != workflow.DefaultVersion
 	p := newPipeline(ctx, in, pipelineConfig{
 		maxHamming: cfgOut.MaxHamming, minRun: cfgOut.MinRunFrames, maxGaps: cfgOut.MaxGapFrames,
 		longMaxHamming: cfgOut.LongMaxHamming, longMinRun: cfgOut.LongMinRunFrames, longMaxGaps: cfgOut.LongMaxGapFrames,
@@ -323,6 +331,8 @@ func EventWorkflow(ctx workflow.Context, in EventWorkflowInput) (EventWorkflowOu
 		cadenceMetadata:            cadenceMetadata,
 		variantEvidence:            variantEvidence,
 		preserveIncumbentsOnLoss:   preserveIncumbentsOnLoss,
+		durableValidation:          durableValidation && atomicPlacement && variantEvidence,
+		reversibleSelection:        reversibleSelection && atomicPlacement && variantEvidence && durableValidation && canonicalExactAliases && preserveIncumbentsOnLoss,
 		eventUpdateContract:        eventUpdateContract,
 		startedAt:                  startedAt,
 	}, log)
@@ -353,7 +363,7 @@ func EventWorkflow(ctx workflow.Context, in EventWorkflowInput) (EventWorkflowOu
 		var assetsOut videoactivity.LoadEventAssetsOutput
 		if err := workflow.ExecuteActivity(p.persistCtx,
 			(*videoactivity.PersistActivities).LoadEventAssets,
-			videoactivity.LoadEventAssetsInput{EventID: in.EventID},
+			videoactivity.LoadEventAssetsInput{EventID: in.EventID, ConsistentSelection: p.reversibleSelection},
 		).Get(p.persistCtx, &assetsOut); err != nil {
 			return out, err
 		}

@@ -40,6 +40,7 @@ import (
 
 	discoverycontract "github.com/vedantadhobley/found-footy/internal/contract/discovery"
 	dvideo "github.com/vedantadhobley/found-footy/internal/domain/video"
+	dvision "github.com/vedantadhobley/found-footy/internal/domain/vision"
 )
 
 // s3Promoter is the S3 subset the persist activities need.
@@ -90,6 +91,8 @@ type CommitClipPlacementInput struct {
 	FrameRate       *float64
 	Verified        bool
 	ExtractedMinute *int
+	Validation      *dvision.Evidence        `json:"Validation,omitempty"`
+	Selection       *PlacementSelectionInput `json:"Selection,omitempty"`
 }
 
 // CommitClipPlacementOutput identifies either the canonical public winner or a
@@ -103,6 +106,7 @@ type CommitClipPlacementOutput struct {
 	ObservedAssetCreated bool
 	Announce             bool
 	EventRemoved         bool
+	Selection            *PlacementSelectionOutput `json:"Selection,omitempty"`
 }
 
 // CommitClipPlacement copies a new accepted variant when needed, commits the
@@ -118,6 +122,17 @@ func (a *PersistActivities) CommitClipPlacement(ctx context.Context, in CommitCl
 	if in.EventID == uuid.Nil || in.FixtureID <= 0 || in.StagingKey == "" || len(in.Candidates) == 0 {
 		return out, fmt.Errorf("video.CommitClipPlacement: incomplete placement input")
 	}
+	if in.Validation != nil {
+		if !in.CaptureVariant {
+			return out, fmt.Errorf("video.CommitClipPlacement: validation requires exact variant attribution")
+		}
+		if err := in.Validation.Validate(); err != nil {
+			return out, fmt.Errorf("video.CommitClipPlacement: %w", err)
+		}
+		if in.Validation.EventID != in.EventID || in.Validation.FixtureID != in.FixtureID || in.Validation.MD5 != in.MD5 {
+			return out, fmt.Errorf("video.CommitClipPlacement: validation scope differs from staged variant")
+		}
+	}
 
 	placement := dvideo.ClipPlacement{
 		EventID: in.EventID, FixtureID: in.FixtureID,
@@ -125,11 +140,20 @@ func (a *PersistActivities) CommitClipPlacement(ctx context.Context, in CommitCl
 		Verified:      in.Verified, ExtractedMinute: in.ExtractedMinute,
 		LoserAssetIDs: append([]uuid.UUID(nil), in.LoserAssetIDs...),
 		CommittedAt:   time.Now().UTC(),
+		Validation:    in.Validation,
 	}
 	for _, candidate := range in.Candidates {
 		placement.Candidates = append(placement.Candidates, dvideo.PlacementCandidate{
 			Evidence: candidate.Evidence, Outcome: candidate.Outcome, Detail: candidate.Detail,
 		})
+	}
+	var selectionSnapshot *dvideo.SelectionSnapshot
+	if in.Selection != nil {
+		snapshot, err := a.loadSelection(ctx, in.EventID)
+		if err != nil {
+			return out, err
+		}
+		selectionSnapshot = &snapshot
 	}
 
 	var destinationKey string
@@ -153,8 +177,12 @@ func (a *PersistActivities) CommitClipPlacement(ctx context.Context, in CommitCl
 			if len(in.FrameHashes) == 0 {
 				return out, fmt.Errorf("video.CommitClipPlacement: observed variant %s has no retained hash evidence", assetID)
 			}
-			if err := a.S3.Copy(ctx, in.StagingKey, dstKey); err != nil {
-				return out, fmt.Errorf("video.CommitClipPlacement: copy: %w", err)
+			// A removed-event retry may have deleted staging already. It only
+			// owes terminalization and orphan cleanup, never another source copy.
+			if selectionSnapshot == nil || !selectionSnapshot.Removed {
+				if err := a.S3.Copy(ctx, in.StagingKey, dstKey); err != nil {
+					return out, fmt.Errorf("video.CommitClipPlacement: copy: %w", err)
+				}
 			}
 			destinationKey = dstKey
 		default:
@@ -180,6 +208,11 @@ func (a *PersistActivities) CommitClipPlacement(ctx context.Context, in CommitCl
 		return out, fmt.Errorf("video.CommitClipPlacement: existing winner id is required")
 	}
 
+	if in.Selection != nil {
+		if err := a.preparePlacementSelection(ctx, in, &placement, *selectionSnapshot); err != nil {
+			return out, err
+		}
+	}
 	result, err := a.Placements.CommitClipPlacement(ctx, placement)
 	if err != nil {
 		return out, fmt.Errorf("video.CommitClipPlacement: persist: %w", err)
@@ -202,13 +235,31 @@ func (a *PersistActivities) CommitClipPlacement(ctx context.Context, in CommitCl
 	if err := a.S3.Delete(ctx, in.StagingKey); err != nil {
 		return out, fmt.Errorf("video.CommitClipPlacement: delete staging: %w", err)
 	}
-	return CommitClipPlacementOutput{
+	out = CommitClipPlacementOutput{
 		WinnerAssetID:        result.WinnerAssetID,
 		ShareID:              result.ShareID,
 		WinnerCreated:        result.WinnerCreated,
 		ObservedAssetCreated: result.ObservedAssetCreated,
 		Announce:             true,
-	}, nil
+	}
+	if in.Selection != nil {
+		if result.Selection == nil {
+			return out, fmt.Errorf("video.CommitClipPlacement: selection receipt missing")
+		}
+		snapshot, err := a.loadSelection(ctx, in.EventID)
+		if err != nil {
+			return out, err
+		}
+		state, err := projectSelection(snapshot)
+		if err != nil {
+			return out, err
+		}
+		out.Selection = &PlacementSelectionOutput{State: state, Restored: result.Selection.Plan.Restored, Skipped: result.Selection.Skipped}
+		if snapshot.Removed {
+			out.EventRemoved, out.Announce = true, false
+		}
+	}
+	return out, nil
 }
 
 // validateObservedAsset checks a deterministic accepted-variant retry. Exact
@@ -263,7 +314,8 @@ type PromoteAndPersistInput struct {
 
 // LoadEventAssetsInput identifies the event whose live dedup state is needed.
 type LoadEventAssetsInput struct {
-	EventID uuid.UUID
+	EventID             uuid.UUID
+	ConsistentSelection bool `json:"ConsistentSelection,omitempty"`
 }
 
 // RestoredEventAsset is the workflow-safe projection of one active share and
@@ -307,6 +359,13 @@ type LoadEventAssetsOutput struct {
 // closed instead of hanging recovery.
 func (a *PersistActivities) LoadEventAssets(ctx context.Context, in LoadEventAssetsInput) (LoadEventAssetsOutput, error) {
 	var out LoadEventAssetsOutput
+	if in.ConsistentSelection {
+		snapshot, err := a.loadSelection(ctx, in.EventID)
+		if err != nil {
+			return out, err
+		}
+		return projectSelection(snapshot)
+	}
 	shares, err := a.Shares.GetByEvent(ctx, in.EventID)
 	if err != nil {
 		return out, fmt.Errorf("video.LoadEventAssets: get shares: %w", err)

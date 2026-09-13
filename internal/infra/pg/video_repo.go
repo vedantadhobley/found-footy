@@ -536,13 +536,23 @@ func (r *ShareRepo) MarkSuperseded(ctx context.Context, id string) error {
 // Idempotent: already-removed shares are untouched. now() stamps removed_at,
 // satisfying the CHECK (removed ⇒ reason + removed_at present).
 func (r *ShareRepo) RemoveByEvent(ctx context.Context, eventID uuid.UUID, reason video.RemovalReason) error {
-	if _, err := r.pool.Exec(ctx, `
+	// Serialize revocation with both new shares and restored shares. Without
+	// this lock, an UPDATE snapshot can miss a share inserted during retention.
+	tx, err := r.pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	if _, err := tx.Exec(ctx, `SELECT id FROM events WHERE id=$1 FOR UPDATE`, eventID); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(ctx, `
 		UPDATE video_shares
 		SET state = 'removed', removed_reason = $2, removed_at = now()
 		WHERE event_id = $1 AND state <> 'removed'`, eventID, string(reason)); err != nil {
 		return fmt.Errorf("pg.ShareRepo.RemoveByEvent: %w", err)
 	}
-	return nil
+	return tx.Commit(ctx)
 }
 
 // rankItem pairs a share with the subset of its asset needed for ranking.

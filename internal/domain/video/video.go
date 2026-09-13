@@ -4,8 +4,8 @@
 //
 // Two related concepts:
 //
-//	Asset — the canonical byte store. One row per unique perceptual
-//	        hash per event. Dedup is scoped to the event, never across
+//	Asset — one accepted exact-byte variant per MD5 per event.
+//	        Dedup is scoped to the event, never across
 //	        events (cross-event/per-fixture dedup is dead — see
 //	        decisions.md 2026-07-25). Popularity counts within-event
 //	        dedup hits.
@@ -68,16 +68,16 @@ func (r RemovalReason) Valid() bool {
 
 // Asset is one accepted byte variant in the video_assets lineage. Active
 // unsuperseded rows are canonical public roots; superseded rows preserve exact
-// source evidence and a direct placement decision.
+// source evidence and current ownership. Reselection receipts preserve old decisions.
 //
 // Dedup model (2026-08-03, #166): the ONLY storage-enforced dedup is
 //
 //	UNIQUE (event_id, md5) — exact-byte, and it doubles as insert
 //
 // idempotency. Perceptual dedup is FUZZY (a sliding-window match over the
-// FrameHashes sequence) and lives in EventWorkflow code, decided in-memory
-// before insert — no SQL constraint can express it. FrameHashes is persisted
-// as a queryable record (debugging / re-dedup), not as a decision-maker.
+// FrameHashes sequence). The workflow and domain selection planner evaluate
+// it — no SQL constraint can express it. Persisted FrameHashes support both
+// diagnostics and reselection without decoding the media again.
 //
 // EventID is the dedup scope; FixtureID is a denormalized convenience for the
 // object path and retention worklist. Dedup is never cross-event.
@@ -104,12 +104,15 @@ type Asset struct {
 	FrameRate     *float64
 	AspectRatio   float32 // schema-generated column; carried in domain for read-only use
 
-	// Popularity is aggregate source credit while this asset is a live root.
-	// Exact per-MD5 observations derive from candidate observed_asset_id.
+	// Popularity is direct accepted-source support for selection-enabled roots;
+	// older placement histories retain assigned credit. Scores can overlap across
+	// roots and are never a unique event total. Exact per-MD5 observations derive
+	// from candidate observed_asset_id, independently of alias/credit routing.
 	Popularity int
 
-	// SupersededBy is one direct placement edge. Following it resolves the
-	// current root; graph connectivity does not make dHash identity transitive.
+	// SupersededBy routes current ownership, initially from direct placement.
+	// Reselection can rewrite it and preserves prior topology in its receipt;
+	// following the pointer never proves a transitive perceptual match.
 	SupersededBy *uuid.UUID
 
 	FirstSeenAt time.Time
@@ -155,17 +158,14 @@ func computeAspect(width, height int) float32 {
 	return float32(width) / float32(height)
 }
 
-// BumpPopularity records that a dedup hit landed on this asset. Called
-// in-memory by the EventWorkflow consumer when a candidate collapses onto
-// this asset (the AssetRepo.AddPopularity port persists it when the asset
-// already has a DB row).
+// BumpPopularity retains the legacy assigned-credit increment. Selection-enabled
+// placement replaces direct support from accepted observations instead.
 func (a *Asset) BumpPopularity() {
 	a.Popularity++
 }
 
-// SupersededBySet marks this asset as replaced by a higher-quality
-// re-encode. The successor's UUID becomes SupersededBy so the share-id
-// redirect layer (§8) can follow the chain.
+// SupersededBySet redirects current ownership to another accepted asset.
+// Direct-match and quality decisions belong to the caller, not this setter.
 func (a *Asset) SupersededBySet(successorID uuid.UUID) {
 	a.SupersededBy = &successorID
 }

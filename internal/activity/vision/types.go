@@ -12,11 +12,13 @@ import (
 // Garage key produced by the video pipeline. Category-scoped perceptual dedup
 // runs after this activity supplies the verification category.
 type ValidateClipInput struct {
-	EventID    uuid.UUID
-	FixtureID  int64
-	StagingKey string
-	APIElapsed int // fixture event time.elapsed
-	APIExtra   int // fixture event time.extra (0 if not stoppage)
+	EventID         uuid.UUID
+	FixtureID       int64
+	StagingKey      string
+	APIElapsed      int    // fixture event time.elapsed
+	APIExtra        int    // fixture event time.extra (0 if not stoppage)
+	CaptureEvidence bool   `json:"CaptureEvidence,omitempty"`
+	MD5             string `json:"MD5,omitempty"`
 }
 
 // ValidateClipOutput is the verdict for one staged clip. Outcome is the domain
@@ -38,4 +40,5 @@ type ValidateClipOutput struct {
 	ExpectedPeriod string
 	Frames         []dvision.FrameObservation
 	ClockReadings  []dvision.ClockReading
+	Evidence       *dvision.Evidence `json:"Evidence,omitempty"`
 }

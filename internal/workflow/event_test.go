@@ -194,6 +194,10 @@ func baseEventEnvWithOptions(
 	}
 	env.OnGetVersion(ff083VariantEvidenceIDForTest, sdkworkflow.DefaultVersion, sdkworkflow.Version(1)).
 		Return(variantEvidenceVersion).Maybe()
+	env.OnGetVersion("ff-093-accepted-validation-evidence", sdkworkflow.DefaultVersion, sdkworkflow.Version(1)).
+		Return(sdkworkflow.DefaultVersion).Maybe()
+	env.OnGetVersion("ff-081-reversible-selection", sdkworkflow.DefaultVersion, sdkworkflow.Version(1)).
+		Return(sdkworkflow.DefaultVersion).Maybe()
 	eventUpdateVersion := sdkworkflow.DefaultVersion
 	if eventUpdateContract {
 		eventUpdateVersion = sdkworkflow.Version(1)

@@ -65,6 +65,15 @@ creation time, and share ID; the stored compatibility rank is never part of the
 public result. A batch-event lookup can still return a directly requested
 removed event with `phase: "removed"`.
 
+**Local FF-081 change, not deployed:** selection-enabled histories populate
+`popularity` with direct accepted-source support. Each source counts once for
+each selected clip its observed MD5 directly matches. Scores may overlap across
+clips and cannot be summed into a unique event total. The field shape, rank
+order, singleton thresholds and `event.update` contract do not change. Older
+histories and the explicit incomplete-attribution fallback retain assigned
+scores; rollout does not rescore old rows. See the
+[direct-support decision](./decisions/2026-09-13-popularity-counts-direct-support.md).
+
 Pointers are emitted explicitly. Consumers must preserve the distinction
 between `null` and zero.
 

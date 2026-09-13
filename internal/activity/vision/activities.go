@@ -122,19 +122,21 @@ func (a *Activities) ValidateClip(ctx context.Context, in ValidateClipInput) (Va
 	out.ExpectedMinute, out.ExpectedPeriod = ev.ExpectedMinute, ev.ExpectedPeriod
 	out.Frames = vr.Frames
 	out.ClockReadings = ev.ClockReadings
+	out.Evidence = a.acceptanceEvidence(ctx, in, meta.DurationSecs, resp.Model, vr.Frames, ev)
+	if out.Evidence != nil {
+		if err := out.Evidence.Validate(); err != nil {
+			return ValidateClipOutput{}, visionFailure(FailureParse, fmt.Errorf("%w: %v", llm.ErrInvalidJSON, err))
+		}
+	}
 	return out, nil
 }
 
 // callModel issues the single multi-image structured-output vision call.
 func (a *Activities) callModel(ctx context.Context, images []llm.ChatImage) (*llm.ChatResponse, error) {
-	prompt := a.Cfg.Prompt
-	if prompt == "" {
-		prompt = dvision.DefaultPrompt
-	}
 	return a.LLM.Chat(ctx, llm.ChatRequest{
 		Messages: []llm.ChatMessage{{
 			Role:    llm.RoleUser,
-			Content: prompt,
+			Content: a.prompt(),
 			Images:  images,
 		}},
 		ReasoningEffort: llm.ReasoningEffortNone,

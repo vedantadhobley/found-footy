@@ -13,6 +13,7 @@ import (
 // an accepted production recommendation.
 func printReport(w io.Writer, result auditResult, detailLimit int) {
 	fmt.Fprintf(w, "FF-081 retained quality corpus\n")
+	fmt.Fprintf(w, "arrival_baseline=pre-FF-092; use -restoration-json for the FF-092 comparison\n")
 	fmt.Fprintf(w, "assets=%d events=%d pools=%d current_match_edges=%d\n",
 		result.assetCount, result.eventCount, result.poolCount, result.matchEdgeCount)
 	fmt.Fprintf(w, "matched_components=%d matched_assets=%d bridge_components=%d bridge_nodes=%d\n",
