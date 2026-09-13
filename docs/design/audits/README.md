@@ -5,6 +5,18 @@ Every surviving finding must have a stable disposition in
 [`todo.md`](../../todo.md), and any old claim must be verified against current
 code before work begins.
 
+- [Assigned versus direct source support — 2026-09-13](./video-direct-support-2026-09-13.md)
+  — fixed-selection comparison, 278 attributable events, conditional restored
+  scores, one additional visible clip, and non-additive support semantics;
+  offline experiment only.
+- [Exact and assigned source support — 2026-09-12](./video-popularity-2026-09-12.md)
+  — offline historical count reconciliation, actual-planner restoration
+  projections, ambiguous support affecting singleton visibility, and the
+  separate keeper-quality/ownership/ranking contracts; no policy change.
+- [Direct-match restoration experiment — 2026-09-12](./video-restoration-2026-09-12.md)
+  — all-order Mastantuono regression, saved-corpus topology replay, and the
+  validation/transaction/visibility boundaries for reversible selection;
+  offline only, not a production repair plan.
 - [Mastantuono second-goal bridge removal — 2026-09-11](./mastantuono-bridge-removal-2026-09-11.md)
   — exact non-transitive match triangle, wrong incumbent consolidation,
   adjacent-clock admission, and persistent misattribution after removal.

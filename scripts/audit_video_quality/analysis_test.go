@@ -20,7 +20,7 @@ func TestCurrentPolicyDansoCycleDependsOnArrivalOrder(t *testing.T) {
 	outcomes := make(map[string]struct{})
 	visited := 0
 	exhaustive := visitOrders(len(assets), 100, func(order []int) {
-		outcomes[simulateCurrentPolicy(assets, match, order)] = struct{}{}
+		outcomes[simulatePreFF092Policy(assets, match, order)] = struct{}{}
 		visited++
 	})
 	if !exhaustive || visited != 6 {
@@ -54,8 +54,8 @@ func TestBridgeArrivalCanLeaveTwoLiveAssets(t *testing.T) {
 		{true, true, true},
 		{false, true, true},
 	}
-	bridgeFirst := simulateCurrentPolicy(assets, match, []int{1, 0, 2})
-	bridgeLast := simulateCurrentPolicy(assets, match, []int{0, 2, 1})
+	bridgeFirst := simulatePreFF092Policy(assets, match, []int{1, 0, 2})
+	bridgeLast := simulatePreFF092Policy(assets, match, []int{0, 2, 1})
 	if len(strings.Split(bridgeFirst, ",")) != 2 {
 		t.Fatalf("bridge-first result = %q, want two surviving endpoints", bridgeFirst)
 	}

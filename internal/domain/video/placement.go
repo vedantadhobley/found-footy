@@ -10,6 +10,7 @@ import (
 	"github.com/google/uuid"
 
 	discoverycontract "github.com/vedantadhobley/found-footy/internal/contract/discovery"
+	dvision "github.com/vedantadhobley/found-footy/internal/domain/vision"
 )
 
 // PlacementCandidate is one source sighting whose terminal result and asset
@@ -25,7 +26,8 @@ type PlacementCandidate struct {
 // carried. Winner is non-nil when that variant becomes a new public root;
 // Variant is non-nil when it is retained as a new superseded node. Otherwise
 // WinnerAssetID identifies an existing durable winner and the observed node
-// already exists. Compatibility placements may omit observed identity.
+// already exists. Compatibility placements may omit observed identity. Selection
+// opts new histories into the prepared, receipt-protected combined transaction.
 type ClipPlacement struct {
 	EventID         uuid.UUID
 	FixtureID       int64
@@ -38,6 +40,8 @@ type ClipPlacement struct {
 	LoserAssetIDs   []uuid.UUID
 	Candidates      []PlacementCandidate
 	CommittedAt     time.Time
+	Validation      *dvision.Evidence
+	Selection       *SelectionRequest `json:"Selection,omitempty"`
 }
 
 // ClipPlacementResult reports either the canonical winner and retained
@@ -49,6 +53,7 @@ type ClipPlacementResult struct {
 	WinnerCreated        bool
 	ObservedAssetCreated bool
 	EventRemoved         bool
+	Selection            *SelectionResult `json:"Selection,omitempty"`
 }
 
 // PlacementRepo atomically owns every database mutation caused by an accepted

@@ -199,6 +199,133 @@ and quality labels, and the observed current outputs. Tests replay the matcher
 and comparator while keeping known policy disagreements explicit instead of
 treating current output as ground truth.
 
+The [restoration experiment](../scripts/audit_video_quality/README.md#restoration-experiment)
+adds a separate FF-092 baseline and additive direct-support replay. Tests
+preserve all six orders of the exact Mastantuono hash triangle, a stronger bridge,
+never-public restoration, prefix isolation from future observations, repeated
+exact variants, and the remaining Danso quality-cycle sensitivity. Generated
+graphs verify selected direct support after every prefix. Report tests enforce
+event/verification/hash-version scope, deterministic input-order-independent
+output, missing-own-share markers, bounded orders and failure propagation.
+The older default-report reducer remains explicitly pre-FF-092; neither replay
+implements production credit transfer, public visibility or media restoration.
+
+The [popularity ownership experiment](../scripts/audit_video_quality/README.md#popularity-ownership-experiment)
+adds per-root count reconciliation, fixed selected-set alternative assignments,
+and actual-planner projections from saved counts with explicitly synthetic
+source identities. Tests cover the 2/2/20 bridge, immutable observed attribution,
+conserved assigned counts, missing/removed/reclaimed evidence, cycles, matching
+scope, FF-078 asymmetry, unknown rank ties and deterministic reports. An opt-in
+saved September 11 case pins the conditional Maitland-Niles visibility change.
+It does not turn missing own validation or object availability into repair proof.
+
+The separate [direct-support comparison](../scripts/audit_video_quality/README.md#assigned-versus-direct-support)
+holds selection fixed and counts each observed source once per directly matching
+clip. Tests distinguish non-additive cross-clip support from duplicate counting,
+keep quality/ownership out of the score, exclude transitive evidence, separate
+unknown/revoked acceptance from reclaimed bytes, and preserve old report output.
+The optional saved-corpus regression pins both changed restoration cases and
+their conditional score/visibility effects without claiming validation proof.
+
+The domain selection tests pin A → C → B restoration with exact 2/5/7
+observations yielding direct support A7/B12, own validation for never-public variants, unknown/removed/
+reclaimed/unprepared exclusions, validation/hash-pool separation, stable input
+order, lineage-cycle rejection and incomplete-ledger failure. Multi-match cases
+preserve valid owners or use existing quality/tie rules to choose exactly one
+new credit owner. Real PostgreSQL
+tests restore existing and never-public shares, preserve own clocks, recover
+exact aliases, avoid duplicate support on retries, reject stale concurrent snapshots,
+roll back every mutation when receipt insertion fails, honor VAR removal and
+apply all FF-078 verification/singleton combinations. A subsequent exact source
+moves the restored clip from popularity one to two without counting twice.
+
+`TestDomainSelectionMastantuono` compares all six exact incident arrival orders
+with the earlier experiment, preserving incumbent tournament order and appending
+restorations rather than treating the planner's set order as quality policy.
+The opt-in `TestDomainSelectionSavedCorpus` reads
+only `FF_SELECTION_CORPUS`, an existing local CSV. The September 12 run matches
+479 saved components across 1,490 first-observation-order prefixes from the
+2,409-asset export. Acceptance/share metadata and one source per MD5 are
+synthetic test inputs, not recovered historical evidence or popularity. No
+production repair eligibility follows from this topology rehearsal. The
+[audit addendum](./design/audits/video-restoration-2026-09-12.md#domain-and-transaction-implementation-checkpoint)
+records timing and scope; subsequent workflow integration is documented below.
+This implementation passed the full Go suite, repeated race-enabled domain/
+selection/PG checks, build, vet and scoped lint. Migration checks used disposable
+test databases only; no production migration or restoration was performed.
+
+The combined-placement tests additionally cover incoming mutation plus restoration
+in one transaction, replay after another winner and another exact source, stale
+plans, missing new-winner/first-loss bytes, missing new validation, unknown
+historical credit, receipt rollback and concurrent revoke-before-reclaim. The
+activity/real-PG test uses a failure-injecting object double: it loses a staging
+delete acknowledgement after commit, then verifies one copy, current-state retry
+results, HEAD failure handling, never-public restoration and removed-event cleanup
+with no remaining staging source. These are not live Garage tests.
+
+Workflow tests exercise A2 → C7 → B12/A7 → B12/A8 → B13/A9, source terminalization,
+split exact aliases and state replacement before publication. The real entrypoint
+tests both FF-081 version branches, consistent failed-run recovery, exact recurrence
+without hash/vision, and placement/completion updates. Saved Mastantuono and Lens
+SDK histories still replay offline. Integration adds no quality/clock policy change.
+The integrated slice passed the full suite, three repeated race-enabled
+transaction/workflow runs, saved-data comparisons, build, vet and scoped lint;
+the ignored scratch-helper limitation noted below remains unchanged.
+
+The September 13 direct-support slice separates source-evidence eligibility from
+playable-media eligibility and exclusive alias ownership. Domain tests cover
+unknown/removed evidence, retained evidence after byte reclamation, exact short
+hashes, two matching routes counted once, non-transitive credit and recomputation
+despite stale cached scores. Real PostgreSQL tests verify a bridge recurrence
+updates both keepers once through retries and that replacing both scores with
+one bridge recomputes the source union. Singleton tests deliberately remove
+bridge evidence so their popularity-one-to-two boundary remains meaningful.
+The receipt-constraint migration is covered by fresh-schema/upgrade checks; no
+historical scores change. Audit projections explicitly reconstruct their old
+assigned baseline from routing so saved comparison reports remain reproducible.
+The complete race-enabled Go/integration suite was rerun after extending the
+receipt-version CHECK and passed, including the real previous-constraint upgrade
+and unchanged historical state. Build, vet, scoped lint, saved-corpus tests and
+the byte-identical direct-support report also passed; see the
+[verification record](./decisions/2026-09-13-popularity-counts-direct-support.md#verification-scope).
+
+`TestValidationEventIndexBoundsHistoryAndMigrates` seeds three target evaluations
+and 20,000 unrelated retained evaluations in a disposable PostgreSQL database.
+It checks the exact snapshot query's event-scoped index condition and zero
+post-scan filtering, without machine-dependent latency assertions. Fresh-schema
+and upgrade paths preserve the full snapshot fingerprint and evaluation count;
+reapplying the migration is safe, and startup refuses a missing required index.
+The complete database package was rerun uncached with `-json -timeout=30m`
+after an earlier default-timeout interruption. It passed without source changes;
+the [index-review verification](./design/audits/video-restoration-2026-09-12.md#review-correction-event-local-validation-lookup)
+records the saved output and scope. This one-run override does not change the
+Makefile's default timeout or the separate workspace formatting/lint limitation.
+
+FF-093 tests pin bounded accepted evidence at the actual validation boundary,
+including returned model identity, effective prompt/schema fingerprints, original
+expected time, sampled positions and the variant's own clock. Domain tests reject
+invalid identity, scope, shape and size without re-evaluating old observations.
+Pipeline tests carry one evaluation through placement retries and exact followers,
+require evidence on the new path, and omit it for legacy histories and later
+exact recurrence. Real-Postgres tests keep a losing variant's proof off its
+winner, retain distinct evaluations without overwriting, reject reused IDs,
+roll back proof with failed placement, preserve it after media reclamation and
+exclude VAR-removed acceptance. Schema tests cover fresh adoption, upgrading an
+old table set without fabricated history, and startup failure on missing checks.
+
+September 12 verification passed the full Go suite, affected race tests repeated
+three times, and offline SDK replay of the saved Mastantuono and Lens incident
+histories. The saved clock corpus still has 108 unique observations across 13
+runs and unchanged evaluator comparisons; the reviewed dHash/quality corpora
+also retain their prior expectations. Repeating the restoration experiment on
+the saved 2,409-asset export produces the same report checksum recorded in its
+audit. These prove compatibility with saved evidence, not natural production
+validation. No fresh production query, media download or model call was made
+for this slice. Build, vet, module metadata and scoped application/script/test
+lint pass. Whole-workspace lint additionally finds an unrelated unformatted
+ignored `scratch-audit-2026-09-12/clock-tolerance/all_frames.go`; that scratch
+helper was left untouched, so the aggregate workspace gate is not claimed clean.
+
 The separate September natural-cadence corpus preserves first-loss variants
 with known frame rate, source-copy checksums, exact observations, and frame
 diagnostics. Tests replay current quality preference and experimental

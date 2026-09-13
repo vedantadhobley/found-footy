@@ -13,6 +13,7 @@ import (
 	discoverycontract "github.com/vedantadhobley/found-footy/internal/contract/discovery"
 	ddiscovery "github.com/vedantadhobley/found-footy/internal/domain/discovery"
 	dvideo "github.com/vedantadhobley/found-footy/internal/domain/video"
+	dvision "github.com/vedantadhobley/found-footy/internal/domain/vision"
 )
 
 // dedupAndCommit applies the same category-scoped matcher and keeper policy as
@@ -22,6 +23,10 @@ func (p *pipeline) dedupAndCommit(c clip, vout visionactivity.ValidateClipOutput
 	if len(matched) == 0 {
 		out, ok := p.commitClipPlacement(c, vout, true, uuid.Nil, nil)
 		if !ok {
+			return
+		}
+		if p.reversibleSelection {
+			p.recordSelectedPlacement(c, true, 0)
 			return
 		}
 		c.assetID = out.WinnerAssetID
@@ -46,6 +51,10 @@ func (p *pipeline) dedupAndCommit(c clip, vout visionactivity.ValidateClipOutput
 		loserIDs := p.assetIDsAt(matched)
 		out, ok := p.commitClipPlacement(c, vout, true, uuid.Nil, loserIDs)
 		if !ok {
+			return
+		}
+		if p.reversibleSelection {
+			p.recordSelectedPlacement(c, true, len(loserIDs))
 			return
 		}
 		for _, idx := range matched {
@@ -83,6 +92,10 @@ func (p *pipeline) dedupAndCommit(c clip, vout visionactivity.ValidateClipOutput
 	if _, ok := p.commitClipPlacement(c, vout, false, winnerID, loserIDs); !ok {
 		return
 	}
+	if p.reversibleSelection {
+		p.recordSelectedPlacement(c, false, len(loserIDs))
+		return
+	}
 	popularity := 1 + len(c.exactFollowers)
 	for _, idx := range loserIndices {
 		popularity += p.assets[idx].popularity
@@ -112,6 +125,18 @@ func (p *pipeline) commitClipPlacement(
 		return out, false
 	}
 	startedAt := workflow.Now(p.ctx)
+	var validation *dvision.Evidence
+	if p.durableValidation {
+		validation = vout.Evidence
+	}
+	var selection *videoactivity.PlacementSelectionInput
+	if p.reversibleSelection {
+		selection = &videoactivity.PlacementSelectionInput{
+			ID: uuid.NewSHA1(uuid.NameSpaceOID, []byte("selection:"+workflow.GetInfo(p.ctx).WorkflowExecution.RunID+":"+c.tweetURL)),
+			Policy: dvideo.SelectionPolicy{MaxHamming: p.maxHamming, MinRun: p.minRun, MaxGaps: p.maxGaps,
+				LongMaxHamming: p.longMaxHamming, LongMinRun: p.longMinRun, LongMaxGaps: p.longMaxGaps},
+		}
+	}
 	err := workflow.ExecuteActivity(p.persistCtx,
 		(*videoactivity.PersistActivities).CommitClipPlacement,
 		videoactivity.CommitClipPlacementInput{
@@ -125,6 +150,8 @@ func (p *pipeline) commitClipPlacement(
 			FileSizeBytes: c.fileSizeBytes, Bitrate: c.bitrate,
 			FrameRate: p.persistedFrameRate(c),
 			Verified:  c.verified, ExtractedMinute: vout.MatchedMinute,
+			Validation: validation,
+			Selection:  selection,
 		}).Get(p.persistCtx, &out)
 	if err != nil {
 		p.logCandidatePhase(c.tweetURL, "placement", "failed", startedAt)
@@ -154,10 +181,28 @@ func (p *pipeline) commitClipPlacement(
 			"candidate_outcome", candidateOutcome)
 	}
 	if out.EventRemoved {
+		if p.reversibleSelection {
+			p.assets = nil
+			p.exactRoots = make(map[string]uuid.UUID)
+		}
 		return out, false
 	}
-	p.rememberExactRoot(c.md5, out.WinnerAssetID)
-	p.redirectExactRoots(loserIDs, out.WinnerAssetID)
+	if p.reversibleSelection {
+		if out.Selection == nil {
+			p.setTerminalError(fmt.Errorf("selection state missing after placement"))
+			return out, false
+		}
+		if err := p.replaceSelection(out.Selection, out.WinnerAssetID); err != nil {
+			p.setTerminalError(err)
+			return out, false
+		}
+		if out.Selection.Skipped != "" {
+			p.log.Warn("video reselection skipped", "event_id", p.in.EventID.String(), "reason", string(out.Selection.Skipped))
+		}
+	} else {
+		p.rememberExactRoot(c.md5, out.WinnerAssetID)
+		p.redirectExactRoots(loserIDs, out.WinnerAssetID)
+	}
 	if out.Announce {
 		p.publishEventUpdate(c.tweetURL, "placement")
 	}

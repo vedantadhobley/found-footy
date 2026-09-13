@@ -7,6 +7,11 @@ work.
 
 ## Active proposals
 
+- [Reversible video selection](./reversible-video-selection.md) — FF-081 direct
+  selected-substitute invariant, offline restoration proof, atomic ownership
+  changes and preserved singleton filtering; validation, domain planning and
+  atomic reselection and versioned workflow integration are implemented locally;
+  migration, rollout and natural production validation remain.
 - [`provider-integrity-circuit-breaker.md`](./provider-integrity-circuit-breaker.md)
   — FF-075 data-quality state machine that keeps polling and positive discovery
   active while suppressing untrusted destructive provider mutations.

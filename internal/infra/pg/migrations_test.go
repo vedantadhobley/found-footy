@@ -87,32 +87,17 @@ func TestMigrateAdoptsCurrentSchemaAndIsIdempotent(t *testing.T) {
 	}
 }
 
-func migrationPrefixThrough(t *testing.T, through string) fstest.MapFS {
-	t.Helper()
-	entries, err := fs.ReadDir(migrations.FS, ".")
-	if err != nil {
-		t.Fatalf("read migrations: %v", err)
-	}
-	prefix := fstest.MapFS{}
-	for _, entry := range entries {
-		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".sql") || entry.Name() > through {
-			continue
-		}
-		data, err := fs.ReadFile(migrations.FS, entry.Name())
-		if err != nil {
-			t.Fatalf("read migration %s: %v", entry.Name(), err)
-		}
-		prefix[entry.Name()] = &fstest.MapFile{Data: data}
-	}
-	return prefix
-}
-
 // TestMigrateTerminalizesRemovedEventCandidates proves FF-084's bounded data
 // repair touches only pending candidates whose owning event is already removed.
 func TestMigrateTerminalizesRemovedEventCandidates(t *testing.T) {
 	ctx, pool, _ := setupMigrationPool(t)
-	if err := pool.Migrate(ctx, migrationPrefixThrough(t, "20260831_02_retain_accepted_video_variants.sql")); err != nil {
-		t.Fatalf("apply pre-FF-084 chain: %v", err)
+	if err := pool.Migrate(ctx, migrations.FS); err != nil {
+		t.Fatalf("adopt fixture schema: %v", err)
+	}
+	// The fixture always loads today's schema. Model an unapplied suffix in
+	// its disposable ledger rather than presenting an old target hash as today.
+	if _, err := pool.Exec(ctx, `DELETE FROM schema_migrations WHERE version >= '20260831_03_terminalize_removed_event_candidates'`); err != nil {
+		t.Fatalf("model pre-FF-084 ledger: %v", err)
 	}
 	fixtureID := int64(9403)
 	fixture := makeStaging(fixtureID, time.Date(2026, 8, 31, 22, 0, 0, 0, time.UTC))

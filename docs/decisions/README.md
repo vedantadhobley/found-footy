@@ -14,6 +14,18 @@ its historical heading anchors valid.
 
 New decisions after the frozen archive:
 
+- [Popularity counts direct source support](./2026-09-13-popularity-counts-direct-support.md)
+  — FF-081 separates per-clip matching evidence from exclusive alias routing;
+  scores overlap across clips, while quality and singleton rules stay unchanged.
+- [Selection commits with incoming placement](./2026-09-12-selection-commits-with-incoming-placement.md)
+  — FF-081 integrates object checks, atomic reselection, current-state retries,
+  versioned workflow recovery and existing notifications; rollout remains separate.
+- [Restored clips keep one source owner](./2026-09-12-restored-clips-keep-one-source-owner.md)
+  — FF-081 implements the pure direct-support planner and atomic reselection
+  repository; exclusive popularity is superseded by direct source support above.
+- [Accepted validation follows exact assets](./2026-09-12-accepted-validation-follows-exact-assets.md)
+  — FF-093 retains bounded accepted observations with the observed MD5 in the
+  existing placement transaction; no new model call or keeper-policy change.
 - [Losing candidates preserve existing keepers](./2026-09-11-losing-candidates-preserve-existing-keepers.md)
   — FF-092 stops a losing bridge from retiring other kept clips, preserves
   old Temporal histories, and leaves broader keeper selection separate.

@@ -36,6 +36,8 @@ rules. The offline analysis does not.
 The total-order scores are comparisons, not accepted production policy. The
 focused [2026-08-31 audit](../../docs/design/audits/video-quality-2026-08-31.md)
 records the interpretation and rejected transitive-cluster direction.
+The ordinary report's arrival reducer preserves its **pre-FF-092** baseline;
+use the restoration mode below for an explicit FF-092 comparison.
 
 The report also replays an experimental substitution rule. `BestAlignment`
 returns the strongest qualifying primary or sustained dHash span, including
@@ -81,9 +83,151 @@ The direct-cover experiment builds directional edges only from those pairwise
 decisions and solves the smallest visible set for which every hidden node has a
 selected direct substitute. A path through another hidden node never counts.
 Components through twenty assets are exhaustive; a larger component fails
-visible by retaining every asset. Equal minima prefer the sum of immutable
+visible by retaining every asset. Equal minima prefer the sum of recorded
 exact-variant observations and then asset ID, solely to make audit output
 repeatable. That tiebreak is not accepted public behavior.
+
+## Restoration experiment
+
+`-restoration-json` compares FF-092 placement with an additive direct-support
+repair after every arrival. An observed asset is restored when no selected
+keeper directly matches it. A hidden intermediary and a not-yet-arrived asset
+cannot justify hiding it. Restoration never retires another keeper.
+
+The NDJSON report contains chronological prefix traces, final selected sets,
+bounded arrival-order counts, recorded historical roots and missing-own-share
+markers. It scopes assets by event, verification category and hash version.
+Historical lineage connects analysis components but is never replacement
+evidence. Singletons are omitted. `-max-permutations` accepts 1 through 100,000;
+the report identifies exhaustive versus sampled components.
+
+This is a match-only topology experiment, not a production repair plan or an
+accepted whole-video replacement rule. It preserves the current quality
+comparator and dHash thresholds. It does not replay credit reassignment or
+FF-078 public visibility, validate original media, or recover a never-public
+variant's own timestamp from its keeper. First-observation order is not recorded
+asynchronous placement-completion order. The existing human labels and other
+experiments are unchanged.
+
+Use an already saved CSV with the populated module cache:
+
+```bash
+docker run --rm -i --network none --memory 4g --cpus 4 \
+  -e GOMEMLIMIT=3GiB -e GOMAXPROCS=4 \
+  -e GOCACHE=/gocache -e GOMODCACHE=/gomodcache \
+  -v "$PWD:/src:ro" \
+  -v "$HOME/.cache/found-footy/gocache:/gocache" \
+  -v "$HOME/.cache/found-footy/gomodcache:/gomodcache" \
+  -w /src golang:1.25.11-bookworm \
+  go run -buildvcs=false ./scripts/audit_video_quality \
+  -restoration-json -max-permutations 1000 \
+  < scratch-audit-2026-09-08/retained-quality-corpus.csv \
+  > /tmp/ff081-restoration.ndjson
+```
+
+This mode rejects combinations with `-overlap-json`, `-review-csv` and
+`-pair-corpus`. See the [results](../../docs/design/audits/video-restoration-2026-09-12.md)
+and [runtime proposal](../../docs/design/proposals/reversible-video-selection.md).
+
+The domain-planner equivalence test can use the same saved export:
+
+```bash
+# Use the pinned, capped, offline test container described above, with:
+# -e FF_SELECTION_CORPUS=/src/scratch-audit-2026-09-08/retained-quality-corpus.csv
+go test -buildvcs=false -count=1 -run TestDomainSelection -v ./scripts/audit_video_quality
+```
+
+This test replays real hashes/technical metadata through the new domain planner
+with synthetic acceptance and one source per MD5. It checks every chronological
+prefix against the original experiment and reports planner-only timing. It does
+not reconstruct missing source attribution, prove media availability or authorize
+historical repair. PostgreSQL tests separately cover real transaction semantics.
+
+## Popularity ownership experiment
+
+`-popularity-json` separates exact-MD5 observations from the source counts
+assigned to recorded selected clips. It validates each root's aggregate against
+the saved lineage and observed counts, then tests moving one ambiguous MD5's
+observations to another directly matching selected owner. Selected MD5s retain
+their own exact observations. Neither quality nor the selected set changes in
+this counterfactual. Scope and matcher routes remain the production ones.
+
+Counts reconcile only when every asset has observed attribution, every lineage
+terminates inside the event, every root count matches, and the roots are public
+and not recorded reclaimed. Missing counts are unknown, not zero evidence.
+The report withholds ranges and counterfactuals for excluded events. Ranges for
+eligible events vary known-own-share ambiguous variants only; their individual
+maxima are not jointly attainable. Removed/reclaimed evidence is not reassigned.
+
+The same report runs the local pure restoration planner on each reconciled
+event. Counts come from the export, but source IDs and credited-source rows are
+synthetically reconstructed from aggregate lineage. Own-share media is assumed
+available unless recorded reclaimed; no objects are fetched. Never-public
+validation remains unknown. The resulting projection is **not a repair plan**.
+Its own-share alternatives and conditional alternatives requiring missing
+acceptance to confirm the inherited category have separate output fields.
+
+Visibility follows FF-078 exactly. Rank sensitivity counts only strict reversals
+between clips visible before and after; it does not fabricate missing share
+creation times. One-variant moves are a bounded sensitivity check, not exhaustive
+combinations or proof of whole-video substitution. No score is fed into keeper
+quality, and no fractional or duplicated source credit is introduced.
+
+For the newer saved FF-092 NDJSON export, first convert locally:
+
+```bash
+jq -rs -f scripts/audit_video_quality/history_to_csv.jq \
+  scratch-audit-2026-09-11/ff092-history/assets.ndjson \
+  > /tmp/ff081-popularity-corpus.csv
+```
+
+Use the capped, network-disabled Go container above with
+`go run -buildvcs=false ./scripts/audit_video_quality -popularity-json`, feeding
+that CSV on stdin. No fresh production export is needed. This mode rejects
+other report flags. Set `FF_POPULARITY_CORPUS` to the converted file's
+container-visible path to run the saved September 11 regression.
+See the [results and scoring boundary](../../docs/design/audits/video-popularity-2026-09-12.md).
+
+## Assigned versus direct support
+
+`-direct-support-json` is a separate scoring experiment on the same saved CSV.
+Direct support was subsequently adopted in the local runtime planner; see the
+[decision](../../docs/decisions/2026-09-13-popularity-counts-direct-support.md).
+This comparison keeps its historical assigned baseline: it derives exclusive
+counts from the planner's routing, not from the planner's new direct scores.
+It holds the recorded selected set fixed, then separately holds the actual
+restoration planner's projected set fixed. Neither score changes keeper quality
+or selection. The earlier `-popularity-json` output remains unchanged.
+
+For each selected clip, direct support sums the observed source count of every
+accepted MD5 that directly matches it in the same event/verification/hash pool.
+Its own MD5 contributes once, including when its hash trace is too short for a
+perceptual route. Both dHash routes matching does not count a source twice.
+There is no transitive traversal, vote transfer or quality comparison. An
+observed MD5 can support multiple clips; totals across clips are therefore not
+counts of distinct sources. Changing exclusive ownership cannot change a fixed
+clip's direct score.
+
+The report separates known-own-acceptance support from the conditional score
+if missing own validations confirm the inherited category. Removed shares are
+excluded; reclaiming bytes alone does not erase retained acceptance evidence.
+Playback/restoration still requires media, but counting saved source evidence
+does not. Source IDs/outcomes remain absent from the saved aggregate export.
+Events that fail the existing per-root attribution/public-root checks receive
+no score comparison. Never-public validation is not reconstructed.
+
+Each comparison records exact, assigned, known-direct and conditional-direct
+counts; shared/unsupported source witnesses; unique covered sources versus
+non-additive support totals; new/hidden public clips; strict rank reversals;
+and unresolved tie changes. FF-078 and public ordering remain unchanged.
+Current dHash overlap remains evidence of shared frames, not guaranteed
+whole-video substitution, correct goal identity or independent corroboration.
+
+Run the same capped offline container with `-direct-support-json` instead of
+`-popularity-json`. It rejects combinations with all other report modes and
+duplicate event/MD5 rows. The saved regression also uses
+`FF_POPULARITY_CORPUS`. See the
+[September 13 comparison](../../docs/design/audits/video-direct-support-2026-09-13.md).
 
 ## Aligned-section report
 

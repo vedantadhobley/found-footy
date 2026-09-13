@@ -66,6 +66,7 @@ found-footy/
 │   │   ├── event_vision_failure.go      ✓ bounded failure decoding; final Temporal timeout overrides prior-attempt detail
 │   │   ├── event_pipeline_placement.go  ✓ FF-066/FF-067 atomic accepted-candidate placement, removal gate, attribution, supersession, and invalidation
 │   │   ├── event_pipeline_effects.go    ✓ promotion, supersession, publication, cleanup, and terminal candidate durability
+│   │   ├── event_pipeline_selection.go  ✓ FF-081 current-state replacement, split aliases, and stable incumbent order
 │   │   ├── telemetry.go                 ✓ FF-050: typed replay-aware EventWorkflow lifecycle/search/candidate/publication timing envelope
 │   │   └── video.go                     ✓ #165: pre-FF-022 VideoWorkflow child retained for Temporal replay; shared download/hash activity contracts
 │   ├── activity/                        activity packages + shared heartbeat helper
@@ -332,14 +333,57 @@ terminal evidence that committed before removal.
 
 FF-083 makes that boundary retain every accepted distinct MD5, including a
 variant that loses its first keeper comparison. `video_assets.superseded_by`
-is one direct placement edge, not a transitive perceptual-cluster claim.
+initially records direct placement and supplies current alias ownership, not a
+transitive perceptual-cluster claim. Reselection may rewrite that ownership while
+retaining the prior topology in its receipt.
 Candidate `observed_asset_id` identifies immutable source bytes while
 `credited_asset_id` follows the current live root. Superseded nodes retain
-their evidence; exact-MD5 frequency derives from candidate observations and
-roots retain aggregate credited popularity. `AssetRepo` loads the complete
+their evidence; exact-MD5 frequency derives from candidate observations.
+Legacy roots retain assigned popularity; selection-enabled roots use direct
+source support as described below. `AssetRepo` loads the complete
 event lineage for exact-alias recovery, while public reads
 still require active shares on unsuperseded roots. Hidden variants do not mint
 public share IDs.
+
+FF-093 adds optional `ClipPlacement.Validation` and `video_asset_validations`.
+The existing placement transaction retains each acknowledged accepted
+evaluation against `observed_asset_id`, including never-public variants.
+An evaluation-ID conflict with different content rolls back placement. Exact
+followers share the asset association without copying proof onto every source;
+later exact recurrence adds no invented evaluation. The composite foreign key
+and bounded JSON check enforce scope and accepted-record shape. Media
+reclamation preserves the records; historical evidence is not backfilled.
+This is locally implemented, not deployed, and does not add graph reselection.
+See the [accepted-validation decision](./decisions/2026-09-12-accepted-validation-follows-exact-assets.md).
+
+FF-081 now adds `SelectionSnapshot`, `PlanSelection` and the internal
+`SelectionRepo` port. The pure planner uses own validation, prepared-media
+eligibility and cached direct matches to add unsupported roots. It requires a
+complete source ledger and gives every observed MD5 one canonical alias owner.
+Public popularity counts accepted sources per directly matching selected clip,
+independently of that owner. Scores overlap across clips; neither transitive
+paths nor old aggregate popularity supply support. Own acceptance is required,
+but source bytes need not remain playable to retain their evidence. Quality and
+FF-078 thresholds stay unchanged; see the
+[direct-support decision](./decisions/2026-09-13-popularity-counts-direct-support.md).
+`PlacementRepo.LoadSelection`
+reads a repeatable snapshot. Its earliest-validation lookup uses the event-leading
+`video_asset_validations_event` index, so retained history from other events does
+not turn each placement into a table scan. `CommitSelection` rejects stale/removed inputs and
+atomically changes ownership, credit and shares with an immutable
+`video_selection_commits` receipt. Old outcome details remain historical.
+New-history `CommitClipPlacement` now composes ordinary placement and reselection
+under the same event lock. The activity checks media with HEAD concurrency capped at four,
+cleans staging and returns a consistent current root/alias snapshot. Retry receipts
+prevent an old placement from replaying its merge after ownership changes.
+Incomplete historical attribution skips reselection/direct scoring with a durable reason;
+new variants still require their own proof and bytes. Share revocation takes the
+event lock, and the workflow updates its caches before `event.update`. This is
+implemented locally, not deployed; see the
+[integration decision](./decisions/2026-09-12-selection-commits-with-incoming-placement.md).
+The direct-support change adds no storage fields. Its migration extends the
+receipt-version CHECK and updates two column descriptions; no historical scores
+or receipts are rewritten.
 
 FF-079 gives `Asset` an `ObjectReclaimedAt` lifecycle fact. `AssetRepo` lists
 unreclaimed objects independently of share state, records only successful
@@ -407,6 +451,10 @@ the unverified pool instead of being compared against minute zero (FF-031).
   `period`) + `VisionResponse` (`{Frames}`, the `response_format` json-schema,
   exactly-3 positional frames) + `DefaultPrompt`. The model must return period
   only from visible scorebug evidence, never from the clock value alone.
+- `evidence.go` — bounded accepted `Evidence`, with original observations,
+  expected time, complete evaluation, sampling and provenance. Validation
+  checks identity/shape without reinterpreting historical observations through
+  today's evaluator. `EvaluatorVersion` must change with evaluator semantics.
 
 Consumed by `internal/activity/vision.ValidateClip`: fetch staged clip →
 `ffmpeg.ExtractFrame` @25/50/75% → one multi-image structured-output vision call
@@ -423,6 +471,11 @@ classes retain the workflow's bounded retry policy (FF-012).
 FF-087's activity-owned `failure.go` adds bounded stage/class evidence. New
 workflow histories persist it for the exact-byte representative and followers;
 Temporal timeouts retain their subtype without guessing the expired stage.
+FF-093's activity-owned `evidence.go` captures the accepted result and actual
+returned model ID, effective prompt/schema fingerprints, sample positions,
+configuration and Temporal origin. The record travels in the acknowledged
+activity output to atomic placement; it adds neither a model call nor a new
+activity. A server-omitted model ID stays empty, not inferred from configuration.
 
 ### team domain (D6)
 

@@ -387,7 +387,7 @@ func analyzeComponent(graph poolGraph, indexes []int, maxPermutations int) compo
 	finding.qualityCycles = countQualityCycles(assets)
 
 	visit := func(order []int) {
-		outcome := simulateCurrentPolicy(assets, match, order)
+		outcome := simulatePreFF092Policy(assets, match, order)
 		finding.outcomes[outcome]++
 		anchoredOutcome := simulateKeeperPolicy(assets, match, order, anchoredBandWinner)
 		finding.anchoredOutcomes[anchoredOutcome]++
@@ -402,7 +402,7 @@ func analyzeComponent(graph poolGraph, indexes []int, maxPermutations int) compo
 	for i := range chronological {
 		chronological[i] = i
 	}
-	finding.chronologicalResult = simulateCurrentPolicy(assets, match, chronological)
+	finding.chronologicalResult = simulatePreFF092Policy(assets, match, chronological)
 	finding.anchoredChronologicalResult = simulateKeeperPolicy(
 		assets, match, chronological, anchoredBandWinner,
 	)

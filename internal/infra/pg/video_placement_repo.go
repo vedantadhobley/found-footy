@@ -16,6 +16,7 @@ import (
 
 	discoverycontract "github.com/vedantadhobley/found-footy/internal/contract/discovery"
 	"github.com/vedantadhobley/found-footy/internal/domain/video"
+	dvision "github.com/vedantadhobley/found-footy/internal/domain/vision"
 )
 
 // PlacementRepo implements video.PlacementRepo over one Postgres pool.
@@ -62,6 +63,25 @@ func (r *PlacementRepo) CommitClipPlacement(ctx context.Context, in video.ClipPl
 		return out, nil
 	}
 
+	if in.Selection != nil {
+		out, err = commitPlacementSelectionTx(ctx, tx, in)
+	} else {
+		out, err = applyClipPlacementTx(ctx, tx, in)
+	}
+	if err != nil {
+		return out, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return out, fmt.Errorf("pg.PlacementRepo.CommitClipPlacement: commit: %w", err)
+	}
+	return out, nil
+}
+
+// applyClipPlacementTx retains the existing placement rules inside a caller's
+// event-locked transaction so reselection cannot expose an intermediate set.
+func applyClipPlacementTx(ctx context.Context, tx pgx.Tx, in video.ClipPlacement) (video.ClipPlacementResult, error) {
+	var out video.ClipPlacementResult
+	var err error
 	winnerID := in.WinnerAssetID
 	winnerCreated := false
 	if in.Winner != nil {
@@ -101,6 +121,9 @@ func (r *PlacementRepo) CommitClipPlacement(ctx context.Context, in video.ClipPl
 		if err := requireObservedRoot(ctx, tx, in.EventID, in.FixtureID, in.ObservedAssetID, winnerID); err != nil {
 			return out, fmt.Errorf("pg.PlacementRepo.CommitClipPlacement: %w", err)
 		}
+	}
+	if err := persistPlacementValidation(ctx, tx, in); err != nil {
+		return out, fmt.Errorf("pg.PlacementRepo.CommitClipPlacement: %w", err)
 	}
 
 	shareID, err := ensurePlacementShare(ctx, tx, in, winnerID)
@@ -157,9 +180,6 @@ func (r *PlacementRepo) CommitClipPlacement(ctx context.Context, in video.ClipPl
 		}
 	}
 
-	if err := tx.Commit(ctx); err != nil {
-		return out, fmt.Errorf("pg.PlacementRepo.CommitClipPlacement: commit: %w", err)
-	}
 	out.WinnerAssetID = winnerID
 	out.ShareID = shareID
 	out.WinnerCreated = winnerCreated
@@ -231,6 +251,16 @@ func validateClipPlacement(in video.ClipPlacement) error {
 	}
 	if in.Winner != nil && in.ObservedAssetID != uuid.Nil && in.ObservedAssetID != in.Winner.ID {
 		return fmt.Errorf("new winner differs from observed variant")
+	}
+	if in.Validation != nil {
+		if err := in.Validation.Validate(); err != nil {
+			return err
+		}
+		if in.ObservedAssetID == uuid.Nil || in.Validation.EventID != in.EventID || in.Validation.FixtureID != in.FixtureID ||
+			in.Verified != (in.Validation.Evaluation.Outcome == dvision.OutcomeVerified) ||
+			!equalOptionalInt(in.ExtractedMinute, in.Validation.Evaluation.MatchedMinute) {
+			return fmt.Errorf("placement validation differs from its exact observation or verdict")
+		}
 	}
 	for _, c := range in.Candidates {
 		if c.Evidence.EventID != in.EventID || c.Evidence.FixtureID != in.FixtureID ||

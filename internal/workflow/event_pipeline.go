@@ -86,6 +86,8 @@ type pipeline struct {
 	cadenceMetadata                         bool
 	variantEvidence                         bool
 	preserveIncumbentsOnLoss                bool
+	durableValidation                       bool
+	reversibleSelection                     bool
 	eventUpdateContract                     bool
 
 	// activity option ctxs
@@ -131,6 +133,8 @@ func newPipeline(ctx workflow.Context, in EventWorkflowInput, cfg pipelineConfig
 		cadenceMetadata:            cfg.cadenceMetadata,
 		variantEvidence:            cfg.variantEvidence,
 		preserveIncumbentsOnLoss:   cfg.preserveIncumbentsOnLoss,
+		durableValidation:          cfg.durableValidation,
+		reversibleSelection:        cfg.reversibleSelection,
 		eventUpdateContract:        cfg.eventUpdateContract,
 		downloadCtx:                videoDownloadActivityContext(ctx),
 		hashCtx:                    videoHashActivityContext(ctx),
@@ -164,6 +168,8 @@ type pipelineConfig struct {
 	cadenceMetadata                         bool
 	variantEvidence                         bool
 	preserveIncumbentsOnLoss                bool
+	durableValidation                       bool
+	reversibleSelection                     bool
 	eventUpdateContract                     bool
 	startedAt                               time.Time
 }

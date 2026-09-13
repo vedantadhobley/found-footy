@@ -262,8 +262,8 @@ CREATE INDEX event_downstream_workflows_pending
 
 -- 7a. video_assets — accepted byte-variant store, one row per distinct MD5 per EVENT.
 --    Active rows with superseded_by=NULL are the canonical public roots. Retired rows
---    preserve the exact source variant and one direct placement decision; graph
---    connectivity is never treated as proof of transitive perceptual identity.
+--    preserve the exact source variant and current ownership; reselection receipts
+--    preserve prior topology. Graph connectivity never proves perceptual identity.
 --    Dedup is scoped to the event and NEVER across events. Cross-event / per-fixture
 --    dedup is dead: tried in Python, rejected — it collapsed genuinely-distinct goals
 --    (visually-similar broadcast clips: same stadium, camera, celebration) into one and
@@ -305,9 +305,9 @@ CREATE TABLE video_assets (
     frame_rate DOUBLE PRECISION,
     aspect_ratio REAL GENERATED ALWAYS AS (width::REAL / height::REAL) STORED,
 
-    -- Aggregate source votes credited while this asset is a live root. The
-    -- count transfers once on supersession; exact per-MD5 observations derive
-    -- from event_search_candidates.observed_asset_id.
+    -- Cached direct accepted-source support on selection-enabled live roots;
+    -- older histories retain assigned credit. Scores may overlap across roots.
+    -- Exact per-MD5 observations derive from candidate observed_asset_id.
     popularity INT NOT NULL DEFAULT 1,
 
     -- Direct supersession decision (dedup merge / re-encode / quality replacement,
@@ -348,6 +348,60 @@ CREATE INDEX video_assets_unreclaimed_event ON video_assets (event_id)
     WHERE object_reclaimed_at IS NULL;
 CREATE INDEX video_assets_unreclaimed_fixture_event ON video_assets (fixture_id, event_id)
     WHERE object_reclaimed_at IS NULL;
+
+-- Accepted evaluations remain attached to exact bytes after supersession and
+-- Temporal expiry. No historical evidence is fabricated during migration.
+CREATE TABLE video_asset_validations (
+    id UUID PRIMARY KEY,
+    asset_id UUID NOT NULL,
+    event_id UUID NOT NULL,
+    fixture_id BIGINT NOT NULL,
+    evidence JSONB NOT NULL,
+    recorded_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    CONSTRAINT video_asset_validations_asset_fkey
+        FOREIGN KEY (asset_id, event_id, fixture_id)
+        REFERENCES video_assets (id, event_id, fixture_id) ON DELETE CASCADE,
+    CONSTRAINT video_asset_validations_evidence CHECK ((
+        jsonb_typeof(evidence) = 'object'
+        AND octet_length(evidence::text) <= 16384
+        AND evidence->>'id' = id::text
+        AND evidence->>'event_id' = event_id::text
+        AND evidence->>'fixture_id' = fixture_id::text
+        AND evidence->'version' = '1'::jsonb
+        AND jsonb_typeof(evidence->'frames') = 'array'
+        AND jsonb_array_length(evidence->'frames') BETWEEN 1 AND 3
+        AND evidence#>>'{evaluation,Outcome}' IN ('verified', 'unverified')
+    ) IS TRUE)
+);
+CREATE INDEX video_asset_validations_asset ON video_asset_validations (asset_id, recorded_at, id);
+-- Selection reads one event's earliest evaluations without scanning retained history.
+CREATE INDEX video_asset_validations_event ON video_asset_validations (event_id, asset_id, recorded_at, id);
+
+-- Reversible selection receipts preserve previous topology and bind retries.
+-- Dense hashes and validation payloads stay in their existing owning tables.
+CREATE TABLE video_selection_commits (
+    id UUID PRIMARY KEY,
+    event_id UUID NOT NULL,
+    fixture_id BIGINT NOT NULL,
+    request_hash TEXT NOT NULL,
+    snapshot_hash TEXT NOT NULL,
+    policy JSONB NOT NULL,
+    before_state JSONB NOT NULL,
+    result JSONB NOT NULL,
+    committed_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    CONSTRAINT video_selection_commits_event_fkey
+        FOREIGN KEY (event_id, fixture_id) REFERENCES events (id, fixture_id) ON DELETE CASCADE,
+    CONSTRAINT video_selection_commits_record CHECK ((
+        request_hash ~ '^[0-9a-f]{64}$' AND snapshot_hash ~ '^[0-9a-f]{64}$'
+        AND jsonb_typeof(policy) = 'object'
+        AND jsonb_typeof(before_state) = 'array'
+        AND jsonb_typeof(result) = 'object'
+        AND result#>>'{Plan,Version}' IN ('direct-restoration-v1', 'direct-restoration-support-v2')
+        AND octet_length(before_state::text) <= 1048576
+        AND octet_length(result::text) <= 1048576
+    ) IS TRUE)
+);
+CREATE INDEX video_selection_commits_event ON video_selection_commits(event_id,committed_at,id);
 
 -- 7b. video_shares — public share IDs. Public rank is derived at read time.
 CREATE TABLE video_shares (
@@ -454,9 +508,9 @@ CREATE TABLE event_search_candidates (
     -- for rejected/failed and pre-migration audit rows.
     observed_asset_id UUID,
 
-    -- Canonical live asset credited for this source sighting. New FF-066
-    -- placement histories set it in the same transaction that changes
-    -- popularity. Supersession rewrites this pointer but never the observation.
+    -- One canonical routing destination, also used for legacy assigned credit.
+    -- Selection-enabled popularity derives from observed_asset_id and direct
+    -- matches, not exclusive ownership. Routing never changes the observation.
     -- NULL remains valid for rejected/failed and pre-migration audit rows.
     credited_asset_id UUID,
 
@@ -488,6 +542,11 @@ CREATE INDEX event_search_candidates_credited_asset
 CREATE INDEX event_search_candidates_observed_asset
     ON event_search_candidates (observed_asset_id)
     WHERE observed_asset_id IS NOT NULL;
+
+COMMENT ON COLUMN video_assets.popularity IS
+    'Selected-clip direct accepted-source support for selection-enabled histories; older histories retain assigned credit. Scores overlap across clips and are not an event source total.';
+COMMENT ON COLUMN event_search_candidates.credited_asset_id IS
+    'Canonical routing destination and legacy credit owner, not exclusive ownership of direct support. observed_asset_id retains the source byte identity.';
 
 -- 9. team_aliases — deterministic Wikidata alias cache.
 --
