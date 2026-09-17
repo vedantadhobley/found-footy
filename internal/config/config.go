@@ -33,7 +33,7 @@ const (
 var binarySections = map[Binary][]string{
 	BinaryWorker: {
 		"Observability", "Postgres", "NATS", "S3", "Temporal", "LLM",
-		"APIFootball", "Syndication", "Twitter", "FirefoxFleet", "FFmpeg",
+		"APIFootball", "ProviderIntegrity", "Syndication", "Twitter", "FirefoxFleet", "FFmpeg",
 		"Workflows", "History", "Discovery", "Dedup", "Video", "Vision", "Event",
 	},
 	BinaryAPI:         {"Observability", "Postgres", "S3", "API", "History"},
@@ -48,17 +48,18 @@ var binarySections = map[Binary][]string{
 //
 // Add new sub-configs when a new runtime boundary needs configuration.
 type Config struct {
-	Observability ObservabilityConfig
-	Postgres      PGConfig
-	NATS          NATSConfig
-	S3            S3Config
-	Temporal      TemporalConfig
-	LLM           LLMConfig
-	APIFootball   APIFootballConfig
-	Syndication   SyndicationConfig
-	Twitter       TwitterConfig
-	FirefoxFleet  FirefoxFleetConfig
-	FFmpeg        FFmpegConfig
+	Observability     ObservabilityConfig
+	Postgres          PGConfig
+	NATS              NATSConfig
+	S3                S3Config
+	Temporal          TemporalConfig
+	LLM               LLMConfig
+	APIFootball       APIFootballConfig
+	ProviderIntegrity ProviderIntegrityConfig
+	Syndication       SyndicationConfig
+	Twitter           TwitterConfig
+	FirefoxFleet      FirefoxFleetConfig
+	FFmpeg            FFmpegConfig
 
 	// Cross-workflow orchestration values (activation window and polling
 	// schedules). Shared by ingest and the two poll workflows.

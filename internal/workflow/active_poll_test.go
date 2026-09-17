@@ -112,7 +112,9 @@ func TestActivePollWorkflow_AggregatesProviderIntegrityShadowVerdicts(t *testing
 			mock.MatchedBy(func(in monitor.ReconcileFixtureInput) bool {
 				return in.APIFixture.Fixture.ID == id
 			})).Return(monitor.ReconcileFixtureOutput{
-			FixtureID: id,
+			FixtureID:        id,
+			MutationPolicy:   providerintegrity.PolicyTrusted,
+			MutationDecision: &providerintegrity.MutationDecision{Mode: providerintegrity.EnforcementShadow, RecommendedPolicy: providerintegrity.PolicyPositiveOnly},
 			ProviderIntegrity: providerintegrity.FixtureVerdict{
 				FixtureID: id,
 				Policy:    providerintegrity.PolicyPositiveOnly,
@@ -132,6 +134,9 @@ func TestActivePollWorkflow_AggregatesProviderIntegrityShadowVerdicts(t *testing
 	if out.ProviderIntegrity.Policy != providerintegrity.PolicyPositiveOnly ||
 		out.ProviderIntegrity.RegressedFixtures != 2 {
 		t.Fatalf("ProviderIntegrity = %+v, want systemic positive-only verdict", out.ProviderIntegrity)
+	}
+	if out.ShadowPositiveOnly != 2 || out.PositiveOnlyWrites != 0 || out.RejectedWrites != 0 {
+		t.Fatalf("shadow recommendations were reported as enforcement: %+v", out)
 	}
 	env.AssertExpectations(t)
 }

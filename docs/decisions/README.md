@@ -14,6 +14,9 @@ its historical heading anchors valid.
 
 New decisions after the frozen archive:
 
+- [Provider policy starts in shadow without disabling atomic writes](./2026-09-17-provider-policy-starts-in-shadow.md)
+  — FF-075 defaults all guarded writers to advisory policy, records restricted
+  plans separately from actual effects, and requires match-window review before enforcement.
 - [Provider policy and canonical mutations share one transaction boundary](./2026-09-16-provider-policy-and-mutations-share-one-transaction.md)
   — FF-075 composes durable health with local observation policy under locks,
   commits each fixture plan atomically, and returns retry-safe effect receipts.

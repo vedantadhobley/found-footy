@@ -1,6 +1,11 @@
 # Provider policy and canonical mutations share one transaction boundary
 
-**Status:** Implemented locally; migration and production rollout pending.
+**Status:** Committed; production schema prepared September 17 UTC, application rollout pending.
+
+The [subsequent rollout decision](./2026-09-17-provider-policy-starts-in-shadow.md)
+defaults semantic policy to shadow. The restriction rules below describe opt-in
+enforcement; transaction locks, stale checks, and retry receipts stay active in
+both modes.
 
 ## Context
 

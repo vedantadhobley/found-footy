@@ -1,6 +1,6 @@
 # Provider health evidence survives polls and retries
 
-**Status:** Implemented locally; migration and production rollout pending.
+**Status:** Committed; production schema prepared September 17 UTC, application rollout pending.
 
 ## Context
 
@@ -16,6 +16,8 @@ Implement the [provider-health evidence contract](../provider-health.md) in the
 existing active poll. This decision established the evidence layer first; the
 later [atomic mutation-boundary decision](./2026-09-16-provider-policy-and-mutations-share-one-transaction.md)
 makes its policy enforceable across all provider writers.
+The [rollout-mode decision](./2026-09-17-provider-policy-starts-in-shadow.md)
+keeps that policy advisory by default while this durable evidence is validated.
 
 - Use a logical workflow-run receipt, immutable observation time, and typed
   progress cursors. Retries and delayed responses cannot advance recovery.
@@ -38,8 +40,8 @@ service or schedule. Evidence transactions serialize on a provider row; network
 work and canonical fixture reconciliation remain outside that lock.
 
 The recorder survives worker restarts and retains the original contradiction.
-The subsequent guarded mutation boundary prevents a conflicting observation
-from overwriting the canonical value. Local collection failure now closes the
+With enforcement enabled, the subsequent guarded mutation boundary prevents a
+conflicting observation from overwriting the canonical value. Local collection failure closes the
 active write gate for that poll; a loss before persistence remains an
 observation gap.
 

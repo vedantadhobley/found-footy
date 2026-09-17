@@ -38,6 +38,7 @@ func (c *Config) ValidateFor(binary Binary) error {
 		validateTemporal(v, c.Temporal)
 		validateLLM(v, c.LLM)
 		validateAPIFootball(v, c.APIFootball)
+		v.check(c.ProviderIntegrity.Mode == "shadow" || c.ProviderIntegrity.Mode == "enforce", "PROVIDER_INTEGRITY_MODE must be shadow or enforce")
 		validateSyndication(v, c.Syndication)
 		validateTwitterClient(v, c.Twitter)
 		validateFirefoxFleet(v, c.FirefoxFleet)

@@ -181,6 +181,7 @@ type ReconcileFixtureOutput struct {
 	// fixture and provider health policy before committing.
 	ProviderIntegrity providerintegrity.FixtureVerdict
 	MutationPolicy    providerintegrity.MutationPolicy
+	MutationDecision  *providerintegrity.MutationDecision
 	MutationApplied   bool
 	MutationStale     bool
 

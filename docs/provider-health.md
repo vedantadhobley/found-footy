@@ -1,10 +1,11 @@
 # Provider health evidence
 
-**Implemented locally; migration and deployment pending.** This is the durable
+**Atomic boundary committed as `89d1d7c`; shadow-mode follow-up implemented locally;
+production schema prepared, application deployment pending.** This is the durable
 evidence and atomic write-protection contract for
 [FF-075](./todo.md#ff-075--successful-provider-responses-can-destructively-regress-live-state).
 Production still uses the earlier stateless shadow evaluator until an approved
-migration and deployment. The
+application deployment. The
 [design proposal](./design/proposals/provider-integrity-circuit-breaker.md)
 owns the remaining operator-resolution, correction-evidence, telemetry, and
 search-recovery work.
@@ -50,10 +51,10 @@ fixture/event rows:
 
 | Table | Responsibility |
 |---|---|
-| `provider_health` | One API-Football observation cursor, enforced provider policy/generation, recent distinct-fixture onsets and bounded recovery probes. |
+| `provider_health` | One API-Football observation cursor, recommended provider policy/generation, recent distinct-fixture onsets and bounded recovery probes. |
 | `provider_fixture_health` | Per-fixture observation/usable/progress/phase timestamps, observed phase, clock high-water mark, and versioned unresolved-cause evidence. |
 | `provider_health_polls` | Logical poll receipts, failed fetch attempts, compact results and cause transitions. No complete provider payload per poll. |
-| `provider_mutation_receipts` | Per-observation/per-fixture committed results, including effective policy and post-commit effects, so activity response loss cannot repeat a vote or lose required cleanup. |
+| `provider_mutation_receipts` | Per-observation/per-fixture committed results, including rollout mode, policy inputs/recommendation, limited plan operations, applied policy and post-commit effects. Retries cannot repeat a vote or lose required cleanup. |
 
 Progress fields use typed SQL columns. Cause-specific baselines and bounded
 probe windows use versioned JSON. SQL constrains identity, cursor ordering,
@@ -136,7 +137,40 @@ the already-updated fixture. A process loss before a failed-attempt write
 cannot be reconstructed as a known provider failure; subsequent observation
 gaps remain unknown evidence.
 
-## Enforced mutation policies
+## Shadow and enforcement modes
+
+Worker-only `PROVIDER_INTEGRITY_MODE` defaults to `shadow`. All active, staging,
+and ingest writers receive the same setting. `enforce` is opt-in; other values
+fail startup. No Compose or production environment edit is required to obtain
+the shadow default in a new build.
+
+Both modes evaluate the same health policy under the same transaction locks.
+Shadow applies ordinary `trusted` semantic permissions but retains the complete
+recommendation. Enforce applies that recommendation. Neither mode disables
+wire validation, stale/baseline checks, event ownership, atomic commits, retry
+receipts, or existing score-backed absence protection. A collection failure
+still stops that active poll; shadow is not a bypass for inconsistent writes.
+
+The mutation receipt's `Policy` is the **applied** policy. `Decision` records
+`Writer`, `Mode`, `ProviderPolicy`, `FixturePolicy`, `LocalPolicy`, and
+`RecommendedPolicy`. `Decision.Restricted` identifies the limited fixture
+refresh, event inserts/presence votes, event corrections, absence votes,
+placeholder deletes, and elapsed-grace completion check in that plan.
+Fixture refreshes and event corrections can be partially allowed; these are
+operation scopes, not a field-level alternate result. An absence vote does not
+necessarily remove an event. A held completion check does not prove that no
+debounce or downstream work remained. Actual committed effects remain separate
+in the receipt. Trusted recommendations have no restricted-operation payload.
+
+Stale plans never evaluate policy and have no decision. Old receipts also lack
+that field. A retry preserves the original result/mode, even when the current
+worker runs a different mode. Cause openings and recoveries remain in health
+poll receipts and do not reset on mode changes. Existing JSON receipt columns
+carry the added evidence; there is no additional schema migration.
+
+See the [shadow rollout decision](./decisions/2026-09-17-provider-policy-starts-in-shadow.md).
+
+## Mutation policy semantics
 
 Every guarded writer composes provider, fixture, and local observation policy;
 the most restrictive result wins:
@@ -162,16 +196,18 @@ observation is rejected because that work derives from already committed state.
 
 ## Diagnostics and remaining work
 
-`ActivePollWorkflowOutput.ProviderHealth` contains current coverage, enforced
+`ActivePollWorkflowOutput.ProviderHealth` contains current coverage, recommended
 policy/generation, affected IDs, correlation, and transitions. Its reconciliation
-summary also reports `positive_only`, rejected, and stale-plan counts. Log cause
+summary reports applied `PositiveOnlyWrites` / `RejectedWrites`, separate
+`ShadowPositiveOnly` / `ShadowRejected` recommendation counts, and stale plans.
+These count fixture observations, not goals saved or lost. Log cause
 transitions, not a repeated stalled warning every thirty seconds. Existing PG
 query metrics cover storage calls. Dedicated provider-health Prometheus
 instruments remain pending.
 
 The old `ProviderIntegrity` output remains the stateless local reconciliation
 diagnostic. Its aggregate heuristic is **not** the durable provider policy; the
-per-fixture verdict is one input to the enforced policy. Removing the aggregate
+per-fixture verdict is one input to the recommended policy. Removing the aggregate
 diagnostic is optional cleanup after rollout evidence proves it no longer pays
 for itself.
 
@@ -187,9 +223,28 @@ automatically resolve the old missing-key cause. The recorder retains the
 conflict rather than inventing an identity match or altering old events. A
 future explicit recovery rule or audited operator decision must close it.
 
-Search windows, query text, ranking, and terminal grace are unchanged. Durable
-evidence collection is independently testable, not a requirement to wait through
-another indefinite collection period before implementing protection.
+Search windows, query text, ranking, and terminal grace are unchanged. Run at
+least one complete match window in shadow, then review restrictions and recovery
+before enabling enforcement. Quiet polls alone do not validate anomaly handling.
+Shadow evidence is not a full counterfactual replay: enforcement would produce
+different canonical state. Original incident baselines survive shadow writes.
+
+For a bounded window, inspect recommendation versus actual mode/policy:
+
+```sql
+SELECT result->'Decision'->>'Writer' AS writer,
+       result->'Decision'->>'Mode' AS mode,
+       result->'Decision'->>'RecommendedPolicy' AS recommended,
+       result->>'Policy' AS applied, count(*) AS observations
+FROM provider_mutation_receipts
+WHERE observed_at >= now() - interval '24 hours' AND result ? 'Decision'
+GROUP BY 1, 2, 3, 4 ORDER BY 1, 2, 3, 4;
+```
+
+Review restricted receipts by fixture/observation against their actual effect
+fields and `provider_health_polls.result.Transitions`. Check normal period
+changes, corrections, completion, isolated/provider-wide scope, and recovery
+delay. Never infer lost goals by summing restricted-operation arrays.
 
 ## Verification checkpoint — September 16
 
@@ -234,6 +289,41 @@ Those files, the Makefile, and hooks were left untouched. The older direct-suppo
 migration test was repaired to rewind the full migration suffix, not leave a
 ledger gap when a later migration exists.
 
-No production migration, deployment, or production data mutation was performed.
-Production rollout still requires separate approval and must run the
-ordered health and mutation-receipt migrations before the new binary.
+At that local verification checkpoint, no production changes had been performed.
+
+## Shadow-mode verification — September 17 UTC
+
+All maintained Go-package short tests, focused race tests, pinned scoped lint,
+the disposable-Postgres provider mutation suite, and the scenario suite pass.
+The shadow tests cover positive-only/rejected recommendations across all three
+writers, terminal completion, stale-plan protection, and original receipt
+effects across a mode change. A durable recovery test applies the bad score in
+shadow, confirms the next identical response remains restricted against the
+original baseline, then restores that baseline and verifies the cause resolves.
+
+The shadow follow-up is implemented; application deployment remains pending. It does not modify any
+migration, production configuration, or production data. The earlier complete
+`make check` checkpoint above belongs to `89d1d7c`, not this follow-up.
+
+## Production schema checkpoint — September 17 UTC
+
+With explicit migration approval, the unchanged `make migrate-prod` command
+built commit `89d1d7c39cfb888ec357387c31ad1cee7672a5db` from its clean tested
+snapshot and applied both September 16 migrations at `2026-09-17 01:24:51 UTC`.
+Preflight verified every existing migration checksum and exactly two pending
+files. The runner reported `migration verified` for that commit; an independent
+read confirmed both ledger rows, all four tables, and schema hash
+`8a9ba0bebf596112f1032bc5b9a892f64bec9e1abc8cebd1ed9b1bb9e0ac12e2`.
+
+Only the provider singleton is seeded. No health observations or mutation
+receipts exist yet. Worker/API containers remained on `8c836e0`, with unchanged
+start times, and polling continued after the migration. No application restart,
+deployment, push, fixture/event rewrite, or media mutation was performed.
+
+The new collector and transaction boundary are **not active** until a separately
+approved application rollout. That rollout will default to shadow; semantic
+restrictions require a later explicit enforcement change. Existing processes
+can continue using the additive schema, but an old
+binary restarted against the newer migration ledger fails its startup check;
+deploy the compatible application before any such restart. Do not delete
+migration rows to bypass that check.

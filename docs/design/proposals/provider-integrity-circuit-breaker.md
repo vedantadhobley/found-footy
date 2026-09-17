@@ -3,8 +3,12 @@
 **Status:** Protection implemented locally and live-shadow audited for
 [`FF-075`](../../todo.md#ff-075--successful-provider-responses-can-destructively-regress-live-state).
 The wire contract and non-enforcing semantic evaluator have shipped; the durable
-collector and atomic mutation enforcement are local and await migration and
-deployment. The
+collector and atomic mutation enforcement are committed as `89d1d7c`. Their
+production schema is prepared; application deployment remains pending. A local
+[shadow-default follow-up](../../decisions/2026-09-17-provider-policy-starts-in-shadow.md)
+retains transactional safeguards while making the new policy advisory for at
+least one complete match window. The earlier live audits below validate the
+stateless evaluator, not the new durable thresholds and recovery. The
 [first production shadow audit](../audits/provider-integrity-shadow-2026-08-31.md)
 found and locally repaired classification gaps. The
 [second shadow window](../audits/pre-rollout-evidence-2026-09-08.md#ff-088-and-ff-075-postponed-polling-pollutes-circuit-evidence)
@@ -424,8 +428,8 @@ already applied to today's goals.
    helpers plus Monitor/SQL writer characterization.
 5. **Local September 16:** durable observations, causal baselines, failed-attempt
    receipts and versioned active collection, including all-failed fetches. The
-   migration is not applied to production. This is not closure of FF-075 and
-   must not become another indefinite evidence-gathering phase.
+   migrations were applied with approval on September 17 UTC; application
+   rollout is still pending. This is not closure of FF-075.
 6. **Local September 16:** implement the guarded transaction path across active,
    staging, and ingest writers. The August destruction replay, whole-plan
    rollback, ingest bypass, staging activation, response-loss retry, and stale
@@ -433,9 +437,12 @@ already applied to today's goals.
    separate; never enable only a subset of provider writers.
 7. The exact staged snapshot passes unchanged `make check` (see the
    [verification limits](../../provider-health.md#verification-checkpoint--september-16)).
-   Apply both ordered migrations and roll out the new
-   histories/binary together in an approved quiet-window deployment. Validate
-   natural active, staging, ingest, and policy-counter behavior before closure.
+   The two ordered migrations are applied. The September 17 local follow-up
+   defaults `PROVIDER_INTEGRITY_MODE` to `shadow` and distinguishes recommended
+   restrictions from applied effects in durable receipts and workflow counters.
+   Roll out the compatible histories/binary with approval, then review at least
+   one complete match window before separately enabling enforcement. Validate
+   natural active, staging, ingest, anomaly, and recovery behavior before closure.
 8. Version and test incident-linked search-window initialization separately.
    It can follow the protection release; it is not necessary to detect staleness
    or prevent destructive regressions. No ranking/quality policy changes here.

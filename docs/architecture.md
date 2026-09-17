@@ -273,11 +273,16 @@ composes the most restrictive policy, and atomically applies the permitted
 fixture fields, event operations, debounce votes, audits, downstream checklist
 rows, and completion. A fourth internal table stores the committed result for
 Temporal activity retries. Active, staging, and ingest writers share this
-boundary; external effects stay outside its transaction. See the
+boundary; external effects stay outside its transaction. Worker-only
+`PROVIDER_INTEGRITY_MODE=shadow` is the default: compose and record the policy
+without applying semantic restrictions. `enforce` opts into those restrictions;
+atomicity, stale checks, and retry protection stay active in both modes. The
+receipt separates recommended policy/limited operations from applied effects,
+and preserves its original mode across retries. See the
 [provider-health ledger](./provider-health.md) for storage, retention, lock
-ordering, failure boundaries, and tests. Production migration/deployment
-remains pending; the stateless reconciliation diagnostic still runs alongside
-the enforced local policy input.
+ordering, failure boundaries, and tests. Production schema was prepared on
+September 17 UTC; application deployment remains pending. The stateless
+reconciliation diagnostic still runs alongside the local policy input.
 
 ### video domain (D3)
 

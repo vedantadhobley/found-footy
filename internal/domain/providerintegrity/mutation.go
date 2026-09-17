@@ -112,9 +112,11 @@ type FixtureMutationPlan struct {
 // MutationResult is both the activity result and the durable retry receipt.
 // External effects run only after this committed result is returned.
 type MutationResult struct {
-	Applied        bool
-	Stale          bool
-	Policy         MutationPolicy
+	Applied bool
+	Stale   bool
+	Policy  MutationPolicy
+	// Nil for old receipts or stale plans that never reached policy evaluation.
+	Decision       *MutationDecision `json:",omitempty"`
 	Fixture        *fixture.Fixture
 	FixtureChanged bool
 	// These effects are classified against the original locked fixture. An

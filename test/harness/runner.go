@@ -19,6 +19,7 @@ import (
 	"github.com/vedantadhobley/found-footy/internal/config"
 	discoverycontract "github.com/vedantadhobley/found-footy/internal/contract/discovery"
 	"github.com/vedantadhobley/found-footy/internal/domain/event"
+	"github.com/vedantadhobley/found-footy/internal/domain/providerintegrity"
 	"github.com/vedantadhobley/found-footy/internal/infra/apifootball"
 	"github.com/vedantadhobley/found-footy/internal/infra/pg"
 	"github.com/vedantadhobley/found-footy/internal/observability/logging"
@@ -135,7 +136,7 @@ func runActivePoll(ctx context.Context, t *testing.T, pool *pg.Pool, afClient *a
 	// Wall-clock behavior in prod (Now=nil) is what makes injecting
 	// this cheap: we're setting a field production leaves nil.
 	var currentCycleTime time.Time
-	providerMutations := pg.NewProviderMutationRepo(pool)
+	providerMutations := pg.NewProviderMutationRepo(pool, providerintegrity.EnforcementEnforce)
 	eventRepo := pg.NewEventRepo(pool)
 	acts := &monitor.Activities{
 		APIFootball:         afClient,
@@ -223,7 +224,7 @@ func runIngest(ctx context.Context, t *testing.T, pool *pg.Pool, afClient *apifo
 	acts := &ingest.Activities{
 		APIFootball:           afClient,
 		FixtureRepo:           pg.NewFixtureRepo(pool),
-		ProviderMutations:     pg.NewProviderMutationRepo(pool),
+		ProviderMutations:     pg.NewProviderMutationRepo(pool, providerintegrity.EnforcementEnforce),
 		AliasRepo:             pg.NewAliasRepo(pool),
 		TeamRepo:              pg.NewTeamRepo(pool),
 		TrackedLeagueIDs:      []int{39, 140, 78, 135, 61, 1},

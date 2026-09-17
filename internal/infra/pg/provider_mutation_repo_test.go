@@ -61,7 +61,7 @@ func TestProviderMutationRetryPreservesNotificationEffects(t *testing.T) {
 				Fixture: &candidate, BaselineExists: true, BaselineLastPolled: copyTestTime(f.LastPolledAt),
 				LocalPolicy: providerintegrity.PolicyTrusted, WorkflowID: poll.ID,
 			}
-			first, err := pg.NewProviderMutationRepo(pool).ApplyActive(ctx, plan)
+			first, err := pg.NewProviderMutationRepo(pool, providerintegrity.EnforcementEnforce).ApplyActive(ctx, plan)
 			require.NoError(t, err)
 			require.True(t, first.Applied)
 			require.Equal(t, tc.structural, first.FixtureStructuralChanged)
@@ -69,7 +69,7 @@ func TestProviderMutationRetryPreservesNotificationEffects(t *testing.T) {
 			landed, err := fixtures.Get(ctx, f.ID)
 			require.NoError(t, err)
 			plan.Fixture, plan.BaselineLastPolled = landed, copyTestTime(landed.LastPolledAt)
-			retry, err := pg.NewProviderMutationRepo(pool).ApplyActive(ctx, plan)
+			retry, err := pg.NewProviderMutationRepo(pool, providerintegrity.EnforcementEnforce).ApplyActive(ctx, plan)
 			require.NoError(t, err)
 			require.Equal(t, first.FixtureChanged, retry.FixtureChanged)
 			require.Equal(t, first.FixtureStructuralChanged, retry.FixtureStructuralChanged)
@@ -118,7 +118,7 @@ func TestProviderMutationPositiveOnlyBlocksAugustRegression(t *testing.T) {
 	newEvent := guardedEvent(f.ID, 42, "New Goal", badAt)
 	detected := guardedDetectedAudit(t, newEvent)
 	removed := guardedRemovedAudit(t, old, badAt)
-	result, err := pg.NewProviderMutationRepo(pool).ApplyActive(ctx, providerintegrity.ActiveMutationPlan{
+	result, err := pg.NewProviderMutationRepo(pool, providerintegrity.EnforcementEnforce).ApplyActive(ctx, providerintegrity.ActiveMutationPlan{
 		Guard:   providerintegrity.ObservationGuard{ObservationID: healthPoll.ID, ObservedAt: badAt, ExpectedGeneration: health.Generation, RequireHealthReceipt: true},
 		Fixture: &candidate, BaselineExists: true, BaselineLastPolled: copyTestTime(f.LastPolledAt),
 		LocalPolicy: providerintegrity.PolicyPositiveOnly, WorkflowID: healthPoll.ID,
@@ -143,7 +143,7 @@ func TestProviderMutationPositiveOnlyBlocksAugustRegression(t *testing.T) {
 
 	// Lost activity response: retry returns the exact effects without a second
 	// vote or duplicate insert, even though the canonical baseline has changed.
-	retry, err := pg.NewProviderMutationRepo(pool).ApplyActive(ctx, providerintegrity.ActiveMutationPlan{
+	retry, err := pg.NewProviderMutationRepo(pool, providerintegrity.EnforcementEnforce).ApplyActive(ctx, providerintegrity.ActiveMutationPlan{
 		Guard:   providerintegrity.ObservationGuard{ObservationID: healthPoll.ID, ObservedAt: badAt, ExpectedGeneration: health.Generation, RequireHealthReceipt: true},
 		Fixture: &candidate, BaselineExists: true, BaselineLastPolled: copyTestTime(f.LastPolledAt),
 		LocalPolicy: providerintegrity.PolicyPositiveOnly, WorkflowID: healthPoll.ID,
@@ -176,7 +176,7 @@ func TestProviderMutationRollsBackWholePlan(t *testing.T) {
 	candidate.HomeScore, candidate.LastPolledAt = &two, &poll.At
 	newEvent := guardedEvent(f.ID, 40, "Rollback Goal", poll.At)
 	invalid := auditlog.Record{}
-	_, err = pg.NewProviderMutationRepo(pool).ApplyActive(ctx, providerintegrity.ActiveMutationPlan{
+	_, err = pg.NewProviderMutationRepo(pool, providerintegrity.EnforcementEnforce).ApplyActive(ctx, providerintegrity.ActiveMutationPlan{
 		Guard:   providerintegrity.ObservationGuard{ObservationID: poll.ID, ObservedAt: poll.At, ExpectedGeneration: health.Generation, RequireHealthReceipt: true},
 		Fixture: &candidate, BaselineExists: true, BaselineLastPolled: copyTestTime(f.LastPolledAt),
 		LocalPolicy: providerintegrity.PolicyTrusted, WorkflowID: poll.ID,
@@ -222,7 +222,7 @@ func TestProviderMutationIngestRespectsFixtureRestriction(t *testing.T) {
 	candidate.APIStatus = fixture.APIStatus{Short: apifootball.StatusNotStarted, Long: "Not Started"}
 	candidate.APIElapsed, candidate.HomeScore, candidate.AwayScore = &minute, &zero, &zero
 	candidate.LastPolledAt = &badAt
-	result, err := pg.NewProviderMutationRepo(pool).ApplyFixture(ctx, providerintegrity.FixtureMutationPlan{
+	result, err := pg.NewProviderMutationRepo(pool, providerintegrity.EnforcementEnforce).ApplyFixture(ctx, providerintegrity.FixtureMutationPlan{
 		Guard: providerintegrity.ObservationGuard{ObservationID: "daily-ingest-1", ObservedAt: badAt},
 		Mode:  providerintegrity.MutationModeIngest, Fixture: &candidate,
 		BaselineExists: true, BaselineLastPolled: copyTestTime(f.LastPolledAt),
@@ -259,11 +259,11 @@ func TestProviderMutationStagingActivationIsAtomicAndRetrySafe(t *testing.T) {
 		BaselineExists: true, BaselineLastPolled: copyTestTime(f.LastPolledAt),
 		LocalPolicy: providerintegrity.PolicyTrusted, Activate: true, ActivationAudit: &audit,
 	}
-	result, err := pg.NewProviderMutationRepo(pool).ApplyFixture(ctx, plan)
+	result, err := pg.NewProviderMutationRepo(pool, providerintegrity.EnforcementEnforce).ApplyFixture(ctx, plan)
 	require.NoError(t, err)
 	require.True(t, result.Applied)
 	require.Equal(t, fixture.StateActive, result.Fixture.State)
-	retry, err := pg.NewProviderMutationRepo(pool).ApplyFixture(ctx, plan)
+	retry, err := pg.NewProviderMutationRepo(pool, providerintegrity.EnforcementEnforce).ApplyFixture(ctx, plan)
 	require.NoError(t, err)
 	require.Equal(t, result.Applied, retry.Applied)
 	require.Equal(t, result.Fixture.State, retry.Fixture.State)
@@ -283,7 +283,7 @@ func TestProviderMutationRejectsOlderFixtureObservation(t *testing.T) {
 	candidate := *f
 	two := 2
 	candidate.HomeScore, candidate.LastPolledAt = &two, &older
-	result, err := pg.NewProviderMutationRepo(pool).ApplyFixture(ctx, providerintegrity.FixtureMutationPlan{
+	result, err := pg.NewProviderMutationRepo(pool, providerintegrity.EnforcementEnforce).ApplyFixture(ctx, providerintegrity.FixtureMutationPlan{
 		Guard: providerintegrity.ObservationGuard{ObservationID: "older-ingest-1", ObservedAt: older},
 		Mode:  providerintegrity.MutationModeIngest, Fixture: &candidate,
 		BaselineExists: true, BaselineLastPolled: copyTestTime(f.LastPolledAt),
@@ -321,7 +321,7 @@ func TestProviderMutationScopesMutableEventUpdateByNaturalIdentity(t *testing.T)
 	candidate.LastPolledAt = &at
 	fresh := guardedEvent(f.ID, 40, "Mutable Goal", at)
 	fresh.Detail = apifootball.DetailOwnGoal
-	result, err := pg.NewProviderMutationRepo(pool).ApplyActive(ctx, providerintegrity.ActiveMutationPlan{
+	result, err := pg.NewProviderMutationRepo(pool, providerintegrity.EnforcementEnforce).ApplyActive(ctx, providerintegrity.ActiveMutationPlan{
 		Guard: providerintegrity.ObservationGuard{
 			ObservationID: poll.ID, ObservedAt: at, ExpectedGeneration: health.Generation, RequireHealthReceipt: true,
 		},

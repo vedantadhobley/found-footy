@@ -1,5 +1,5 @@
 // collector_types.go defines bounded durable evidence independently of database
-// or workflow APIs. Guarded writers enforce its mutation policy under lock.
+// or workflow APIs. Guarded writers evaluate its policy under lock in both modes.
 package providerintegrity
 
 import (

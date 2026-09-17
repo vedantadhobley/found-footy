@@ -156,6 +156,7 @@ func (a *Activities) reconcileGuarded(ctx context.Context, in ReconcileFixtureIn
 		return out, fmt.Errorf("monitor.ReconcileFixture: guarded commit: %w", err)
 	}
 	out.MutationPolicy = result.Policy
+	out.MutationDecision = result.Decision
 	out.MutationApplied = result.Applied
 	out.MutationStale = result.Stale
 	if result.Stale {

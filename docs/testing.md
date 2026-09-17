@@ -208,6 +208,14 @@ spawner after the monitor has registered the exact checklist identity. Scenario
 coverage separates stable outage signals from pending-event correction evidence:
 coherent score-backed cancellations still cast absence votes, unsupported loss
 is frozen, and terminal grace begins only after coherent terminal evidence.
+These enforcement scenarios opt into `enforce` explicitly. The production
+configuration defaults to shadow. The
+[shadow mutation suite](../internal/infra/pg/provider_mutation_shadow_test.go)
+tests advisory positive-only/rejected plans, normal writes and completion,
+staging/ingest coverage, stale plans, cross-mode receipt retries, and recovery
+against the original incident baseline after shadow canonical writes.
+Configuration tests reject invalid modes and preserve API/worker isolation;
+workflow tests separate recommendation counts from applied restrictions.
 No live provider or production database is used.
 
 FF-077 contract tables cover every documented provider status, fail unknown

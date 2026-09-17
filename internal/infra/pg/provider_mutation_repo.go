@@ -26,17 +26,23 @@ import (
 // ProviderMutationRepo applies one fixture observation per short transaction.
 // Provider FOR SHARE locks permit different fixtures to commit concurrently but
 // exclude the collector's provider-generation update until each commit ends.
-type ProviderMutationRepo struct{ pool *Pool }
+type ProviderMutationRepo struct {
+	pool *Pool
+	mode providerintegrity.EnforcementMode
+}
 
 // NewProviderMutationRepo shares the existing traced and metered pool.
-func NewProviderMutationRepo(pool *Pool) *ProviderMutationRepo {
-	return &ProviderMutationRepo{pool: pool}
+func NewProviderMutationRepo(pool *Pool, mode providerintegrity.EnforcementMode) *ProviderMutationRepo {
+	return &ProviderMutationRepo{pool: pool, mode: mode}
 }
 
 // ApplyActive commits the fixture snapshot, event reconciliation, transition
 // audits, downstream checklist rows, and completion as one guarded unit.
 func (r *ProviderMutationRepo) ApplyActive(ctx context.Context, plan providerintegrity.ActiveMutationPlan) (providerintegrity.MutationResult, error) {
 	var out providerintegrity.MutationResult
+	if !r.mode.Valid() {
+		return out, fmt.Errorf("invalid provider enforcement mode %q", r.mode)
+	}
 	normalizeActiveMutationPlan(&plan)
 	if err := validateActiveMutationPlan(plan); err != nil {
 		return out, err
@@ -77,7 +83,10 @@ func (r *ProviderMutationRepo) ApplyActive(ctx context.Context, plan providerint
 	if plan.Guard.RequireHealthReceipt && (health.LastPollID != plan.Guard.ObservationID || !health.LastObservedAt.Equal(plan.Guard.ObservedAt)) {
 		return r.commitStaleReceipt(ctx, tx, plan.Guard, current.ID, current, generation)
 	}
-	policy := providerintegrity.RestrictPolicies(providerPolicy, providerintegrity.FixtureHealthPolicy(health), plan.LocalPolicy)
+	decision, policy := providerintegrity.DecideMutation(r.mode, providerPolicy, providerintegrity.FixtureHealthPolicy(health), plan.LocalPolicy)
+	decision.Writer = providerintegrity.MutationModeActive
+	decision.Restricted = restrictedActiveOperations(plan, decision.RecommendedPolicy)
+	out.Decision = &decision
 	out.Policy = policy
 	if policy == providerintegrity.PolicyRejected {
 		out.Fixture = current
@@ -165,6 +174,9 @@ func (r *ProviderMutationRepo) ApplyActive(ctx context.Context, plan providerint
 // array as an empty live event inventory.
 func (r *ProviderMutationRepo) ApplyFixture(ctx context.Context, plan providerintegrity.FixtureMutationPlan) (providerintegrity.MutationResult, error) {
 	var out providerintegrity.MutationResult
+	if !r.mode.Valid() {
+		return out, fmt.Errorf("invalid provider enforcement mode %q", r.mode)
+	}
 	normalizeFixtureMutationPlan(&plan)
 	if err := validateFixtureMutationPlan(plan); err != nil {
 		return out, err
@@ -205,7 +217,10 @@ func (r *ProviderMutationRepo) ApplyFixture(ctx context.Context, plan providerin
 		}
 		fixturePolicy = providerintegrity.FixtureHealthPolicy(health)
 	}
-	policy := providerintegrity.RestrictPolicies(providerPolicy, fixturePolicy, plan.LocalPolicy)
+	decision, policy := providerintegrity.DecideMutation(r.mode, providerPolicy, fixturePolicy, plan.LocalPolicy)
+	decision.Writer = plan.Mode
+	decision.Restricted = restrictedFixtureOperations(plan, decision.RecommendedPolicy)
+	out.Decision = &decision
 	out.Policy = policy
 	if policy == providerintegrity.PolicyRejected {
 		out.Fixture = current

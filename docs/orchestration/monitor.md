@@ -66,7 +66,7 @@ This does not change score retention, postponed polling, or reactivation. See
 the [decision](../decisions/2026-09-08-postponed-score-absence-is-not-play-regression.md).
 
 Production still runs the deployed stateless evaluator until the pending
-migration and rollout. The local branch adds phase-aware durable freshness:
+application rollout; the schema migration is complete. The local branch adds phase-aware durable freshness:
 repeated unchanged running-clock responses open a fixture-local restriction;
 `last_polled_at` remains observation ordering, not provider progress. See the
 [September 16 stalled-feed incident](../incidents/2026-09-16-api-football-stalled-fixture.md)
@@ -77,16 +77,19 @@ and the
 use `provider-health-evidence-v1` to record failed fetch attempts and call
 `CollectProviderHealth` before reconciliation, including all-failed/empty fetch
 paths. `provider-mutation-guard-v1` sends active, staging, and ingest observations
-through `ProviderMutationRepo`. The repository composes current provider,
+through `ProviderMutationRepo`. `PROVIDER_INTEGRITY_MODE` defaults to `shadow`:
+health recommendations and limited plan operations are durable diagnostics;
+ordinary semantic writes remain enabled. The repository composes current provider,
 fixture, and local policy under locks, verifies the canonical observation
 baseline, and commits every permitted fixture/event mutation plus required
-audit and checklist rows in one transaction. `positive_only` keeps additions
+audit and checklist rows in one transaction. With opt-in `enforce`, `positive_only` keeps additions
 and credible forward progress but suppresses absence votes, regressions,
 terminal-observation timestamp changes, and completion; `rejected` writes
 nothing provider-derived.
 Failed active health collection closes that poll's write gate. Per-fixture
 mutation receipts return the original post-commit effects, including fixture
-notification classification, on activity retry.
+notification classification and original rollout mode, on activity retry.
+Applied restriction counters and shadow recommendation counters stay separate.
 External Temporal, NATS, cancellation, and Garage effects run after commit.
 Old histories retain their previous activity sequence. The
 [health ledger](../provider-health.md) owns storage, retention, thresholds,

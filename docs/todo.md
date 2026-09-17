@@ -446,9 +446,23 @@ the current branch.
   temporary export. The original workspace's gitignored scratch programs with
   duplicate `main` functions were left untouched. See the
   [verification checkpoint](./provider-health.md#verification-checkpoint--september-16).
-- **Next:** Migrate and deploy only with explicit production approval.
-  Validate natural active/staging/ingest
-  observations and restriction counters after rollout. Search-window recovery,
+- **Schema prepared (September 17 UTC):** Approved `make migrate-prod` from
+  `89d1d7c` applied exactly the two provider-health/receipt migrations. Ledger,
+  schema hash, and four tables were independently verified; old application
+  processes stayed running and polling. Protection is not active until the
+  application rollout. See the
+  [migration checkpoint](./provider-health.md#production-schema-checkpoint--september-17-utc).
+- **Shadow rollout (September 17 UTC, local):** Worker-only
+  `PROVIDER_INTEGRITY_MODE` defaults to `shadow`; all three writers record
+  recommendations/limited operations separately from actual committed effects.
+  Atomicity, baseline guards, and retry receipts remain active. No new migration
+  is required. Cross-mode retries preserve the original decision. See the
+  [rollout decision](./decisions/2026-09-17-provider-policy-starts-in-shadow.md).
+- **Next:** Deploy the shadow-default application only with explicit production
+  approval. Review at least one complete match window, including natural
+  active/staging/ingest observations, restriction scope, false restrictions,
+  and cause-specific recovery. A quiet window alone does not validate recovery;
+  enforcement requires a separate decision and approval. Search-window recovery,
   raw correction evidence, operator controls, and dedicated health metrics can
   follow separately; FF-038 quota scheduling, FF-088 deferred polling, and
   FF-081 ranking remain separate.

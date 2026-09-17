@@ -25,6 +25,7 @@ import (
 	videoactivity "github.com/vedantadhobley/found-footy/internal/activity/video"
 	visionactivity "github.com/vedantadhobley/found-footy/internal/activity/vision"
 	"github.com/vedantadhobley/found-footy/internal/bootstrap"
+	"github.com/vedantadhobley/found-footy/internal/domain/providerintegrity"
 	"github.com/vedantadhobley/found-footy/internal/infra/apifootball"
 	eventinfra "github.com/vedantadhobley/found-footy/internal/infra/event"
 	"github.com/vedantadhobley/found-footy/internal/infra/ffmpeg"
@@ -140,7 +141,7 @@ func Run(ctx context.Context, deps *bootstrap.Deps) error {
 	assetRepo := pg.NewAssetRepo(pool)
 	shareRepo := pg.NewShareRepo(pool)
 	placementRepo := pg.NewPlacementRepo(pool)
-	providerMutations := pg.NewProviderMutationRepo(pool)
+	providerMutations := pg.NewProviderMutationRepo(pool, providerintegrity.EnforcementMode(deps.Cfg.ProviderIntegrity.Mode))
 
 	ingestActs := &ingestactivity.Activities{
 		APIFootball:           afClient,

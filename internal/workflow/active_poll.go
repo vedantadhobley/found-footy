@@ -88,14 +88,17 @@ type ActivePollWorkflowOutput struct {
 	// classification because the score still requires those goals.
 	GoalAbsencesHeld []string
 	UnknownDropped   int // unknown-scorer placeholders hard-deleted this cycle
-	// ProviderIntegrity is the diagnostic batch verdict. The repository also
-	// enforces its per-fixture component together with durable health policy.
+	// ProviderIntegrity is the diagnostic batch verdict. The repository composes
+	// its per-fixture component with durable health policy; mode controls enforcement.
 	ProviderIntegrity providerintegrity.BatchVerdict
 	// ProviderHealth is durable policy evidence collected before writes.
 	// Nil denotes a history predating the versioned collector.
 	ProviderHealth     *providerintegrity.HealthResult
 	PositiveOnlyWrites int
 	RejectedWrites     int
+	// Shadow counts are recommendations, not suppressed writes or lost events.
+	ShadowPositiveOnly int
+	ShadowRejected     int
 	StaleMutationPlans int
 	Errors             []string
 }
@@ -293,6 +296,14 @@ func ActivePollWorkflow(ctx workflow.Context, in ActivePollWorkflowInput) (Activ
 			out.PositiveOnlyWrites++
 		case providerintegrity.PolicyRejected:
 			out.RejectedWrites++
+		}
+		if decision := reconcileOut.MutationDecision; decision != nil && decision.Mode == providerintegrity.EnforcementShadow {
+			switch decision.RecommendedPolicy {
+			case providerintegrity.PolicyPositiveOnly:
+				out.ShadowPositiveOnly++
+			case providerintegrity.PolicyRejected:
+				out.ShadowRejected++
+			}
 		}
 		if reconcileOut.ProviderIntegrity.Policy.Valid() {
 			providerVerdicts = append(providerVerdicts, reconcileOut.ProviderIntegrity)
