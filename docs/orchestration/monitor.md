@@ -33,7 +33,7 @@ and league fields. An active metadata correction selects `fixture.update` so
 the consumer refreshes its authoritative snapshot. See the
 [decision](../decisions/2026-08-28-fixture-writers-own-columns.md).
 
-**Provider-integrity boundary (FF-075; local rollout pending).** API-Football fixture responses
+**Provider-integrity boundary (FF-075; deployed in shadow).** API-Football fixture responses
 pass a typed wire contract before Monitor receives them. Every envelope must
 have empty `errors`, matching `results`, complete single-page paging, a valid
 response array, unique fixture/team identity, nonnegative scores, and event
@@ -65,15 +65,15 @@ played evidence, missing events, and other cleared fields keep their guards.
 This does not change score retention, postponed polling, or reactivation. See
 the [decision](../decisions/2026-09-08-postponed-score-absence-is-not-play-regression.md).
 
-Production still runs the deployed stateless evaluator until the pending
-application rollout; the schema migration is complete. The local branch adds phase-aware durable freshness:
+Production runs the durable collector and shadow-mode boundary as `abfea7a`
+since September 17 UTC. It adds phase-aware durable freshness:
 repeated unchanged running-clock responses open a fixture-local restriction;
 `last_polled_at` remains observation ordering, not provider progress. See the
 [September 16 stalled-feed incident](../incidents/2026-09-16-api-football-stalled-fixture.md)
 and the
 [wire-and-shadow decision](../decisions/2026-08-29-provider-fixtures-require-contract-and-shadow-trust.md).
 
-**September 16 local collector and atomic guard, not deployed:** New histories
+**September 17 deployed collector and atomic guard, semantic enforcement off:** New histories
 use `provider-health-evidence-v1` to record failed fetch attempts and call
 `CollectProviderHealth` before reconciliation, including all-failed/empty fetch
 paths. `provider-mutation-guard-v1` sends active, staging, and ingest observations

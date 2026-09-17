@@ -1,6 +1,8 @@
 # Provider policy starts in shadow without disabling atomic writes
 
-**Status:** Implemented locally; application rollout pending.
+**Status:** Deployed in shadow as `abfea7a` on September 17 at 02:35 UTC;
+match-window review remains open. See the
+[rollout evidence](../history/provider-shadow-rollout-2026-09-17.md).
 
 ## Context
 

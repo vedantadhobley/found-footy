@@ -281,7 +281,7 @@ receipt separates recommended policy/limited operations from applied effects,
 and preserves its original mode across retries. See the
 [provider-health ledger](./provider-health.md) for storage, retention, lock
 ordering, failure boundaries, and tests. Production schema was prepared on
-September 17 UTC; application deployment remains pending. The stateless
+September 17 UTC; `abfea7a` deployed the application in shadow at 02:35 UTC. The stateless
 reconciliation diagnostic still runs alongside the local policy input.
 
 ### video domain (D3)

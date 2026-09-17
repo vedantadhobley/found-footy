@@ -1,6 +1,7 @@
 # Provider policy and canonical mutations share one transaction boundary
 
-**Status:** Committed; production schema prepared September 17 UTC, application rollout pending.
+**Status:** Deployed as `abfea7a` on September 17 at 02:35 UTC; atomicity is active,
+semantic policy remains in shadow pending match-window review.
 
 The [subsequent rollout decision](./2026-09-17-provider-policy-starts-in-shadow.md)
 defaults semantic policy to shadow. The restriction rules below describe opt-in

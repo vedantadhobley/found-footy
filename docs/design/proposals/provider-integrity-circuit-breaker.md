@@ -1,10 +1,11 @@
 # API-Football health assessment and reconciliation protection
 
-**Status:** Protection implemented locally and live-shadow audited for
+**Status:** Durable collection and atomic protection deployed in shadow for
 [`FF-075`](../../todo.md#ff-075--successful-provider-responses-can-destructively-regress-live-state).
 The wire contract and non-enforcing semantic evaluator have shipped; the durable
 collector and atomic mutation enforcement are committed as `89d1d7c`. Their
-production schema is prepared; application deployment remains pending. A local
+production schema was prepared and the application deployed as `abfea7a` on
+September 17 at 02:35 UTC. The
 [shadow-default follow-up](../../decisions/2026-09-17-provider-policy-starts-in-shadow.md)
 retains transactional safeguards while making the new policy advisory for at
 least one complete match window. The earlier live audits below validate the
@@ -21,7 +22,7 @@ remaining design gate. FF-088 owns the separate deferred
 polling/reactivation policy. Current behavior is authoritative in the
 [fixture-monitoring ledger](../../orchestration/monitor.md).
 
-**September 16 design revision — collector and guard local, not deployed:** The
+**September 16 design revision — deployed in shadow September 17:** The
 [Barcelona stalled-feed incident](../../incidents/2026-09-16-api-football-stalled-fixture.md)
 requires separating fixture/provider health from write permission. This revision
 replaces the earlier single circuit-state table with independent evidence and
@@ -29,8 +30,8 @@ cause-specific recovery. Numerical thresholds below are proposed starting
 values, not vendor guarantees or historically calibrated limits. The
 [health ledger](../../provider-health.md) describes the four-table durable
 contract, versioned collector, independent cause recovery, and guarded writers
-now implemented locally. Production, search, and frontend contracts are
-unchanged. The [test ledger](../../testing.md) separates atomic protection proof
+now deployed in shadow. Search and frontend contracts are unchanged.
+The [test ledger](../../testing.md) separates atomic protection proof
 from the remaining search and operator work.
 
 ## Problem
@@ -428,8 +429,8 @@ already applied to today's goals.
    helpers plus Monitor/SQL writer characterization.
 5. **Local September 16:** durable observations, causal baselines, failed-attempt
    receipts and versioned active collection, including all-failed fetches. The
-   migrations were applied with approval on September 17 UTC; application
-   rollout is still pending. This is not closure of FF-075.
+   migrations and shadow-default application were deployed with approval on
+   September 17 UTC. This is not closure of FF-075.
 6. **Local September 16:** implement the guarded transaction path across active,
    staging, and ingest writers. The August destruction replay, whole-plan
    rollback, ingest bypass, staging activation, response-loss retry, and stale
@@ -440,8 +441,8 @@ already applied to today's goals.
    The two ordered migrations are applied. The September 17 local follow-up
    defaults `PROVIDER_INTEGRITY_MODE` to `shadow` and distinguishes recommended
    restrictions from applied effects in durable receipts and workflow counters.
-   Roll out the compatible histories/binary with approval, then review at least
-   one complete match window before separately enabling enforcement. Validate
+   The compatible histories/binary deployed as `abfea7a`. Review at least one
+   complete match window before separately enabling enforcement. Validate
    natural active, staging, ingest, anomaly, and recovery behavior before closure.
 8. Version and test incident-linked search-window initialization separately.
    It can follow the protection release; it is not necessary to detect staleness

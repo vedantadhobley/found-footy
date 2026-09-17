@@ -5,6 +5,9 @@ preserve sequence and rationale but do not define current behavior or work.
 Use the [`docs` routing index](../README.md) for current ledgers and
 [`todo.md`](../todo.md) for active issues.
 
+- [Provider health shadow rollout — 2026-09-17 UTC](./provider-shadow-rollout-2026-09-17.md)
+  — `abfea7a` deployment, exact release gates, live advisory receipts, and the
+  remaining match-window enforcement review.
 - [Search-window and cleanup rollout — 2026-09-10](./search-window-and-cleanup-rollout-2026-09-10.md)
   — `e344cf6` deployment, fixed-window and Firefox ownership scope,
   health/storage verification, and remaining natural-event acceptance.

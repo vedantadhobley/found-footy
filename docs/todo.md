@@ -449,17 +449,22 @@ the current branch.
 - **Schema prepared (September 17 UTC):** Approved `make migrate-prod` from
   `89d1d7c` applied exactly the two provider-health/receipt migrations. Ledger,
   schema hash, and four tables were independently verified; old application
-  processes stayed running and polling. Protection is not active until the
-  application rollout. See the
+  processes stayed running and polling until the application rollout below. See the
   [migration checkpoint](./provider-health.md#production-schema-checkpoint--september-17-utc).
-- **Shadow rollout (September 17 UTC, local):** Worker-only
+- **Shadow rollout (September 17 UTC, deployed `abfea7a` at 02:35):** Worker-only
   `PROVIDER_INTEGRITY_MODE` defaults to `shadow`; all three writers record
   recommendations/limited operations separately from actual committed effects.
   Atomicity, baseline guards, and retry receipts remain active. No new migration
   is required. Cross-mode retries preserve the original decision. See the
   [rollout decision](./decisions/2026-09-17-provider-policy-starts-in-shadow.md).
-- **Next:** Deploy the shadow-default application only with explicit production
-  approval. Review at least one complete match window, including natural
+  Full `make check`, storage/permission smokes, health/identity, and natural
+  active-poll receipt checks passed; see the
+  [release evidence](./history/provider-shadow-rollout-2026-09-17.md).
+  First review item: rescheduled Cincinnati–DC `1490439`, active `NS`, repeats
+  `populated_field_cleared` for retained zero scores versus provider null scores
+  with no clock/events. The current exception is `PST`-only. Review this possible
+  false restriction without coupling it to FF-088's polling-policy repair.
+- **Next:** Review at least one complete match window, including natural
   active/staging/ingest observations, restriction scope, false restrictions,
   and cause-specific recovery. A quiet window alone does not validate recovery;
   enforcement requires a separate decision and approval. Search-window recovery,

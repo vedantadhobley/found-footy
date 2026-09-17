@@ -1,6 +1,7 @@
 # Provider health evidence survives polls and retries
 
-**Status:** Committed; production schema prepared September 17 UTC, application rollout pending.
+**Status:** Production schema prepared September 17 UTC; collector deployed in
+shadow as `abfea7a` at 02:35 UTC. Natural match-window validation remains open.
 
 ## Context
 

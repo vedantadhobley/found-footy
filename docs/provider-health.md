@@ -1,11 +1,11 @@
 # Provider health evidence
 
-**Atomic boundary committed as `89d1d7c`; shadow-mode follow-up implemented locally;
-production schema prepared, application deployment pending.** This is the durable
+**Deployed in shadow as `abfea7a` on September 17 at 02:35 UTC.** This is the durable
 evidence and atomic write-protection contract for
 [FF-075](./todo.md#ff-075--successful-provider-responses-can-destructively-regress-live-state).
-Production still uses the earlier stateless shadow evaluator until an approved
-application deployment. The
+Production records durable health and guarded mutation receipts; semantic
+enforcement remains off. See the
+[rollout evidence](./history/provider-shadow-rollout-2026-09-17.md). The
 [design proposal](./design/proposals/provider-integrity-circuit-breaker.md)
 owns the remaining operator-resolution, correction-evidence, telemetry, and
 search-recovery work.
@@ -301,9 +301,12 @@ effects across a mode change. A durable recovery test applies the bad score in
 shadow, confirms the next identical response remains restricted against the
 original baseline, then restores that baseline and verifies the cause resolves.
 
-The shadow follow-up is implemented; application deployment remains pending. It does not modify any
-migration, production configuration, or production data. The earlier complete
-`make check` checkpoint above belongs to `89d1d7c`, not this follow-up.
+The exact provider-only `abfea7a` snapshot subsequently passed unchanged
+`make check`, including PostgreSQL (382.615 seconds) and scenario tests, followed
+by the normal pre-commit hook. It was deployed at 02:35:37 UTC without another
+migration or production configuration edit. First natural receipts demonstrate
+`Mode=shadow`, including a restricted recommendation with applied trusted
+permissions. Match-window validation remains open.
 
 ## Production schema checkpoint — September 17 UTC
 
@@ -315,15 +318,13 @@ files. The runner reported `migration verified` for that commit; an independent
 read confirmed both ledger rows, all four tables, and schema hash
 `8a9ba0bebf596112f1032bc5b9a892f64bec9e1abc8cebd1ed9b1bb9e0ac12e2`.
 
-Only the provider singleton is seeded. No health observations or mutation
-receipts exist yet. Worker/API containers remained on `8c836e0`, with unchanged
+At the migration checkpoint only the provider singleton was seeded; no health
+observations or mutation receipts existed. Worker/API containers remained on `8c836e0`, with unchanged
 start times, and polling continued after the migration. No application restart,
 deployment, push, fixture/event rewrite, or media mutation was performed.
 
-The new collector and transaction boundary are **not active** until a separately
-approved application rollout. That rollout will default to shadow; semantic
-restrictions require a later explicit enforcement change. Existing processes
-can continue using the additive schema, but an old
-binary restarted against the newer migration ledger fails its startup check;
-deploy the compatible application before any such restart. Do not delete
-migration rows to bypass that check.
+The separately approved `abfea7a` application rollout then activated the
+collector and transaction boundary in shadow. Semantic restrictions still
+require an explicit enforcement change. A pre-migration application binary
+restarted against this ledger fails its startup check; rollback requires a
+schema-compatible build. Do not delete migration rows to bypass that check.
