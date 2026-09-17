@@ -51,7 +51,7 @@ the current branch.
 
 ### FF-094 — added-time announcement incorrectly unpins a running clock
 
-- **Status:** `implemented` — local, not deployed
+- **Status:** `validating` — deployed September 17 as a2a6830
 - **Severity:** P1
 - **Evidence:** The [broader timestamp review](./design/audits/clock-tolerance-broader-review-2026-09-12.md#ff-094-added-time-label-discards-a-running-clock)
   observes `45:17, 45:25, 45:33` with a visible `+1` announcement on the
@@ -114,9 +114,11 @@ the current branch.
 - **September 17 follow-up:** Local `vision-evaluate-v3` retains this
   normalization and removes the unlabelled relative-offset fallback under
   FF-003. See the [visible-period decision](./decisions/2026-09-17-relative-clocks-require-visible-period.md).
-- **Next:** Review verification and authorize a production rollout separately.
-  Existing exact-byte v1 acceptances are not revalidated by deployment. Any
-  historical repair needs its own media/selection review and approval.
+- **Rollout:** The [September 17 clock release](./history/clock-validation-rollout-2026-09-17.md)
+  deployed v3 after full gates, with healthy processes and resumed polling.
+- **Next:** Observe a natural v3 evaluation. Existing exact-byte v1 acceptances
+  are not revalidated by deployment. Any historical repair needs its own
+  media/selection review and approval.
 
 ### FF-093 — accepted vision evidence expires with workflow history
 
@@ -1297,7 +1299,8 @@ the current branch.
   Require positive evidence for half-relative offsets; validate label recognition
   independently of added-time composition. The benchmark itself changed no
   runtime policy; the implementation below is a separate approved step.
-- **Unsupported-offset fix (September 17):** Implemented locally, not deployed.
+- **Unsupported-offset fix (September 17):** Deployed as a2a6830; natural
+  candidate validation remains open.
   `vision-evaluate-v3` removes hypothetical H2/ET1/ET2 offsets for unlabelled
   clocks. Yamal's correct 44:xx reading now rejects for his 89′ goal. Explicit
   reset clocks, continuous clocks and added-time handling remain supported;
@@ -1325,8 +1328,8 @@ the current branch.
   policy rather than forced exclusive ownership. Preserve the Lens, Gordon,
   and Lee Kang-in assets as three distinct regression classes.
 - **Rollout:** Broader semantic validation remains design work. The September
-  17 offset fix awaits separate production approval; it performs no historical
-  media removal or revalidation. This issue did not block the August 17 release.
+  17 offset fix is deployed; it performed no historical media removal or
+  revalidation. This issue did not block the August 17 release.
 - **Source relation:** Cross-event dedup was discussed and rejected on
   2026-07-25. The 2026-08-17 audit preserves FF-003's architectural evidence;
   the two 2026-08-19 meme samples expand its scope from no-clock attribution

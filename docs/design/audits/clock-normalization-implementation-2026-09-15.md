@@ -2,9 +2,11 @@
 
 ## Scope and status
 
-FF-094 is implemented locally as `vision-evaluate-v2`, following the
+At this audit, FF-094 was implemented locally as `vision-evaluate-v2`, following the
 [approved decision](../../decisions/2026-09-15-clock-fields-preserve-visible-evidence.md).
-Production is unchanged. No database migration, historical repair, tolerance
+The normalization later shipped within v3 in the
+[September 17 rollout](../../history/clock-validation-rollout-2026-09-17.md).
+This report retains the original offline results. No database migration, historical repair, tolerance
 change or extra inference call is part of this implementation.
 
 ## Historical replay

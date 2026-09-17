@@ -283,7 +283,7 @@ dense hashing, then two dedup stages straddle vision (#171 shipped 2026-08-09):
   clock normalization supports both continuous and reset-per-period scorebugs;
   exact displays with two structurally valid conventions retain both readings
   (`45:xx 2H` as 45/90 and `15:xx ET2` as 120/105);
-  explicit period conflicts reject. The local v3 evaluator removes FF-057's
+  explicit period conflicts reject. The deployed v3 evaluator removes FF-057's
   unlabelled relative soft-keep: the API target cannot supply a missing half
   or extra-time offset to rescue a mismatching clock. Continuous clocks do
   not require an explicit label. See the
@@ -295,8 +295,9 @@ dense hashing, then two dedup stages straddle vision (#171 shipped 2026-08-09):
   frozen clocks cannot verify on period alone or erase decisive contradictions.
   New rejected outcomes also retain the activity's evaluator identifier; old
   completed outputs omit it, preserving their historical payload. Sampling,
-  ±1 tolerance and the any-usable-match rule remain unchanged. Rollout is
-  separate; see the [decision](../decisions/2026-09-15-clock-fields-preserve-visible-evidence.md).
+  ±1 tolerance and the any-usable-match rule remain unchanged. Deployed as
+  a2a6830 on September 17; see the
+  [rollout](../history/clock-validation-rollout-2026-09-17.md).
   Perceptual dedup is deliberately NOT here: a clip's verified/unverified
   category is unknown until vision, and md5-identical bytes are trivially the
   same category.

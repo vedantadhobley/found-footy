@@ -7,8 +7,9 @@ Read-only diagnosis and an isolated model benchmark for
 The original diagnosis and benchmark changed no runtime policy or production
 state. The [FF-094 implementation](./clock-normalization-implementation-2026-09-15.md)
 was local and undeployed; the experiment used that v2 evaluator. The later
-[implementation follow-up](#implementation-follow-up) removes unsupported
-period offsets locally as v3; production rollout is still separate.
+[implementation follow-up](#implementation-follow-up) removed unsupported
+period offsets as v3, deployed in the
+[September 17 rollout](../../history/clock-validation-rollout-2026-09-17.md).
 
 The original user-described reset-clock broadcasts were `05:25 2nd` and
 `28:56 1st`. `1P`/`2P` were proposed as additional labels on September 17,
@@ -218,4 +219,5 @@ database integration run was needed for this pure evaluator change. The before/a
 are `/tmp/ff-clock-v2-before-period-fix-20260917.json` and
 `/tmp/ff-clock-v3-period-fix-replay-20260917.json`; input fingerprints are in
 both reports. The immutable benchmark archive and its checksum above are
-unchanged. No production mutation or deployment occurred.
+unchanged. The offline work performed no production mutation; the later
+application rollout is recorded separately above.

@@ -6,7 +6,9 @@
 The expected event minute cannot supply a missing period label to rescue a
 readable mismatching clock. This supersedes that part of FF-057 and includes
 the existing [FF-094 normalization](./2026-09-15-clock-fields-preserve-visible-evidence.md).
-Implementation is local; production rollout remains separately approved.
+Deployed as a2a6830 on September 17 after explicit approval; the
+[rollout record](../history/clock-validation-rollout-2026-09-17.md) retains gates
+and the remaining natural-event validation boundary.
 
 The [Barcelona investigation](../design/audits/period-label-recognition-2026-09-17.md)
 found correct `44:48/51/53`, with no period label, admitted for Yamal's 89′

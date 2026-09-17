@@ -58,5 +58,6 @@ requires separate review and approval; a release is not an automatic cleanup.
 Category changes can affect dedup, support, ranking and singleton visibility.
 
 The [implementation replay](../design/audits/clock-normalization-implementation-2026-09-15.md)
-keeps recorded and current verdicts separate. The code change is local;
-production rollout requires separate approval.
+keeps recorded and current verdicts separate. This normalization shipped within
+v3 in the [September 17 release](../history/clock-validation-rollout-2026-09-17.md);
+natural-event validation remains open.

@@ -5,6 +5,9 @@ preserve sequence and rationale but do not define current behavior or work.
 Use the [`docs` routing index](../README.md) for current ledgers and
 [`todo.md`](../todo.md) for active issues.
 
+- [Clock validation rollout — 2026-09-17 UTC](./clock-validation-rollout-2026-09-17.md)
+  — a2a6830 deployment, literal clock parsing, unsupported-offset rejection,
+  release gates and remaining natural-event validation.
 - [Provider health shadow rollout — 2026-09-17 UTC](./provider-shadow-rollout-2026-09-17.md)
   — `abfea7a` deployment, exact release gates, live advisory receipts, and the
   remaining match-window enforcement review.

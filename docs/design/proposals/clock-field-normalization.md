@@ -2,8 +2,9 @@
 
 ## Disposition
 
-Implemented locally September 15 after explicit user approval, including the
-bounded unverified frozen-clock policy. Production is not deployed. The
+Implemented September 15 after explicit user approval, including the bounded
+unverified frozen-clock policy, and deployed within v3 in the
+[September 17 release](../../history/clock-validation-rollout-2026-09-17.md). The
 [decision](../../decisions/2026-09-15-clock-fields-preserve-visible-evidence.md)
 and [implementation evidence](../audits/clock-normalization-implementation-2026-09-15.md)
 supersede the proposal's approval checkpoints below, retained as design history.

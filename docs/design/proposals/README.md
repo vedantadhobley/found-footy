@@ -7,9 +7,6 @@ work.
 
 ## Active proposals
 
-- [Clock-field normalization](./clock-field-normalization.md) — FF-094
-  precision-preserving parser design, compatible secondary timers, reset-clock
-  boundaries and evidence versioning; implemented, production rollout pending.
 - [Reversible video selection](./reversible-video-selection.md) — FF-081 direct
   selected-substitute invariant, offline restoration proof, atomic ownership
   changes and preserved singleton filtering; validation, domain planning and
@@ -22,6 +19,9 @@ work.
 
 ## Shipped rationale
 
+- [Clock-field normalization](./clock-field-normalization.md) — FF-094 literal
+  timing fields, bounded secondary arithmetic and frozen-clock policy;
+  deployed within v3 on September 17, natural-event validation pending.
 - [`terminal-observation-grace.md`](./terminal-observation-grace.md) — FF-063
   bounded terminal retirement while retaining event debounce and downstream
   settlement; application code is complete and production rollout is pending.
