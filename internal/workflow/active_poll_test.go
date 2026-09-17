@@ -27,6 +27,8 @@ func newActivePollEnv(s *testsuite.WorkflowTestSuite) *testsuite.TestWorkflowEnv
 	env := s.NewTestWorkflowEnvironment()
 	env.RegisterWorkflow(workflow.ActivePollWorkflow)
 	env.RegisterActivity(&monitor.Activities{})
+	env.OnActivity("CollectProviderHealth", mock.Anything, mock.Anything).
+		Return(providerintegrity.HealthResult{}, nil).Maybe()
 	// DestroyEvent (#172) is a PersistActivities method; register so the
 	// VAR-destroy test can mock it by name. Empty deps — the mock overrides it.
 	env.RegisterActivity(&videoactivity.PersistActivities{})

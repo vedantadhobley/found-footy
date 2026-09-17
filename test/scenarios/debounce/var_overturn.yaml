@@ -41,6 +41,8 @@ _goal_present: &goal_present
       league_id: 39
       league_name: Premier League
       league_season: 2026
+      goals_home: 1
+      goals_away: 0
       events:
         - type: Goal
           detail: Normal Goal
@@ -64,6 +66,8 @@ _goal_absent: &goal_absent
       league_id: 39
       league_name: Premier League
       league_season: 2026
+      goals_home: 0
+      goals_away: 0
       events: []
 
 cycles:

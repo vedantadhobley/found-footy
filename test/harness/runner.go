@@ -17,6 +17,8 @@ import (
 	retentionactivity "github.com/vedantadhobley/found-footy/internal/activity/retention"
 	videoactivity "github.com/vedantadhobley/found-footy/internal/activity/video"
 	"github.com/vedantadhobley/found-footy/internal/config"
+	discoverycontract "github.com/vedantadhobley/found-footy/internal/contract/discovery"
+	"github.com/vedantadhobley/found-footy/internal/domain/event"
 	"github.com/vedantadhobley/found-footy/internal/infra/apifootball"
 	"github.com/vedantadhobley/found-footy/internal/infra/pg"
 	"github.com/vedantadhobley/found-footy/internal/observability/logging"
@@ -29,6 +31,30 @@ import (
 // metrics don't accumulate across runs.
 type harnessInstrumentBundle struct {
 	af *apifootball.Instruments
+}
+
+// scenarioDownstreamSpawner models an EventWorkflow that finishes immediately.
+// Scenario tests exercise monitor and completion semantics, not discovery, so
+// leaving the real checklist pending would assert a workflow this harness never
+// runs. The monitor still has to register the exact row before this fake can
+// close it, which preserves the production ordering invariant.
+type scenarioDownstreamSpawner struct {
+	events *pg.EventRepo
+}
+
+func (s scenarioDownstreamSpawner) SpawnEvent(
+	ctx context.Context,
+	workflowID string,
+	in discoverycontract.EventWorkflowInput,
+) error {
+	_, err := s.events.CompleteDownstreamWorkflow(
+		ctx,
+		in.EventID,
+		"discovery",
+		workflowID,
+		string(event.OutcomeNoCandidates),
+	)
+	return err
 }
 
 func harnessInstruments() *harnessInstrumentBundle {
@@ -109,10 +135,15 @@ func runActivePoll(ctx context.Context, t *testing.T, pool *pg.Pool, afClient *a
 	// Wall-clock behavior in prod (Now=nil) is what makes injecting
 	// this cheap: we're setting a field production leaves nil.
 	var currentCycleTime time.Time
+	providerMutations := pg.NewProviderMutationRepo(pool)
+	eventRepo := pg.NewEventRepo(pool)
 	acts := &monitor.Activities{
 		APIFootball:         afClient,
 		FixtureRepo:         pg.NewFixtureRepo(pool),
-		EventRepo:           pg.NewEventRepo(pool),
+		EventRepo:           eventRepo,
+		ProviderHealth:      pg.NewProviderHealthRepo(pool),
+		ProviderMutations:   providerMutations,
+		Spawner:             scenarioDownstreamSpawner{events: eventRepo},
 		ActivationWindow:    5 * time.Minute,
 		TerminalGracePeriod: time.Hour,
 		Now:                 func() time.Time { return currentCycleTime.UTC() },
@@ -192,6 +223,7 @@ func runIngest(ctx context.Context, t *testing.T, pool *pg.Pool, afClient *apifo
 	acts := &ingest.Activities{
 		APIFootball:           afClient,
 		FixtureRepo:           pg.NewFixtureRepo(pool),
+		ProviderMutations:     pg.NewProviderMutationRepo(pool),
 		AliasRepo:             pg.NewAliasRepo(pool),
 		TeamRepo:              pg.NewTeamRepo(pool),
 		TrackedLeagueIDs:      []int{39, 140, 78, 135, 61, 1},

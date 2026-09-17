@@ -6,9 +6,11 @@
 //     whose stored kickoff is within the activation window.
 //  2. ListActiveFixtureIDs — cheap ID pull.
 //  3. FetchLiveFixtures — one contract-validated batched /fixtures?ids= call.
-//  4. ReconcileFixture — per fixture, calculate the FF-075 shadow verdict,
-//     refresh state, diff events, and vote presence/absence. Concurrent via
-//     workflow.Go in the coordinator.
+//  4. CollectProviderHealth — durable policy evidence before reconciliation,
+//     including failed requests; enabled through the workflow version marker.
+//  5. ReconcileFixture — per fixture, calculate the FF-075 local verdict and
+//     atomically apply its permitted fixture/event changes under durable policy.
+//     Concurrent via workflow futures in the coordinator.
 //
 // StagingPollWorkflow (fires per cron schedule, default 15 min) uses:
 //  1. PollStagingFixtures — API poll of ALL staging fixtures.
@@ -37,6 +39,7 @@ import (
 	"github.com/vedantadhobley/found-footy/internal/contract/auditlog"
 	"github.com/vedantadhobley/found-footy/internal/domain/event"
 	"github.com/vedantadhobley/found-footy/internal/domain/fixture"
+	"github.com/vedantadhobley/found-footy/internal/domain/providerintegrity"
 	"github.com/vedantadhobley/found-footy/internal/infra/apifootball"
 )
 
@@ -55,6 +58,12 @@ type Activities struct {
 	APIFootball fixtureFetcher
 	FixtureRepo fixture.Repo
 	EventRepo   event.Repo
+	// ProviderHealth stores internal policy evidence, never public mutations.
+	ProviderHealth providerintegrity.HealthStore
+	// ProviderMutations is the mandatory production write boundary. It composes
+	// durable health policy with the local observation and commits one fixture
+	// plan atomically before this activity performs external effects.
+	ProviderMutations providerintegrity.MutationStore
 
 	// Spawner — starts downstream workflows (Discovery for now) via
 	// Temporal. Bundled with the row-insert into

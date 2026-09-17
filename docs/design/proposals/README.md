@@ -13,8 +13,9 @@ work.
   atomic reselection and versioned workflow integration are implemented locally;
   migration, rollout and natural production validation remain.
 - [`provider-integrity-circuit-breaker.md`](./provider-integrity-circuit-breaker.md)
-  — FF-075 data-quality state machine that keeps polling and positive discovery
-  active while suppressing untrusted destructive provider mutations.
+  — FF-075 wire checks and shadow rules are shipped; September 16 durable
+  evidence, versioned collector, and atomic guarded writes are local, not
+  deployed. Bounded delayed-event search recovery remains proposed.
 
 ## Shipped rationale
 

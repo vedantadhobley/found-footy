@@ -267,7 +267,7 @@ func TestDirectSupportMigration(t *testing.T) {
 	_, err = pool.Exec(t.Context(), `COMMENT ON COLUMN video_assets.popularity IS NULL;
 		COMMENT ON COLUMN event_search_candidates.credited_asset_id IS NULL;
 		DROP TABLE video_selection_commits;
-		DELETE FROM schema_migrations WHERE version='20260913_01_enable_direct_support'`)
+		DELETE FROM schema_migrations WHERE version>='20260913_01_enable_direct_support'`)
 	require.NoError(t, err)
 	_, err = pool.Exec(t.Context(), string(prior))
 	require.NoError(t, err)

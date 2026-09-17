@@ -101,7 +101,7 @@ func TestReconcileFixture_ProviderIntegrityIsShadowOnly(t *testing.T) {
 		t.Fatalf("get refreshed fixture: %v", err)
 	}
 	if refreshed.HomeScore == nil || *refreshed.HomeScore != 0 {
-		t.Fatalf("HomeScore = %v, want 0 while assessment remains non-enforcing", refreshed.HomeScore)
+		t.Fatalf("HomeScore = %v, want 0 on the explicit legacy reconciliation path", refreshed.HomeScore)
 	}
 }
 

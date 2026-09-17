@@ -9,6 +9,19 @@ Per-workflow specs (retry policies, signal contracts, spawn patterns)
 live in the [orchestration ledger](./orchestration/); this doc covers the
 substrate.
 
+The local FF-075 protection adds no schedule or workflow type. Worker bootstrap
+injects `pg.ProviderHealthRepo` and one shared `pg.ProviderMutationRepo` into
+Monitor/ingest activities; struct registration exposes `CollectProviderHealth`.
+The `provider-health-evidence-v1` marker adds collection before reconciliation
+for new active-poll histories, including failed fetches.
+`provider-mutation-guard-v1` routes new ActivePoll, StagingPoll, and Ingest
+histories through atomic guarded commands while old histories retain their
+recorded activity inputs and write path. Per-observation/per-fixture database
+receipts return the same post-commit effects after activity response loss; no
+workflow history is used as the policy store. See the
+[provider-health ledger](./provider-health.md) for retry identity, lock ordering,
+and storage.
+
 Cross-refs [`../rebuild-plan.md`](design/rebuild-plan.md) §9
 (`internal/infra/temporal`) and §5 (workflow specs). Divergences from
 either live in [`../decisions.md`](decisions.md).

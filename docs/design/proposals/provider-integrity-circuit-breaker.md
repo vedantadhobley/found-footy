@@ -1,9 +1,10 @@
-# API-Football provider-integrity circuit breaker
+# API-Football health assessment and reconciliation protection
 
-**Status:** Partially implemented and live-shadow audited for
+**Status:** Protection implemented locally and live-shadow audited for
 [`FF-075`](../../todo.md#ff-075--successful-provider-responses-can-destructively-regress-live-state).
-The wire contract and non-enforcing semantic evaluator have shipped; durable
-circuit/quarantine state and mutation enforcement remain proposed. The
+The wire contract and non-enforcing semantic evaluator have shipped; the durable
+collector and atomic mutation enforcement are local and await migration and
+deployment. The
 [first production shadow audit](../audits/provider-integrity-shadow-2026-08-31.md)
 found and locally repaired classification gaps. The
 [second shadow window](../audits/pre-rollout-evidence-2026-09-08.md#ff-088-and-ff-075-postponed-polling-pollutes-circuit-evidence)
@@ -15,6 +16,18 @@ is exempt from score clearing. Waiting for more unchanged polls is not the
 remaining design gate. FF-088 owns the separate deferred
 polling/reactivation policy. Current behavior is authoritative in the
 [fixture-monitoring ledger](../../orchestration/monitor.md).
+
+**September 16 design revision — collector and guard local, not deployed:** The
+[Barcelona stalled-feed incident](../../incidents/2026-09-16-api-football-stalled-fixture.md)
+requires separating fixture/provider health from write permission. This revision
+replaces the earlier single circuit-state table with independent evidence and
+cause-specific recovery. Numerical thresholds below are proposed starting
+values, not vendor guarantees or historically calibrated limits. The
+[health ledger](../../provider-health.md) describes the four-table durable
+contract, versioned collector, independent cause recovery, and guarded writers
+now implemented locally. Production, search, and frontend contracts are
+unchanged. The [test ledger](../../testing.md) separates atomic protection proof
+from the remaining search and operator work.
 
 ## Problem
 
@@ -35,6 +48,63 @@ The existing three-poll debounce only answers whether an observation persisted.
 It does not answer whether the observation is credible. The one-hour terminal
 grace also cannot protect an active fixture from destructive event reconciliation
 before completion.
+
+On September 16, valid HTTP-200 responses held Barcelona at 65′, 4–2 while
+other fixtures advanced. A frozen feed neither regresses known facts nor
+removes an event we have never seen. The user reported a later goal, but the
+provider had not supplied it. This requires temporal freshness evidence in
+addition to the existing consistency checks.
+
+## Health assessment before mutation policy
+
+Use three independent assessments, not a combined healthy/unhealthy boolean:
+
+| Assessment | Question | Evidence |
+|---|---|---|
+| Availability | Did the expected request return usable data? | Request outcome, typed contract failure, requested/returned IDs, observation time. |
+| Freshness | Is a field that should progress still progressing? | Phase-aware clock history, phase changes, time since progress, observation coverage. |
+| Consistency | Does this observation contradict established facts? | Identity, scores, event inventory, supported correction evidence, retained baseline. |
+
+Keep unknown/not-assessable distinct from an observed failure and from recent
+progress. No active fixtures means no live-feed freshness evidence, not a
+healthy API. An advancing clock does not prove that all goals were reported.
+`trusted` remains the current shadow policy name; it must not be presented as
+an overall health result. Avoid a policy rename in the first implementation.
+
+### Proposed first freshness rules
+
+Evaluate wall-clock age, not a count of repeated polls. Temporal overlap-skip,
+activity delays, and retries make poll counts an unreliable elapsed timer.
+
+| Provider phase / evidence | Initial rule |
+|---|---|
+| `1H`, `2H`, or `ET`, numeric clock inside a playing period | Suspect staleness after **3 minutes** without credible clock progress. |
+| Clock at a period boundary: 45, 90, 105, or 120, including stoppage display | Use **10 minutes** without clock/phase progress; do not treat normal capped clocks as the interior-period case. |
+| `HT`, `BT`, `P`, `INT`, `SUSP`, `NS`, `PST`, `TBD`, terminal statuses | No running-clock timer. Report phase age and whether clock freshness is assessable; no automatic claim that the feed is current. |
+| `LIVE`, unknown status, or no numeric clock | Clock freshness is unknown; availability and consistency checks still apply. |
+
+Use the raw phase/elapsed/extra tuple, with the existing phase-aware reset
+rules. Within a phase, only forward clock progress resets its age; metadata,
+goals, repeated HTTP success, and a backward/forward oscillation below the
+retained high-water mark do not. Track score/event changes separately. Entering
+or leaving an accepted break starts the appropriate new phase expectation.
+
+The timer needs distinct successful observations spanning the interval, with
+no gap exceeding **90 seconds** in the active-poll evidence. A fetch failure
+is availability loss. A local polling gap is observation loss, not proof the
+provider froze; resume with unknown freshness until the window is established.
+Persist progress across worker restarts; do not initialize it from kickoff or
+retroactively label the whole unobserved interval as stale.
+
+Boundary timers are lower-confidence warnings: long stoppages can be real.
+They must not by themselves impose a destructive-write restriction. Interior
+staleness temporarily restricts the affected fixture as specified below.
+Long-break/shootout timers are not in the first implementation; phase-age
+visibility makes this explicit rather than declaring those feeds healthy.
+
+These signals detect a stalled feed, not its absolute lag or missing goals.
+An unreported match interruption can resemble a frozen provider. One source
+cannot prove completeness or that a resumed feed has caught up to real play.
 
 ## Research boundary
 
@@ -71,8 +141,19 @@ event write:
 | `positive_only` | Accept additions and forward progress; suppress destructive or regressive mutations. |
 | `rejected` | Apply no provider-derived mutation from this observation. |
 
-The breaker protects local state from untrusted data. It does **not** stop API
-calls. While provider trust is degraded, Found Footy continues to:
+| Condition | Required action |
+|---|---|
+| Fetch or wire-contract failure | Record unavailable/invalid evidence; apply no snapshot for affected IDs. Keep polling. |
+| Interior running-clock staleness | Warn and use fixture-local `positive_only` until freshness recovery; do not freeze unrelated fixtures. |
+| Boundary warning or unassessable clock alone | Warn/report uncertainty without changing write permission. |
+| Unsupported regression or disappearance | Fixture-local `positive_only`; retain the conflicting baseline until resolved. |
+| Conflicting identity | Reject the affected fixture, as the shadow evaluator already recommends. |
+| Correlated destructive regression across fixtures | Provider-wide `positive_only`; fixture-specific rejection still wins. |
+| Supported correction with no applicable restriction | Ordinary event debounce, not a second correction debounce. |
+
+These are write permissions, not health states. `rejected` takes precedence
+over `positive_only`, which takes precedence over `trusted`. The guard does
+**not** stop API calls. A `positive_only` observation may:
 
 - fetch every active fixture at the normal cadence;
 - insert new events and cast presence votes;
@@ -89,23 +170,43 @@ It suppresses:
 
 This intentionally prefers bounded false-positive work over irreversible clip
 loss. The ordinary event debounce still filters transient positive reports.
+For example, a real VAR during an unreported long interruption can be delayed
+until evidence supports the correction and freshness recovers. It must not be
+silently discarded. Existing downstream work continues during provider trouble.
+
+Missing never-observed goals are incomplete coverage, not evidence that retained
+goals should be deleted. Preserve FF-063: score/event parity alone must not
+block terminal retirement forever. An unresolved conflict with retained facts
+does block destructive reconciliation and retirement; it requires evidence or
+an audited operator decision, not automatic expiry. This distinction prevents
+reintroducing the permanently eventless-fixture bug.
 
 ## State and scope
 
-Provider-wide state uses four values:
+Use durable reason-bearing episodes, with per-cause recovery evidence. Derive
+the current write policy from unresolved causes; do not add the old
+`closed/open/recovering/forced_open` enum as a second source of truth. An audited
+operator restriction is another explicit cause, never an erase-history switch.
 
-| State | Mutation policy |
-|---|---|
-| `closed` | Per-fixture assessment controls the policy. |
-| `open` | Every returned fixture is at most `positive_only`; polls are recovery probes. |
-| `recovering` | Clean-probe streak is advancing; destructive writes remain suppressed. |
-| `forced_open` | Operator kill switch; automatic probes cannot close it. |
+Provider summaries include requested coverage, affected fixture IDs, shared
+reasons, and examples of still-progressing fixtures. They describe the observed
+feed scope, not the whole vendor. No extra `live=all` request is required on
+every poll just to claim broader coverage.
 
-An isolated semantic anomaly quarantines one fixture instead of opening the
-provider globally. A provider-wide open protects all fixtures only when the
-batch demonstrates shared failure. After global recovery, unresolved causal
-fixtures remain quarantined so one ambiguous match cannot freeze unrelated
-matches.
+Proposed correlation: **two distinct fixtures with new strong anomalies within
+two minutes**, excluding supported corrections. Correlate freshness separately
+from semantic regressions. Staleness across fixtures raises a provider warning
+but restricts only the affected fixtures; correlated destructive regression
+restricts destructive writes across the provider's monitored fixtures. Failed
+request chunks retain their exact coverage; one bad chunk is not proof that
+successful chunks are corrupt.
+
+An old unresolved cause must not retrigger its onset every poll and combine
+with a new isolated issue. Ten disappearing events in one fixture increase its
+severity, not its scope: remove the current shadow shortcut that three missing
+events alone imply a global problem. This changes the proposed enforcement
+threshold, not the deployed shadow evaluator. Unresolved fixtures remain
+restricted after provider-wide recovery.
 
 Both scopes must be durable in Postgres. Each scheduled ActivePollWorkflow is a
 separate Temporal execution, and a worker restart must not reset provider trust.
@@ -136,16 +237,11 @@ trust and mutation enforcement, not repeating the wire-contract implementation.
 - a confirmed event disappears;
 - several populated facts clear together.
 
-### Open the provider circuit
-
-- two unrelated fixtures show strong semantic regression in one batch;
-- at least three confirmed events disappear in one batch;
-- a response-envelope or coverage defect affects a complete request chunk;
-- event, score, and status regression co-occur across fixtures.
-
-Percentages remain telemetry rather than the primary threshold. Live batches
-are often small; one legitimate correction in a two-fixture batch must not be
-treated as a 50% provider outage.
+Provider aggregation follows the scope rules above. Percentages are telemetry,
+not an automatic whole-provider trip: one bad fixture out of two does not prove
+a systemic failure. A failed chunk is rejected immediately without waiting for
+correlation; a genuine multi-fixture semantic regression restricts the first bad
+batch before any canonical writes, not after a debounce.
 
 ## Supported correction signatures
 
@@ -174,78 +270,184 @@ quarantine the fixture rather than destroy real assets.
 
 ## Recovery and closing signals
 
-Every open-state poll is a probe. A timer alone never closes the circuit.
+Every scheduled poll remains a probe. Resolve causes independently:
 
-1. Every requested fixture returns exactly once.
-2. Envelope, paging, identity, and event-presence validation passes.
-3. No new semantic regression appears.
-4. The systemic behavior that opened the provider circuit has stopped.
-5. The first clean batch moves `open` to `recovering`.
-6. Three consecutive clean batches close the provider circuit.
-7. Any anomaly resets the streak and returns to `open`.
+- **Availability:** one valid new observation restores current reachability for
+  its scope. It does not clear freshness or integrity incidents. Record a failed
+  attempt even if a retry succeeds; do not count retries as independent polls.
+- **Freshness:** two distinct forward clock observations within three minutes,
+  or a credible forward phase transition followed by two consistent scheduled
+  observations. The second path permits recovery directly into halftime or
+  full time. Repeated frozen HTTP-200 snapshots cannot recover freshness.
+  Record "progress resumed", not "known current".
+- **Fixture integrity:** missing facts return, or explicit supported correction
+  evidence authorizes the ordinary event debounce, or an audited operator
+  resolves the cause. Assess against the retained causal baseline, not an
+  already-corrupted previous poll. Suppressed votes are never replayed later.
+- **Provider-wide integrity restriction:** three complete valid scheduled
+  observations with no new systemic anomaly and no newly affected fixture.
+  Persistently unresolved causal fixtures remain individually restricted and
+  do not hold unrelated matches indefinitely. Correlation remains active, so
+  a new multi-fixture episode immediately reimposes the provider restriction.
 
-The streak counts observations, not elapsed wall time. ActivePoll uses Temporal
-overlap-skip, so a slow cycle can stretch the nominal 30-second interval.
-
-Global recovery does not silently resolve affected fixtures. A fixture leaves
-quarantine only when its missing facts return, a supported correction persists
-for three clean observations, or an audited operator or future secondary source
-adjudicates it.
+Failed/missing observations reset applicable confirmation streaks; duplicate
+activity results and late snapshots do not advance them. No recovery state may
+lose its causal evidence on a restart. A successful HTTP response, timer expiry,
+or one recovered dimension cannot clear a different unresolved cause.
 
 ## Implementation shape
 
-Add one batch assessment between `FetchLiveFixtures` and concurrent
-`ReconcileFixture` calls:
+### Boundaries found and repaired locally
+
+- [Active reconciliation](../../../internal/activity/monitor/reconcile.go)
+  previously persisted `RefreshActivePoll` before computing its shadow verdict.
+  New workflow histories build the complete plan before any write and send it
+  through `ProviderMutationRepo.ApplyActive`.
+- [ActivePoll](../../../internal/workflow/active_poll.go) aggregates after
+  reconciliation and formerly exited early on total fetch failure. It now
+  records successful and failed coverage before fan-out, including the
+  all-failed path, and fails closed when health collection fails.
+- [Ingestion](../../../internal/activity/ingest/categorize.go) and
+  [staging](../../../internal/activity/monitor/activation.go) also refresh
+  provider facts. New histories use the same mutation boundary and current
+  durable policy; date-list payloads without events are not empty event
+  inventories or evidence of event-feed recovery.
+- The [fact translation](../../../internal/activity/monitor/provider_observation.go)
+  currently filters out untracked VAR/yellow-card evidence. Preserve relevant
+  raw correction facts for assessment without changing which events we search.
+
+Implemented local active path:
 
 ```text
 FetchLiveFixtures
   -> validate envelope and requested-ID coverage
-  -> AssessFixtureBatch against durable fixture/event state
-  -> persist circuit transition and anomaly evidence
-  -> ReconcileFixture(policy) concurrently
+  -> AssessProviderObservations(successes + failures, durable baselines)
+  -> persist health causes / restrictions / observation receipt
+  -> ReconcileFixture(policy, observation, generation) concurrently
+  -> post-commit discovery, cleanup, and existing NATS publication
 ```
 
-The evaluator belongs in a pure domain package and returns typed reason codes.
-The activity owns database reads and durable circuit transitions. Reconcile
-receives the policy, observation time, and circuit generation; a repository
-write rejects a stale generation rather than applying an assessment made before
-a concurrent state transition.
+Evaluation remains pure and typed. The collector and reconciler reuse the
+existing event matcher rather than inventing a second identity scheme. The
+activity owns persistence. All provider writers use the same observation
+ordering and guarded repository boundary, including updates to already-completed
+rows. Fresh historical terminal ingests retain their direct-complete path for
+eligible observations; this work does not add historical event polling or
+change FF-088 reactivation.
+
+Within one fixture, permitted provider fields, event votes/mutable updates,
+required audit rows, downstream checklist registration, and completion commit
+in one transaction. Provider and fixture locks check the observation baseline,
+health receipt, and restriction generation. Stale plans return a durable no-op
+rather than applying. Different fixtures remain concurrent. No lock crosses
+HTTP, Temporal, NATS, or Garage calls. Idempotent mutation receipts return
+committed effects on retry so event removal cannot lose its cleanup.
 
 `positive_only` requires an explicit reconciliation plan. Passing the raw API
 fixture to the current full-snapshot writer and merely skipping absence votes
 would still persist score, status, terminal, penalty, and winner regression.
 
-The minimum durable surfaces are:
+The durable surfaces are:
 
-- one provider-circuit row with state, generation, timestamps, cause summary,
-  and clean-probe streak;
-- active per-fixture quarantine records with causal baseline and resolution;
-- a bounded internal anomaly ledger containing compact verdict evidence and
-  raw provider JSON only for anomalies/state transitions.
+- provider-level restriction causes, generation, request coverage, and recovery
+  evidence;
+- per-fixture observation/progress facts plus unresolved causes and the minimal
+  score/phase/event baseline needed to resolve each cause;
+- a bounded internal transition ledger and idempotent observation receipts.
+  Preserve compact before/after evidence, not full JSON for every 30-second poll.
+- a bounded per-observation/per-fixture mutation receipt containing the committed
+  effect set, not a second canonical snapshot.
+
+Do not create a second copy of the fixture/event database. Progress fields are
+typed; incident-specific evidence can be bounded versioned JSON. Keep observation
+time, last usable response, clock progress, and public `last_activity_at`
+distinct. No health write may reorder fixtures or emit `fixture.update` merely
+because an internal warning changed. Reuse the configured terminal grace and
+existing downstream settlement gates; no new fixture-completion debounce.
 
 The anomaly ledger must not reuse `event_log`: that table is also the public
 SSE/NATS transition source. Internal provider-health evidence is not a public
 fixture mutation.
 
-Required telemetry includes circuit state, transition count, quarantined
-fixtures, verdict/reason counts, suppressed mutation counts, coverage ratio,
-confirmed-event disappearance count, clean-probe streak, and open duration.
-State transitions and operator actions require durable reason evidence.
+Required telemetry includes active restrictions, transition count, affected
+fixtures, progress age, verdict/reason counts, suppressed mutation counts,
+coverage ratio, missing confirmed events, recovery evidence, and incident age.
+Log cause transitions and bounded summaries rather than the same warning every
+poll. Include fixture IDs in diagnostic records, not unbounded metric labels.
+Local poll execution/observation gaps need their own signal; they must not be
+reported as proven vendor outages. Operator actions require durable reasons.
+
+## Delayed-goal search recovery
+
+Keep ordinary search unchanged. For a new event first observed during a known
+availability/freshness gap or its recovery, initialize its durable floor once:
+
+```text
+ordinary_floor = first_seen_at - configured_lookback
+gap_floor = last_credible_pre_gap_observation - configured_lookback
+recovery_floor = max(first_seen_at - 90 minutes,
+                     min(ordinary_floor, gap_floor))
+```
+
+For a frozen clock, the baseline is its last credible advancement, not the
+later warning timestamp or a recent identical HTTP-200 response. For a fetch
+gap, use the last usable observation. If no baseline exists, retain the normal
+floor and mark recovery coverage unknown rather than inventing one.
+
+The **90-minute** recovery cap is proposed: it covers both the approximately
+20-minute frozen-feed example and the historical 75-minute regression while
+bounding older searches. Record a truncated/incomplete-coverage reason if the
+gap exceeds the cap, the baseline is unavailable, or a scan hits existing
+scroll/time/rate limits. No claim that every tweet in that interval was read.
+Keep existing scan limits, usable-attempt budget, and Twitter query text; wider
+lookback can cost more timeline requests, so FF-038 shared-budget work remains
+relevant but is not bundled here. Do not put time operators into the X query.
+
+Capture the gap reference when inserting the event, including events first
+seen on the recovery poll. Do not rewrite `first_seen_at`, reinterpret match
+minutes as wall time, retroactively expand initialized windows, or automatically
+replay completed discoveries. Keep the existing durable floor and seen-stop
+rules after initialization. This is an explicit proposed downstream contract
+change that needs Temporal versioning and regression coverage, not a repair
+already applied to today's goals.
 
 ## Rollout
 
 1. **Shipped:** harden the API envelope and requested-ID coverage contract.
 2. **Shipped:** add the pure evaluator in shadow mode. Record typed workflow
    verdicts and adapter contract metrics while preserving current mutations.
-3. **Local repair complete, release pending:** both shadow windows are reviewed.
+3. **Shipped September 9 (`a7c9f53`):** both shadow windows are reviewed.
    The September 8 regression repair excludes only empty unchanged PST
    scoreboards, including all retained/raw event presence as counterevidence.
-   Release it with enforcement off; retain the first corpus and verify the
-   corrected natural fixture/batch classification.
-4. Apply the additive provider-state/quarantine migration.
-5. Enforce `rejected` and `positive_only` policies.
-6. Add audited force-open and fixture-resolution operations. Force-close must
-   require a reason and must not erase incident evidence.
+   Enforcement remains off.
+4. **Local September 16:** pure freshness, scope, recovery, and policy-composition
+   helpers plus Monitor/SQL writer characterization.
+5. **Local September 16:** durable observations, causal baselines, failed-attempt
+   receipts and versioned active collection, including all-failed fetches. The
+   migration is not applied to production. This is not closure of FF-075 and
+   must not become another indefinite evidence-gathering phase.
+6. **Local September 16:** implement the guarded transaction path across active,
+   staging, and ingest writers. The August destruction replay, whole-plan
+   rollback, ingest bypass, staging activation, response-loss retry, and stale
+   collector-baseline tests pass. Audited operator restriction/resolution remains
+   separate; never enable only a subset of provider writers.
+7. The exact staged snapshot passes unchanged `make check` (see the
+   [verification limits](../../provider-health.md#verification-checkpoint--september-16)).
+   Apply both ordered migrations and roll out the new
+   histories/binary together in an approved quiet-window deployment. Validate
+   natural active, staging, ingest, and policy-counter behavior before closure.
+8. Version and test incident-linked search-window initialization separately.
+   It can follow the protection release; it is not necessary to detect staleness
+   or prevent destructive regressions. No ranking/quality policy changes here.
+
+Policy tests now pin exact timing boundaries, evidence serialization/gaps,
+distinct-fixture correlation, logical-observation deduplication, and recovery
+directly into FT. They also reject recovery that later freezes again and use
+the latest qualifying clock advances rather than a window stuck on the first.
+Real-Postgres tests cover restart-independent collector state, concurrent
+retries, stale polls, whole-plan rollback, retention, migration, ingestion and
+staging guard use, event vote suppression, and collector/write races. Natural
+production validation and operator/search follow-ups remain pending.
 
 Do not add a frontend state or a new Temporal workflow. The current active-poll
 schedule supplies probes, and the portal should continue showing the last
@@ -263,12 +465,20 @@ trusted state while provider trust is degraded.
 - unchanged empty PST zero/null scoreboards, isolated versus global anomalies,
   and retained/raw event evidence that disqualifies the deferred exception;
 - terminal-to-live and material clock rollback;
-- the 2026-08-29 multi-fixture regression: first bad batch opens the circuit,
+- frozen running-clock HTTP-200 observations while unrelated fixtures advance;
+- repeated successful observations do not reset progress age or recover a
+  freshness incident; ordinary pauses and terminal fixtures do not false-trip;
+- correlated multi-fixture staleness versus one recurring unresolved warning;
+- clock advancement with missing event coverage does not assert completeness;
+- late first observation after a provider stall and bounded Twitter recovery;
+- freshness recovery with an unresolved semantic regression, and vice versa;
+- the 2026-08-29 multi-fixture regression: first bad batch restricts writes,
   three bad polls create no absence votes, and no share/object is destroyed;
-- positive events continue to debounce and launch discovery while open;
-- terminal fixtures cannot complete from an open/quarantined observation;
-- three clean probes close the provider globally while unresolved fixtures
-  remain quarantined;
+- positive events continue to debounce and launch discovery while restricted;
+- no terminal retirement from a restricted observation; incomplete coverage
+  alone still permits the configured grace and downstream-settlement path;
+- three qualifying probes release the provider restriction while unresolved
+  fixtures remain restricted;
 - activity retry, Temporal replay, concurrent manual invocation, worker restart,
   and stale circuit-generation behavior.
 

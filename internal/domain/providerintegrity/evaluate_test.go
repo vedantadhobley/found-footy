@@ -25,6 +25,7 @@ func TestAssessFixture_SupportedRecentGoalCorrectionIsTrusted(t *testing.T) {
 	comparison.Stored.Elapsed = intp(42)
 	comparison.Observed.Elapsed = intp(43)
 	removed := EventFact{Key: "40_12_goal_1", TeamID: 40, Type: "goal", Minute: 40}
+	comparison.StoredEvents = append(comparison.StoredEvents, removed)
 	comparison.ConfirmedEvents = append(comparison.ConfirmedEvents, removed)
 
 	verdict := AssessFixture(comparison)
@@ -37,7 +38,7 @@ func TestAssessFixture_SupportedGoalCorrectionContinuesThroughAbsenceDebounce(t 
 	comparison := baseComparison()
 	comparison.Stored.Elapsed = intp(42)
 	comparison.Observed.Elapsed = intp(43)
-	comparison.ConfirmedEvents = append(comparison.ConfirmedEvents, EventFact{
+	pending := EventFact{
 		Key:           "40_12_goal_1",
 		TeamID:        40,
 		PlayerID:      intp(12),
@@ -45,7 +46,8 @@ func TestAssessFixture_SupportedGoalCorrectionContinuesThroughAbsenceDebounce(t 
 		Detail:        "normal goal",
 		Minute:        40,
 		DebounceCount: 2,
-	})
+	}
+	comparison.StoredEvents = append(comparison.StoredEvents, pending)
 
 	verdict := AssessFixture(comparison)
 	if verdict.Policy != PolicyTrusted || !verdict.SupportedGoalCorrection {
@@ -121,9 +123,11 @@ func TestAssessFixture_StaleGoalCorrectionIsNotAutomaticallyTrusted(t *testing.T
 	comparison.Observed.HomeScore = intp(1)
 	comparison.Stored.Elapsed = intp(70)
 	comparison.Observed.Elapsed = intp(71)
-	comparison.ConfirmedEvents = append(comparison.ConfirmedEvents, EventFact{
+	removed := EventFact{
 		Key: "40_12_goal_1", TeamID: 40, Type: "goal", Minute: 40,
-	})
+	}
+	comparison.StoredEvents = append(comparison.StoredEvents, removed)
+	comparison.ConfirmedEvents = append(comparison.ConfirmedEvents, removed)
 
 	verdict := AssessFixture(comparison)
 	if verdict.Policy != PolicyPositiveOnly || verdict.SupportedGoalCorrection {
@@ -329,6 +333,7 @@ func baseComparison() FixtureComparison {
 	return FixtureComparison{
 		Stored:          stored,
 		Observed:        observed,
+		StoredEvents:    []EventFact{goal},
 		ConfirmedEvents: []EventFact{goal},
 		ObservedEvents:  []EventFact{goal},
 	}

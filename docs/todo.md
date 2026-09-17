@@ -298,35 +298,39 @@ the current branch.
 
 ### FF-075 — successful provider responses can destructively regress live state
 
-- **Status:** `confirmed`
+- **Status:** `implemented` — guarded protection local; rollout and follow-ups remain
 - **Severity:** P1
 - **Observed:** On 2026-08-29, API-Football continued returning nominally
   successful active-fixture responses while event, score, and status state
   regressed across several unrelated fixtures. Ten confirmed events reached
   debounce zero, 26 public shares were revoked, and their Garage objects were
   reclaimed. The omitted state returned roughly 75 minutes later.
-- **Cause:** The adapter does not validate envelope `errors`, `results`, paging,
-  or exact requested-ID coverage. More importantly, ActivePoll passes each
-  freshly decoded fixture directly to reconciliation. `last_polled_at` rejects
+- **Original cause:** At the incident, the adapter did not validate envelope
+  `errors`, `results`, paging, or exact requested-ID coverage; those wire checks
+  have since shipped. Production still passes each freshly decoded fixture
+  through the pre-guard path until the pending rollout. `last_polled_at` rejects
   response reordering but accepts a newer semantically corrupt snapshot. The
-  three-poll absence debounce measures persistence, so persistent bad data is
+  three-poll absence debounce measures persistence, so persistent bad data was
   incorrectly treated as correction evidence.
 - **Invariant:** Provider observations must receive a trust policy before any
   write. A systemic or isolated anomaly may not cast absence votes, regress
   canonical fixture state, remove events, destroy public assets, or complete a
   fixture. Polling and positive event discovery must continue so recovery and
   new real events remain observable.
-- **Accepted design direction:** Use a durable provider-integrity circuit plus
-  per-fixture quarantine. States are `closed`, `open`, `recovering`, and
-  operator `forced_open`; mutation policies are `trusted`, `positive_only`,
-  and `rejected`. Open-state polls are probes. Three consecutive clean complete
-  observations close the global circuit, while unresolved causal fixtures stay
-  quarantined. Timer expiry and HTTP 200 alone are not recovery evidence.
-- **Implementation order:** Validate the transport envelope and exact ID/event
-  coverage; ship a pure semantic evaluator in shadow mode; review the
-  regression corpus; then add the Postgres migration, enforcement, telemetry,
-  and audited operator controls. Do not wrap the fetch in an in-memory breaker
-  that suppresses calls.
+- **Design direction:** Durable fixture/provider evidence must govern writes
+  without stopping polls. The September 16 proposal revision replaces the
+  original combined circuit-state table with independent availability,
+  freshness, and consistency causes. Mutation policies remain `trusted`,
+  `positive_only`, and `rejected`; they are not health labels. Cause-specific
+  recovery must preserve unresolved fixture conflicts after broader recovery.
+  Durable collection and the cross-writer atomic enforcement boundary are now
+  implemented locally.
+- **Implementation order:** Wire validation and the shadow evaluator have
+  shipped, and the shadow corpus has been reviewed. The local collector and
+  guarded writer now precede an approved migration/rollout. Dedicated telemetry,
+  audited operator controls, raw correction evidence, and search recovery remain
+  follow-up work. Do not wrap the fetch in an in-memory breaker that suppresses
+  calls.
 - **Implemented locally (2026-08-29):** The typed fixture wire contract now
   rejects invalid envelopes, paging, identity, scores, event presence, and
   exact by-ID coverage before reconciliation. A pure provider-independent
@@ -372,10 +376,83 @@ the current branch.
   including postponed Cincinnati–DC, and a trusted aggregate with no regression
   or fetch errors. Enforcement remains off. See the
   [release evidence](./history/storage-and-diagnostics-rollout-2026-09-09.md).
-- **Next:** Durable causal baselines, quarantine, and guarded mutation remain the next
-  implementation phase; no amount of unchanged postponed polling implements
-  that protection. FF-088's deferred polling policy remains separate work.
-- **Design:** [API-Football provider-integrity circuit breaker](./design/proposals/provider-integrity-circuit-breaker.md).
+- **Stalled-feed incident (2026-09-16):** Barcelona fixture `1570385` still
+  reported `2H`, 65′, 4–2 at 21:23 UTC, about twenty minutes after its 65′ goal
+  first reached us. Direct by-ID and live endpoints returned HTTP 200 with no
+  errors; three other fixture feeds demonstrably progressed. The user reported
+  a later goal that the API had not supplied. The evaluator has no freshness
+  history and did not flag Barcelona; `trusted` only means no implemented
+  regression rule fired. Recovery time and actual clip loss remain unknown.
+  See the [incident evidence and resume checklist](./incidents/2026-09-16-api-football-stalled-fixture.md).
+- **Design pass (2026-09-16):** Proposed 3-minute interior-clock staleness,
+  10-minute boundary warnings, distinct-fixture correlation, and cause-specific
+  recovery. These are initial policy choices, not calibrated guarantees. The
+  code trace found pre-check active writes, post-write aggregation, all-failed
+  fetch exits, ingest/staging bypasses, and missing raw correction evidence.
+  Enforcement must cover all provider writers and commit each fixture's plan
+  atomically. Preserve bounded terminal grace for never-reported events rather
+  than restoring permanent score-parity gates. A separate proposed incident
+  recovery window has a 90-minute cap; ordinary Twitter searches stay unchanged.
+- **Policy/test slice (2026-09-16, local):** Added pure freshness, distinct-onset
+  correlation, cause-specific recovery, and policy-composition helpers. Tests
+  pin exact thresholds, observation gaps, phase changes, repeated/frozen
+  successes, duplicate receipts, rolling recovery, and direct recovery into FT.
+  Monitor and real-Postgres characterization reproduce unsafe current writes;
+  these are not enforcement tests. The later collector slice below wires these
+  helpers into new poll histories. See the [test ledger](./testing.md).
+- **Verification:** Provider-integrity, Monitor, and workflow short suites pass
+  with the race detector; targeted real-Postgres boundary, ownership, and
+  completion tests pass. Targeted vet and pinned lint pass. No production
+  operation, schema migration, or deployment was performed for this slice.
+- **Durable collector (2026-09-16, local):** Three internal tables persist typed
+  clock/phase/observation cursors, independent causal baselines, provider scope
+  and recovery, and fourteen-day compact poll receipts. Failed fetch attempts
+  remain visible after successful retries. A versioned pre-reconciliation
+  activity handles all-failed fetches; old histories retain their path. Receipt
+  retries do not count as new probes, and late results cannot overwrite current
+  state. Canonical rows, event votes, public recency, and cleanup are unchanged.
+  See the [ledger](./provider-health.md) and
+  [decision](./decisions/2026-09-16-provider-health-evidence-survives-polls.md).
+  The production migration, commit, and rollout remain pending. Already-removed
+  event generations need explicit recovery handling; do not invent a second
+  identity matcher to clear their retained missing-key causes.
+- **Atomic enforcement boundary (2026-09-16, local):** A shared guarded
+  repository now covers active reconciliation, passive staging, and daily
+  ingest. It composes provider, fixture, and local policy under provider and
+  fixture locks; verifies exact active-poll health and canonical baselines; and
+  commits fixture fields, event operations, debounce votes, audits, downstream
+  checklist rows, and completion in one transaction. A fourth table stores
+  retry-safe mutation results. External Temporal/NATS/Garage work remains after
+  commit. New Temporal histories use `provider-mutation-guard-v1`; old histories
+  replay their recorded path. See the
+  [decision](./decisions/2026-09-16-provider-policy-and-mutations-share-one-transaction.md).
+- **Enforcement verification:** Disposable-Postgres tests replay the August
+  score/status/event regression, require positive event insertion while
+  destructive changes are suppressed, roll back a late invalid audit, prevent
+  ingest bypass, commit staging activation with its audit once, and reject a
+  health assessment whose canonical baseline changed before commit. Focused
+  domain/Monitor/ingest/workflow suites pass. The full scenario corpus also
+  passes through the guarded path: pending and stable events both support a
+  score-coherent goal cancellation, while only stable disappearance contributes
+  outage evidence. Completion grace starts after coherent terminal evidence
+  resumes, and the harness closes only pre-registered downstream checklist
+  rows. Final review also pins receipt-preserved frontend notifications,
+  retained missing clock data, winner derivation after restricted score gains,
+  and incident recovery against the original event inventory. See the
+  [verification checkpoint](./provider-health.md#verification-checkpoint--september-16).
+- **Collector verification:** All repository package suites, full disposable
+  Postgres/scenario suites, focused race checks, vet, and scoped lint pass.
+  The exact staged snapshot also passed unchanged `make check` from a clean
+  temporary export. The original workspace's gitignored scratch programs with
+  duplicate `main` functions were left untouched. See the
+  [verification checkpoint](./provider-health.md#verification-checkpoint--september-16).
+- **Next:** Migrate and deploy only with explicit production approval.
+  Validate natural active/staging/ingest
+  observations and restriction counters after rollout. Search-window recovery,
+  raw correction evidence, operator controls, and dedicated health metrics can
+  follow separately; FF-038 quota scheduling, FF-088 deferred polling, and
+  FF-081 ranking remain separate.
+- **Design:** [Provider health and reconciliation protection](./design/proposals/provider-integrity-circuit-breaker.md).
 
 ### FF-076 — scorer name without provider ID is treated as anonymous
 

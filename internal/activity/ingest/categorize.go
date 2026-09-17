@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/vedantadhobley/found-footy/internal/domain/fixture"
+	"github.com/vedantadhobley/found-footy/internal/domain/providerintegrity"
 	"github.com/vedantadhobley/found-footy/internal/infra/apifootball"
 )
 
@@ -21,6 +22,10 @@ type CategorizeInput struct {
 	// The workflow fixes it at cycle start so activity delay or retry cannot make
 	// an older request appear newer. Zero retains direct-call compatibility.
 	ObservedAt time.Time
+	// ObservationID is the bounded workflow-execution receipt key. It makes
+	// per-fixture commits return the same result after an activity retry.
+	ObservationID     string
+	LegacyUnprotected bool
 }
 
 // CategorizeOutput counts landed rows by state + surfaces the unique
@@ -70,18 +75,47 @@ func (a *Activities) CategorizeAndUpsertFixtures(ctx context.Context, in Categor
 	}
 
 	for _, apiFix := range in.Fixtures {
-		final, changed, err := a.reconcileFixture(ctx, apiFix, in.ActivationWindow, now, observedAt)
+		final, baseline, changed, err := a.reconcileFixture(ctx, apiFix, in.ActivationWindow, now, observedAt)
 		if err != nil {
 			out.Errors = append(out.Errors, fmt.Sprintf("reconcile fixture=%d: %v", apiFix.Fixture.ID, err))
 			continue
 		}
-		storedState, err := a.FixtureRepo.StoreFromIngest(ctx, final)
-		if err != nil {
-			out.Errors = append(out.Errors, fmt.Sprintf("store fixture=%d: %v", apiFix.Fixture.ID, err))
-			continue
+		var storedState fixture.State
+		landed := final
+		if a.ProviderMutations != nil && !in.LegacyUnprotected {
+			if in.ObservationID == "" {
+				return out, fmt.Errorf("guarded ingest requires observation ID")
+			}
+			localPolicy := providerintegrity.PolicyTrusted
+			if baseline != nil {
+				localPolicy = providerintegrity.AssessFixture(providerintegrity.FixtureComparison{
+					Stored: ingestFixtureFacts(baseline), Observed: ingestFixtureFacts(final),
+				}).Policy
+			}
+			result, applyErr := a.ProviderMutations.ApplyFixture(ctx, providerintegrity.FixtureMutationPlan{
+				Guard: providerintegrity.ObservationGuard{ObservationID: in.ObservationID, ObservedAt: observedAt},
+				Mode:  providerintegrity.MutationModeIngest, Fixture: final,
+				BaselineExists: baseline != nil, BaselineLastPolled: ingestTimeCopy(baseline),
+				LocalPolicy: localPolicy,
+			})
+			if applyErr != nil {
+				out.Errors = append(out.Errors, fmt.Sprintf("store fixture=%d: %v", apiFix.Fixture.ID, applyErr))
+				continue
+			}
+			if result.Fixture == nil {
+				out.Errors = append(out.Errors, fmt.Sprintf("store fixture=%d: guarded write returned no fixture", apiFix.Fixture.ID))
+				continue
+			}
+			landed, storedState, changed = result.Fixture, result.Fixture.State, result.FixtureChanged
+		} else {
+			storedState, err = a.FixtureRepo.StoreFromIngest(ctx, final)
+			if err != nil {
+				out.Errors = append(out.Errors, fmt.Sprintf("store fixture=%d: %v", apiFix.Fixture.ID, err))
+				continue
+			}
 		}
 		if changed {
-			out.ChangedIDs = append(out.ChangedIDs, final.ID)
+			out.ChangedIDs = append(out.ChangedIDs, landed.ID)
 		}
 		switch storedState {
 		case fixture.StateStaging:
@@ -100,8 +134,8 @@ func (a *Activities) CategorizeAndUpsertFixtures(ctx context.Context, in Categor
 		// (a team seen in a domestic league keeps that country over
 		// an international-cup one).
 		countryPtr := (*string)(nil)
-		if apiFix.League.Country != "" && apiFix.League.Country != "World" {
-			c := apiFix.League.Country
+		if landed.League.Country != "" && landed.League.Country != "World" {
+			c := landed.League.Country
 			countryPtr = &c
 		}
 		// IsNational + City still not in the fixture response —
@@ -114,8 +148,8 @@ func (a *Activities) CategorizeAndUpsertFixtures(ctx context.Context, in Categor
 			id   int
 			name string
 		}{
-			{apiFix.Teams.Home.ID, apiFix.Teams.Home.Name},
-			{apiFix.Teams.Away.ID, apiFix.Teams.Away.Name},
+			{landed.Home.ID, landed.Home.Name},
+			{landed.Away.ID, landed.Away.Name},
 		} {
 			existing, seen := teams[tm.id]
 			if !seen {
@@ -151,13 +185,14 @@ func (a *Activities) reconcileFixture(
 	activationWindow time.Duration,
 	now time.Time,
 	observedAt time.Time,
-) (*fixture.Fixture, bool, error) {
+) (*fixture.Fixture, *fixture.Fixture, bool, error) {
 	existing, err := a.FixtureRepo.Get(ctx, apiFix.Fixture.ID)
 	if err != nil && !errors.Is(err, fixture.ErrNotFound) {
-		return nil, false, fmt.Errorf("Get: %w", err)
+		return nil, nil, false, fmt.Errorf("Get: %w", err)
 	}
 
 	if existing != nil {
+		baseline := *existing
 		// N6: snapshot the frontend-meaningful fields before overwriting so we
 		// can tell whether this refresh actually changed anything worth pushing
 		// as fixture.update (a bare LastPolledAt/UpdatedAt bump is not).
@@ -201,7 +236,7 @@ func (a *Activities) reconcileFixture(
 			!reflect.DeepEqual(prevAP, existing.AwayPenalty) ||
 			!reflect.DeepEqual(prevHW, existing.HomeWinner) ||
 			!reflect.DeepEqual(prevAW, existing.AwayWinner)
-		return existing, changed, nil
+		return existing, &baseline, changed, nil
 	}
 
 	// Fresh — construct + apply initial state.
@@ -241,22 +276,39 @@ func (a *Activities) reconcileFixture(
 	switch {
 	case f.APIStatus.Terminal():
 		if err := f.Activate(f.Kickoff); err != nil {
-			return nil, false, fmt.Errorf("initial Activate for terminal: %w", err)
+			return nil, nil, false, fmt.Errorf("initial Activate for terminal: %w", err)
 		}
 		if err := f.Complete(now); err != nil {
-			return nil, false, fmt.Errorf("initial Complete for terminal: %w", err)
+			return nil, nil, false, fmt.Errorf("initial Complete for terminal: %w", err)
 		}
 	case f.APIStatus.Live():
 		if err := f.Activate(now); err != nil {
-			return nil, false, fmt.Errorf("initial Activate for live: %w", err)
+			return nil, nil, false, fmt.Errorf("initial Activate for live: %w", err)
 		}
 	default:
 		if f.ShouldActivateNow(now, activationWindow) {
 			if err := f.Activate(now); err != nil {
-				return nil, false, fmt.Errorf("initial Activate for imminent: %w", err)
+				return nil, nil, false, fmt.Errorf("initial Activate for imminent: %w", err)
 			}
 		}
 	}
 	// A fresh fixture is a change by definition → fixture.update.
-	return f, true, nil
+	return f, nil, true, nil
+}
+
+func ingestFixtureFacts(f *fixture.Fixture) providerintegrity.FixtureFacts {
+	return providerintegrity.FixtureFacts{
+		FixtureID: f.ID, HomeID: f.Home.ID, AwayID: f.Away.ID, LeagueID: f.League.ID,
+		HomeName: f.Home.Name, AwayName: f.Away.Name, LeagueName: f.League.Name,
+		Status: string(f.APIStatus.Short), Terminal: f.APIStatus.Terminal(), Elapsed: f.APIElapsed,
+		Extra: f.APIExtra, HomeScore: f.HomeScore, AwayScore: f.AwayScore,
+	}
+}
+
+func ingestTimeCopy(f *fixture.Fixture) *time.Time {
+	if f == nil || f.LastPolledAt == nil {
+		return nil
+	}
+	copy := *f.LastPolledAt
+	return &copy
 }

@@ -140,6 +140,7 @@ func TestProduction20260830_ScorerAttributionReplacementIsTrusted(t *testing.T) 
 			HomeName: "Deportivo", AwayName: "Valencia", LeagueName: "La Liga",
 			Status: "1h", Elapsed: intp(22), HomeScore: intp(2), AwayScore: intp(0),
 		},
+		StoredEvents:    []EventFact{storedOwnGoal, aubameyang},
 		ConfirmedEvents: []EventFact{storedOwnGoal, aubameyang},
 		ObservedEvents:  []EventFact{replacement, aubameyang},
 	}
@@ -164,7 +165,8 @@ func TestProduction20260830_GoalCancellationRemainsTrustedAcrossDebounce(t *test
 			HomeName: "Columbus", AwayName: "New England", LeagueName: "MLS",
 			Status: "2h", Elapsed: intp(78), HomeScore: intp(1), AwayScore: intp(2),
 		},
-		ConfirmedEvents: confirmed,
+		StoredEvents:    confirmed,
+		ConfirmedEvents: confirmed[:3],
 		ObservedEvents:  confirmed[:3],
 	}
 	comparison.Observed = comparison.Stored

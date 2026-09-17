@@ -72,7 +72,12 @@ func TestProviderFixtureComparison_AnyStoredEventBlocksEmptyScoreboard(t *testin
 				goal.DebounceCount, goal.DownstreamTriggered = 3, true
 			}
 			comparison := providerFixtureComparison(stored, []*event.Event{goal}, observed, nil)
+			wantStored := 1
+			if state == "removed" {
+				wantStored = 0
+			}
 			if !comparison.Stored.HasEvents || comparison.Observed.HasEvents ||
+				len(comparison.StoredEvents) != wantStored ||
 				(state != "confirmed" && len(comparison.ConfirmedEvents) != 0) {
 				t.Fatalf("comparison = %+v, want history outside confirmed keys retained as evidence", comparison)
 			}

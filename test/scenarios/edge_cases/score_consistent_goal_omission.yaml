@@ -122,7 +122,9 @@ cycles:
     api_responses: {fixtures_by_ids: *both_goals_ft}
   - t: 2026-08-16T21:17:00Z
     api_responses: {fixtures_by_ids: *both_goals_ft}
-  - t: 2026-08-16T22:14:30Z
+  # The omission is deliberately restricted, so terminal grace begins only
+  # when the complete event inventory returns at 21:16.
+  - t: 2026-08-16T22:16:00Z
     api_responses: {fixtures_by_ids: *both_goals_ft}
 
 expected_final_state:

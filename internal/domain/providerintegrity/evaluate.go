@@ -10,7 +10,8 @@ const (
 )
 
 // AssessBatch evaluates every fixture from its pre-write stored snapshot and
-// derives the provider-wide shadow policy from correlated anomalies.
+// derives the bounded aggregate diagnostic from correlated anomalies. Durable
+// provider scope and policy are owned by the health collector.
 func AssessBatch(comparisons []FixtureComparison) BatchVerdict {
 	verdicts := make([]FixtureVerdict, 0, len(comparisons))
 	for _, comparison := range comparisons {
@@ -19,8 +20,8 @@ func AssessBatch(comparisons []FixtureComparison) BatchVerdict {
 	return AggregateFixtureVerdicts(verdicts)
 }
 
-// AssessFixture compares one fresh observation with the last stored state.
-// The returned policy is advisory until FF-075's enforcement phase ships.
+// AssessFixture compares one fresh observation with the last stored state and
+// returns the local policy input enforced by the guarded mutation boundary.
 func AssessFixture(comparison FixtureComparison) FixtureVerdict {
 	stored := comparison.Stored
 	observed := comparison.Observed
@@ -36,7 +37,8 @@ func AssessFixture(comparison FixtureComparison) FixtureVerdict {
 	terminalRegressed := stored.Terminal && !observed.Terminal
 	clockRegressed := materialClockRegressed(stored, observed)
 	populatedFieldCleared := providerFieldCleared(comparison)
-	missing := missingConfirmedEvents(comparison.ConfirmedEvents, comparison.ObservedEvents)
+	missing := missingEvents(comparison.ConfirmedEvents, comparison.ObservedEvents)
+	missingStored := missingEvents(comparison.StoredEvents, comparison.ObservedEvents)
 	scoreDecreased := providerScoreDecreased(stored, observed)
 
 	if identityChanged {
@@ -57,7 +59,7 @@ func AssessFixture(comparison FixtureComparison) FixtureVerdict {
 
 	verdict.MissingConfirmedEvents = len(missing)
 	verdict.SupportedGoalCorrection = supportedGoalCorrection(
-		comparison, missing, identityChanged || phaseRegressed || terminalRegressed ||
+		comparison, missingStored, identityChanged || phaseRegressed || terminalRegressed ||
 			clockRegressed || populatedFieldCleared,
 	)
 	verdict.SupportedReplacement = supportedEventReplacement(
@@ -107,7 +109,7 @@ func AggregateFixtureVerdicts(verdicts []FixtureVerdict) BatchVerdict {
 	return out
 }
 
-func missingConfirmedEvents(stored, observed []EventFact) []EventFact {
+func missingEvents(stored, observed []EventFact) []EventFact {
 	present := make(map[string]struct{}, len(observed))
 	for _, providerEvent := range observed {
 		present[providerEvent.Key] = struct{}{}

@@ -42,20 +42,23 @@ func providerFixtureComparison(
 	comparison.Stored.HasEvents = len(storedEvents) > 0
 
 	for _, storedEvent := range storedEvents {
-		if storedEvent.Removed || !storedEvent.DownstreamTriggered {
+		if storedEvent.Removed {
 			continue
 		}
-		comparison.ConfirmedEvents = append(comparison.ConfirmedEvents,
-			providerEventFact(
-				storedEvent.NaturalKey,
-				storedEvent.Team.ID,
-				storedEvent.Player.ID,
-				storedEvent.Type,
-				storedEvent.Detail,
-				storedEvent.Minute,
-				storedEvent.Extra,
-				storedEvent.DebounceCount,
-			))
+		fact := providerEventFact(
+			storedEvent.NaturalKey,
+			storedEvent.Team.ID,
+			storedEvent.Player.ID,
+			storedEvent.Type,
+			storedEvent.Detail,
+			storedEvent.Minute,
+			storedEvent.Extra,
+			storedEvent.DebounceCount,
+		)
+		comparison.StoredEvents = append(comparison.StoredEvents, fact)
+		if storedEvent.DownstreamTriggered {
+			comparison.ConfirmedEvents = append(comparison.ConfirmedEvents, fact)
+		}
 	}
 	for index, observedEvent := range observed.Events {
 		domainType := trackableType(observedEvent)

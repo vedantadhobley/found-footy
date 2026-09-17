@@ -8,8 +8,9 @@ Current behavior for `ActivePollWorkflow` and `StagingPollWorkflow`. See the
 30s poll of ACTIVE fixtures. Schedule `active-poll-scheduled` (IntervalSpec 30s).
 Per cycle: `GetMonitorConfig` → `ActivateUpcoming` (DB-only staging→active
 promotion) → `ListActiveFixtureIDs` → `FetchLiveFixtures` (batched
-/fixtures?ids=) → `ReconcileFixture` per fixture (the event set-diff +
-3-poll debounce + downstream spawn + completion check). Location:
+/fixtures?ids=) → `CollectProviderHealth` → guarded `ReconcileFixture` per
+returned fixture (the event set-diff + 3-poll debounce + downstream spawn +
+completion check). Location:
 `internal/workflow/active_poll.go` + `internal/activity/monitor/`.
 
 **Durable transition audit (FF-070).** Activation, completion, known-event
@@ -32,7 +33,7 @@ and league fields. An active metadata correction selects `fixture.update` so
 the consumer refreshes its authoritative snapshot. See the
 [decision](../decisions/2026-08-28-fixture-writers-own-columns.md).
 
-**Provider-integrity shadow phase (FF-075).** API-Football fixture responses now
+**Provider-integrity boundary (FF-075; local rollout pending).** API-Football fixture responses
 pass a typed wire contract before Monitor receives them. Every envelope must
 have empty `errors`, matching `results`, complete single-page paging, a valid
 response array, unique fixture/team identity, nonnegative scores, and event
@@ -43,13 +44,12 @@ while explicit `[]` is valid. One rejected chunk follows the existing
 results preserve `transport` versus `contract` and the bounded contract reason.
 Total failure keeps that evidence in retryable Temporal error details.
 
-After a successful active refresh, `ReconcileFixture` translates its stored
-pre-write snapshot, confirmed event history, and fresh observation into the
-provider-independent `providerintegrity` facts. The pure evaluator returns an
-advisory fixture policy and bounded reasons. `ActivePollWorkflow` aggregates
-the verdicts, recommends a global `positive_only` policy after two regressed
-fixtures or three missing confirmed events, logs anomalies, and retains the
-batch verdict in its result. Clock comparison understands period boundaries. A
+Before any active write, `CollectProviderHealth` and `ReconcileFixture`
+translate the stored pre-write snapshot, complete event history, and fresh
+observation into provider-independent `providerintegrity` facts. The pure
+evaluator returns a local fixture policy and bounded reasons. The durable
+collector retains independent fixture causes, correlates distinct new onsets,
+and derives provider policy. Clock comparison understands period boundaries. A
 coherent recent one-goal correction remains trusted when score decrement and
 complete event inventory agree, then retains that authorization through the
 existing absence debounce. An exact one-for-one scorer replacement is trusted
@@ -65,11 +65,33 @@ played evidence, missing events, and other cleared fields keep their guards.
 This does not change score retention, postponed polling, or reactivation. See
 the [decision](../decisions/2026-09-08-postponed-score-absence-is-not-play-regression.md).
 
-This phase does **not** enforce its recommendation: fixture refresh, event
-votes, completion, and cleanup still follow the existing path. Durable circuit
-state, fixture quarantine, and positive-only reconciliation remain FF-075 work
-after the shadow corpus is reviewed. See the
+Production still runs the deployed stateless evaluator until the pending
+migration and rollout. The local branch adds phase-aware durable freshness:
+repeated unchanged running-clock responses open a fixture-local restriction;
+`last_polled_at` remains observation ordering, not provider progress. See the
+[September 16 stalled-feed incident](../incidents/2026-09-16-api-football-stalled-fixture.md)
+and the
 [wire-and-shadow decision](../decisions/2026-08-29-provider-fixtures-require-contract-and-shadow-trust.md).
+
+**September 16 local collector and atomic guard, not deployed:** New histories
+use `provider-health-evidence-v1` to record failed fetch attempts and call
+`CollectProviderHealth` before reconciliation, including all-failed/empty fetch
+paths. `provider-mutation-guard-v1` sends active, staging, and ingest observations
+through `ProviderMutationRepo`. The repository composes current provider,
+fixture, and local policy under locks, verifies the canonical observation
+baseline, and commits every permitted fixture/event mutation plus required
+audit and checklist rows in one transaction. `positive_only` keeps additions
+and credible forward progress but suppresses absence votes, regressions,
+terminal-observation timestamp changes, and completion; `rejected` writes
+nothing provider-derived.
+Failed active health collection closes that poll's write gate. Per-fixture
+mutation receipts return the original post-commit effects, including fixture
+notification classification, on activity retry.
+External Temporal, NATS, cancellation, and Garage effects run after commit.
+Old histories retain their previous activity sequence. The
+[health ledger](../provider-health.md) owns storage, retention, thresholds,
+locking, retry safety, and remaining follow-ups. `ProviderIntegrity` remains a
+stateless local diagnostic; its aggregate is not the durable provider policy.
 
 **Typed live-feed classification (FF-077).** `ReconcileFixture` derives the
 same consumer projection exposed by REST before and after refreshing provider

@@ -158,13 +158,57 @@ arrays and partial-chunk retry semantics. Pure domain tests classify normal
 progress, clock-corrected event identity, coherent recent goal cancellation,
 stale or unsupported regression, one-fixture quarantine, and the multi-fixture
 2026-08-29 outage signature. Monitor and WorkflowTestSuite regressions prove
-the verdict is observable and aggregated but does not yet enforce mutations.
+the local verdict remains observable and feeds the guarded mutation plan.
 The September 8 postponed-score corpus pins repeated retained-zero/fresh-null
 comparisons and their batch amplification. Domain and Monitor tests preserve
 warnings for played clocks, nonzero scores, missing events, and cleared
 metadata; pending/anonymous/removed history and untracked raw events prevent
 the empty-PST exception. Repeated activity refreshes keep score storage and
 the active lifecycle unchanged.
+
+The September 16 FF-075 slice adds executable policy tests in
+[`health_test.go`](../internal/domain/providerintegrity/health_test.go),
+[`health_scope_test.go`](../internal/domain/providerintegrity/health_scope_test.go),
+and [`health_recovery_test.go`](../internal/domain/providerintegrity/health_recovery_test.go).
+They pin 179/180-second interior and 599/600-second boundary thresholds, phase
+resets, clock high-water comparisons, missing observation history, serialized
+evidence, distinct-fixture onsets, duplicate receipts, rolling recovery windows,
+and recovery directly into HT/FT. Collector tests now produce that evidence
+from sequential observations, including phase acquisition after unknown status,
+rollback/return oscillations, frozen success, interrupted recovery, and retained
+consistency baselines after canonical corruption.
+
+The [Postgres collector tests](../internal/infra/pg/provider_health_repo_test.go)
+exercise repository reconstruction across polls, concurrent response-loss
+retries, older receipts, atomic batch rollback, exact failed-attempt persistence,
+receipt pruning without incident expiry, schema constraints, and upgrade from
+the predecessor schema. They require unchanged canonical rows and `event_log`.
+The [workflow boundary tests](../internal/workflow/provider_health_test.go)
+require collection before reconciliation, collection on total failure, a closed
+write gate when collection fails, and the legacy version path.
+No live provider or production database is used.
+
+The earlier Monitor and Postgres characterization tests remain evidence of why
+the old repository commands were unsafe; the new worker composition uses guarded
+commands for new provider-observation histories. The guarded
+[`provider_mutation_repo_test.go`](../internal/infra/pg/provider_mutation_repo_test.go)
+suite replays the August score/status/event regression, allows a positive event
+addition while suppressing destructive changes, rolls a late invalid audit back
+with the fixture write, prevents daily-ingest bypass, commits staging activation
+and audit once, and returns the original effect set after simulated response
+loss, including clock/halftime versus score/grouping notifications. Restricted
+merge tests retain an omitted clock and derive the winner from retained scores
+after an equalizer or lead change. Collector tests keep the original event
+inventory during incident recovery, so an unrelated recent cancellation cannot
+explain an old missing goal. The health repository suite changes the canonical
+baseline between comparison and commit and requires the complete health poll
+to abort. Existing ownership, completion, migration-adoption, and typed-total-fetch tests remain
+controls. The scenario harness closes downstream work only through a fake
+spawner after the monitor has registered the exact checklist identity. Scenario
+coverage separates stable outage signals from pending-event correction evidence:
+coherent score-backed cancellations still cast absence votes, unsupported loss
+is frozen, and terminal grace begins only after coherent terminal evidence.
+No live provider or production database is used.
 
 FF-077 contract tables cover every documented provider status, fail unknown
 codes closed to deferred/status, select a clock only for timed play with a

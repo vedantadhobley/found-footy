@@ -80,17 +80,19 @@ type EventFact struct {
 }
 
 // FixtureComparison pairs the last stored facts with one fresh provider
-// observation. ConfirmedEvents contains only active events that previously
-// crossed the debounce threshold; ObservedEvents contains every currently
-// trackable provider event, including newly reported events.
+// observation. StoredEvents contains every active local event, including
+// pending debounce generations. ConfirmedEvents is its stable subset and owns
+// outage detection. ObservedEvents contains every currently trackable provider
+// event, including newly reported events.
 type FixtureComparison struct {
 	Stored          FixtureFacts
 	Observed        FixtureFacts
+	StoredEvents    []EventFact
 	ConfirmedEvents []EventFact
 	ObservedEvents  []EventFact
 }
 
-// FixtureVerdict is the shadow mutation recommendation for one fixture.
+// FixtureVerdict is the local mutation recommendation for one fixture.
 type FixtureVerdict struct {
 	FixtureID               int64
 	Policy                  MutationPolicy
@@ -100,14 +102,14 @@ type FixtureVerdict struct {
 	SupportedReplacement    bool
 }
 
-// Anomalous reports whether this fixture should be quarantined when
-// enforcement ships.
+// Anomalous reports whether this observation restricts fixture mutation.
 func (v FixtureVerdict) Anomalous() bool {
 	return v.Policy == PolicyPositiveOnly || v.Policy == PolicyRejected
 }
 
-// BatchVerdict is the provider-wide shadow recommendation. Fixtures contains
-// only anomalous per-fixture verdicts so workflow payloads remain bounded.
+// BatchVerdict is the legacy aggregate diagnostic. Fixtures contains only
+// anomalous per-fixture verdicts so workflow payloads remain bounded. Durable
+// provider scope is owned by ProviderHealth.
 type BatchVerdict struct {
 	Policy                 MutationPolicy
 	Reasons                []Reason
@@ -116,8 +118,7 @@ type BatchVerdict struct {
 	MissingConfirmedEvents int
 }
 
-// Anomalous reports whether any fixture or the provider-wide batch produced a
-// shadow warning.
+// Anomalous reports whether any fixture or the aggregate produced a warning.
 func (v BatchVerdict) Anomalous() bool {
 	return v.Policy != PolicyTrusted || len(v.Fixtures) > 0
 }

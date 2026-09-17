@@ -399,13 +399,17 @@ func IngestWorkflow(ctx workflow.Context, in IngestWorkflowInput) (IngestWorkflo
 		RetryPolicy:         ao.RetryPolicy,
 	})
 	var catOut ingest.CategorizeOutput
+	providerGuardV1 := workflow.GetVersion(catCtx, "provider-mutation-guard-v1", workflow.DefaultVersion, 1)
+	catIn := ingest.CategorizeInput{
+		Fixtures: fetchOut.Fixtures, ActivationWindow: activationWindow,
+		ObservedAt: observedAt, LegacyUnprotected: providerGuardV1 == workflow.DefaultVersion,
+	}
+	if providerGuardV1 != workflow.DefaultVersion {
+		catIn.ObservationID = providerObservationID(ctx)
+	}
 	if err := workflow.ExecuteActivity(catCtx,
 		"CategorizeAndUpsertFixtures",
-		ingest.CategorizeInput{
-			Fixtures:         fetchOut.Fixtures,
-			ActivationWindow: activationWindow,
-			ObservedAt:       observedAt,
-		},
+		catIn,
 	).Get(ctx, &catOut); err != nil {
 		return out, err
 	}

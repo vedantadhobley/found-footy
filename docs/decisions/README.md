@@ -14,6 +14,12 @@ its historical heading anchors valid.
 
 New decisions after the frozen archive:
 
+- [Provider policy and canonical mutations share one transaction boundary](./2026-09-16-provider-policy-and-mutations-share-one-transaction.md)
+  — FF-075 composes durable health with local observation policy under locks,
+  commits each fixture plan atomically, and returns retry-safe effect receipts.
+- [Provider health evidence survives polls and retries](./2026-09-16-provider-health-evidence-survives-polls.md)
+  — FF-075 adds durable internal progress, causes, and retry receipts to active
+  polling; the later transaction-boundary decision makes that policy enforceable.
 - [Popularity counts direct source support](./2026-09-13-popularity-counts-direct-support.md)
   — FF-081 separates per-clip matching evidence from exclusive alias routing;
   scores overlap across clips, while quality and singleton rules stay unchanged.

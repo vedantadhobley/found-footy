@@ -39,6 +39,7 @@ decision supersedes an older target design).
 - [`orchestration/`](./orchestration/) — workflows + activities as shipped,
   routed by workflow family
 - [`observability.md`](./observability.md) — vocabulary + logging + metrics substrate
+- [Provider health and guarded writes](./provider-health.md) — durable polling evidence, cause-specific recovery, atomic provider mutation policy, and retry receipts
 - [`logging.md`](./logging.md) — Emit reference (how to add a Module/Action)
 - [`temporal.md`](./temporal.md) — Client/Worker adapter + registration flow
 - [`twitter-service.md`](./twitter-service.md) — Playwright search, raw-Firefox login, maintenance, and shared-cookie fleet contract
@@ -51,6 +52,9 @@ decision supersedes an older target design).
 ## Historical evidence
 
 - [`history/`](./history/) — completed project roadmaps and delivery snapshots.
+- [API-Football stalled fixture — 2026-09-16](./incidents/2026-09-16-api-football-stalled-fixture.md)
+  — Barcelona's frozen HTTP-200 feed while other fixtures progressed; FF-075
+  freshness, scope, recovery, and mutation-protection design gaps.
 - [`incidents/2026-08-20-twitter-feed-suppression.md`](./incidents/2026-08-20-twitter-feed-suppression.md)
   — live MLS evidence for FF-061's synchronized Twitter feed loss, retained
   resource correlation, and post-release 429 validation.

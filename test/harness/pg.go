@@ -72,6 +72,7 @@ func SetupPG(ctx context.Context, t *testing.T) (*pg.Pool, testcontainers.Contai
 func TruncateAll(ctx context.Context, t *testing.T, pool *pg.Pool) {
 	t.Helper()
 	tables := []string{
+		"provider_health_polls",
 		"fixtures", // cascades to events + event_*_workflows (FK ON DELETE CASCADE)
 		"team_aliases",
 		// video_assets + video_shares don't cascade from fixtures;
@@ -81,6 +82,9 @@ func TruncateAll(ctx context.Context, t *testing.T, pool *pg.Pool) {
 		if _, err := pool.Exec(ctx, "TRUNCATE "+tbl+" CASCADE"); err != nil {
 			t.Fatalf("harness.TruncateAll: TRUNCATE %s: %v", tbl, err)
 		}
+	}
+	if _, err := pool.Exec(ctx, `UPDATE provider_health SET last_observed_at=NULL,generation=0,policy='trusted',evidence='{"Version":1}' WHERE id=1`); err != nil {
+		t.Fatalf("harness.TruncateAll: reset provider_health: %v", err)
 	}
 }
 

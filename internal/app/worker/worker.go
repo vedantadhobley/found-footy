@@ -140,10 +140,12 @@ func Run(ctx context.Context, deps *bootstrap.Deps) error {
 	assetRepo := pg.NewAssetRepo(pool)
 	shareRepo := pg.NewShareRepo(pool)
 	placementRepo := pg.NewPlacementRepo(pool)
+	providerMutations := pg.NewProviderMutationRepo(pool)
 
 	ingestActs := &ingestactivity.Activities{
 		APIFootball:           afClient,
 		FixtureRepo:           fixtureRepo,
+		ProviderMutations:     providerMutations,
 		AliasRepo:             aliasRepo,
 		TeamRepo:              teamRepo,
 		TrackedLeagueIDs:      deps.Cfg.APIFootball.TrackedLeagueIDs,
@@ -247,6 +249,8 @@ func Run(ctx context.Context, deps *bootstrap.Deps) error {
 		FixtureRepo:         fixtureRepo,
 		EventRepo:           eventRepo,
 		Spawner:             spawner,
+		ProviderHealth:      pg.NewProviderHealthRepo(pool),
+		ProviderMutations:   providerMutations,
 		ActivationWindow:    deps.Cfg.Workflows.ActivationWindow,
 		TerminalGracePeriod: deps.Cfg.Workflows.TerminalGracePeriod,
 		FleetEnabled:        deps.Cfg.FirefoxFleet.Enabled,

@@ -35,7 +35,7 @@ found-footy/
 │   │   ├── video/                       ✓ D3 + V/2 + V/3a + FF-041 + FF-066: model + repos + atomic placement contract + read rank + versioned perceptual dHash + tiered Match + hard-filter + tests
 │   │   ├── alias/                       ✓ canonical-team record + shared text operations; resolver removed 2026-08-16
 │   │   ├── team/                        ✓ TrackedTeam set — tracked-teams-cache ingest filter (team.go + repo.go)
-│   │   ├── providerintegrity/            ✓ FF-075 pure stored-vs-observed semantic evaluator and typed shadow mutation policies/reasons
+│   │   ├── providerintegrity/            ✓ FF-075 typed evaluator, durable health/recovery state, and immutable guarded mutation commands
 │   │   ├── discovery/                   ✓ Query builder + explicit workflow-owned candidate states
 │   │   │   ├── doc.go                   Package doc — query construction, URL extraction, source scoring
 │   │   │   ├── candidate.go             observed/in-flight/terminal ownership vocabulary
@@ -43,7 +43,7 @@ found-footy/
 │   │   │   └── query_builder_test.go    name, particle, dedup, fallback, and safeguard cases
 │   │   └── vision/                      ✓ D5 (2026-07-28): clock.go + evaluate.go + schema.go + tests — clip-clock validation, wired into EventWorkflow consumer
 │   ├── infra/                           live infrastructure adapters
-│   │   ├── pg/                          ✓ S2 + FF-013/FF-066/FF-070/FF-071/FF-084: pool + instruments + ordered migration/required-object gates + focused repos + event-serialized candidate/removal and atomic placement/audit + relational identity constraints
+│   │   ├── pg/                          ✓ S2 + FF-013/FF-066/FF-070/FF-071/FF-075/FF-084: pool + instruments + ordered gates + provider health/atomic mutation repos + event-serialized candidate/removal and placement/audit + relational identity constraints
 │   │   ├── nats/                        ✓ S3: client + instruments
 │   │   ├── s3/                          ✓ S4: Garage client + instruments
 │   │   ├── llm/                         ✓ S6: OpenAI-compatible client + typed errors + Chat
@@ -70,12 +70,12 @@ found-footy/
 │   │   ├── telemetry.go                 ✓ FF-050: typed replay-aware EventWorkflow lifecycle/search/candidate/publication timing envelope
 │   │   └── video.go                     ✓ #165: pre-FF-022 VideoWorkflow child retained for Temporal replay; shared download/hash activity contracts
 │   ├── activity/                        activity packages + shared heartbeat helper
-│   │   ├── ingest/                      ✓ config, roster, monotonic fixture fetch/store, and canonical-team placeholder activities
+│   │   ├── ingest/                      ✓ config, roster, guarded monotonic fixture fetch/store, and canonical-team placeholder activities
 │   │   │   ├── activities.go
 │   │   │   ├── tracked_teams.go / fetch.go / categorize.go / aliases.go
 │   │   │   └── focused colocated test files by responsibility
 │   │   ├── retention/                   ✓ FF-079 completed-date cutoff and unreclaimed-asset worklist planning
-│   │   ├── monitor/                     ✓ shared deps/config plus activation, reconciliation, provider-observation translation, event identity, and failed-only spawn recovery
+│   │   ├── monitor/                     ✓ shared deps/config plus activation, health collection, guarded reconciliation, provider-observation translation, event identity, and failed-only spawn recovery
 │   │   ├── discovery/                   ✓ shared config/classified search plus candidates.go durable candidate/search recovery and completion.go checklist closure
 │   │   ├── video/                       ✓ DownloadAndStage with bounded failure detail, versioned/minimum-length HashVideo, live-asset recovery, atomic placement with removed-event cleanup, compatibility persistence, and teardown
 │   │   ├── vision/                      ✓ staged-clip frame extraction + model-backed validation
@@ -228,7 +228,7 @@ with reason='var'), `RegisterDownstreamWorkflow` (inserts the
 `RegisterVideoValidationWorkflow` (monotonic download-attempt counter). Debounce model per decisions.md
 2026-07-07 symmetric-counter + 2026-08-05 unknown-scorer entries.
 
-### provider-integrity domain (FF-075 shadow phase)
+### provider-integrity domain and Postgres boundary (FF-075)
 
 `providerintegrity.FixtureComparison` is the provider-independent boundary
 between stored canonical facts and one validated provider observation. The pure
@@ -252,15 +252,32 @@ disqualify this exception. Identity, name, played-clock, and nonzero-score loss
 remain anomalous; no provider facts or polling cadence are changed. See the
 [postponed-score decision](./decisions/2026-09-08-postponed-score-absence-is-not-play-regression.md).
 
-The batch aggregator recommends a global `positive_only` circuit when at least
-two fixtures regress or at least three confirmed events disappear. One
-anomalous fixture remains isolated, including an identity-conflict observation
-whose fixture policy is `rejected`. Adapter chunk failures retain typed
-`transport` or `contract` evidence plus the bounded contract reason through the
-Monitor activity and retryable Temporal error boundary. This phase is
-deliberately advisory: Monitor emits the verdict but still executes existing
-reconciliation. Durable circuit state, quarantine, and mutation enforcement
-have not shipped.
+The durable provider collector correlates distinct new fixture onsets within its
+bounded window. One anomalous fixture remains isolated, including an
+identity-conflict observation whose local policy is `rejected`. Adapter chunk
+failures retain typed `transport` or `contract` evidence plus the bounded
+contract reason through the Monitor activity and retryable Temporal boundary.
+
+The September 16 local implementation adds a versioned durable collector before
+active reconciliation. `ObserveFixture` maintains typed
+progress cursors and independent causal baselines; `ObserveProvider` correlates
+new fixture onsets and recovers provider policy independently.
+`pg.ProviderHealthRepo` commits those states and retry receipts atomically in
+three internal tables. Failed fetch attempts survive successful retries; total
+fetch failure also reaches collection.
+
+`providerintegrity.ActiveMutationPlan` and `FixtureMutationPlan` describe the
+complete possible write set without performing I/O. `pg.ProviderMutationRepo`
+locks provider policy and one fixture, validates the health/canonical baseline,
+composes the most restrictive policy, and atomically applies the permitted
+fixture fields, event operations, debounce votes, audits, downstream checklist
+rows, and completion. A fourth internal table stores the committed result for
+Temporal activity retries. Active, staging, and ingest writers share this
+boundary; external effects stay outside its transaction. See the
+[provider-health ledger](./provider-health.md) for storage, retention, lock
+ordering, failure boundaries, and tests. Production migration/deployment
+remains pending; the stateless reconciliation diagnostic still runs alongside
+the enforced local policy input.
 
 ### video domain (D3)
 

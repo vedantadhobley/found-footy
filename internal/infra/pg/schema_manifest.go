@@ -102,6 +102,11 @@ func verifyCurrentSchema(ctx context.Context, tx pgx.Tx) error {
 	if err := verifyBaselineSchema(ctx, tx); err != nil {
 		return err
 	}
+	for _, name := range []string{"provider_health", "provider_fixture_health", "provider_health_polls", "provider_health_polls_observed", "provider_mutation_receipts", "provider_mutation_receipts_observed"} {
+		if err := requireRelation(ctx, tx, name); err != nil {
+			return err
+		}
+	}
 	// New tables belong to the post-migration contract, not the historical
 	// baseline: old durable environments must be able to create them first.
 	if err := requireRelation(ctx, tx, "video_asset_validations"); err != nil {
@@ -116,6 +121,29 @@ func verifyCurrentSchema(ctx context.Context, tx pgx.Tx) error {
 		}
 	}
 	for _, pair := range [][2]string{
+		{"provider_health", "last_observed_at"},
+		{"provider_health", "generation"},
+		{"provider_health", "policy"},
+		{"provider_health", "evidence"},
+		{"provider_fixture_health", "last_poll_id"},
+		{"provider_fixture_health", "last_observed_at"},
+		{"provider_fixture_health", "last_usable_at"},
+		{"provider_fixture_health", "continuous_since"},
+		{"provider_fixture_health", "clock_progress_at"},
+		{"provider_fixture_health", "phase_since"},
+		{"provider_fixture_health", "observed_status"},
+		{"provider_fixture_health", "clock_status"},
+		{"provider_fixture_health", "clock_elapsed"},
+		{"provider_fixture_health", "clock_extra"},
+		{"provider_fixture_health", "evidence"},
+		{"provider_health_polls", "observed_at"},
+		{"provider_health_polls", "failed_attempts"},
+		{"provider_health_polls", "result"},
+		{"provider_mutation_receipts", "observation_id"},
+		{"provider_mutation_receipts", "fixture_id"},
+		{"provider_mutation_receipts", "observed_at"},
+		{"provider_mutation_receipts", "health_generation"},
+		{"provider_mutation_receipts", "result"},
 		{"video_assets", "hash_version"},
 		{"fixtures", "terminal_observed_at"},
 		{"event_search_candidates", "credited_asset_id"},
@@ -144,7 +172,11 @@ func verifyCurrentSchema(ctx context.Context, tx pgx.Tx) error {
 			return fmt.Errorf("required column %s.%s is missing", pair[0], pair[1])
 		}
 	}
-	for _, name := range append([]string{"video_assets_hash_version_check"}, requiredConstraints...) {
+	for _, name := range append([]string{
+		"video_assets_hash_version_check", "provider_health_evidence_check",
+		"provider_fixture_health_evidence_check", "provider_fixture_health_times_check",
+		"provider_fixture_health_fixture_id_fkey", "provider_health_poll_evidence_check",
+	}, requiredConstraints...) {
 		var exists bool
 		if err := tx.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = $1)`, name).Scan(&exists); err != nil {
 			return fmt.Errorf("check constraint %s: %w", name, err)

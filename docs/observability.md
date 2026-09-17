@@ -191,6 +191,18 @@ markdown table. **NOT SHIPPED.** No generator, no catalog file.
 Tracked as feature-scope candidate `AUD-DESIGN-LOG-CATALOG` in
 [`todo.md`](./todo.md#deferred-decisions-and-validation).
 
+## Provider health evidence (local, not deployed)
+
+FF-075's versioned active collector writes internal SQL evidence and exposes
+`ActivePollWorkflowOutput.ProviderHealth`: coverage, enforced policy/generation,
+affected fixture IDs, correlation, and bounded cause transitions. SDK workflow
+logs report transitions; SDK activity logs report failed-attempt persistence
+errors. These are Temporal diagnostics, not new vocabulary actions or public
+`event_log` records. Existing PG query instruments cover the storage calls.
+Reconciliation output counts positive-only, rejected, and stale plans. Dedicated
+health metric families remain pending. The [health ledger](./provider-health.md) owns
+thresholds, retention, failure semantics, and the old stateless output's scope.
+
 ## TestEmitter (shipped)
 
 `internal/observability/logging/testemitter.go` — the test double

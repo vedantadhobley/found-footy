@@ -64,6 +64,7 @@ type StagingPollWorkflowOutput struct {
 func StagingPollWorkflow(ctx workflow.Context, in StagingPollWorkflowInput) (StagingPollWorkflowOutput, error) {
 	logger := workflow.GetLogger(ctx)
 	out := StagingPollWorkflowOutput{}
+	observedAt := workflow.Now(ctx)
 
 	// Vendor polls dominate wall-clock, so give the activity a longer
 	// timeout than the 30s ActivePoll steps. Retry once — if the vendor
@@ -95,14 +96,21 @@ func StagingPollWorkflow(ctx workflow.Context, in StagingPollWorkflowInput) (Sta
 
 	workflowID := workflow.GetInfo(ctx).WorkflowExecution.ID
 	logger.Info("StagingPollWorkflow cycle started", "workflow_id", workflowID)
+	providerGuardV1 := workflow.GetVersion(ctx, "provider-mutation-guard-v1", workflow.DefaultVersion, 1)
 	// Preserve the old poll-failure command path and single-attempt policy
 	// when replaying a history that predates independent cleanup retries.
 	reaperV2 := workflow.GetVersion(ctx, "ff-073-fleet-reaper", workflow.DefaultVersion, 1) != workflow.DefaultVersion
 
 	var pollOut monitor.PollStagingFixturesOutput
-	if err := workflow.ExecuteActivity(ctx, "PollStagingFixtures",
-		monitor.PollStagingFixturesInput{ActivationWindow: activationWindow},
-	).Get(ctx, &pollOut); err != nil {
+	pollIn := monitor.PollStagingFixturesInput{
+		ActivationWindow:  activationWindow,
+		LegacyUnprotected: providerGuardV1 == workflow.DefaultVersion,
+	}
+	if providerGuardV1 != workflow.DefaultVersion {
+		pollIn.ObservationID = providerObservationID(ctx)
+		pollIn.ObservedAt = observedAt
+	}
+	if err := workflow.ExecuteActivity(ctx, "PollStagingFixtures", pollIn).Get(ctx, &pollOut); err != nil {
 		logger.Warn("PollStagingFixtures failed", "error", err)
 		out.Errors = append(out.Errors, "PollStagingFixtures: "+err.Error())
 		if !reaperV2 {

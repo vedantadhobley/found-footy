@@ -73,8 +73,8 @@ _goal_absent: &goal_absent
       events: []
 
 cycles:
-  # Generation 1 appears, then receives an unprotected absence vote and is
-  # preserved as a removed tombstone.
+  # Generation 1 appears, then receives a score-coherent correction vote and
+  # is preserved as a removed tombstone.
   - t: 2026-07-08T15:30:00Z
     api_responses: {fixtures_by_ids: *goal_present}
   - t: 2026-07-08T15:30:30Z

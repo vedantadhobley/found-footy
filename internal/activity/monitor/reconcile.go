@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"go.temporal.io/sdk/activity"
 	"go.temporal.io/sdk/temporal"
 
 	"github.com/vedantadhobley/found-footy/internal/contract/fixturepresentation"
@@ -40,6 +41,9 @@ func (a *Activities) ListActiveFixtureIDs(ctx context.Context) (ListActiveFixtur
 // parallel via goroutines.
 type FetchLiveFixturesInput struct {
 	IDs []int64
+	// New histories supply immutable logical-poll identity for failed attempts.
+	PollID     string
+	ObservedAt time.Time
 }
 
 // FetchLiveFixturesOutput carries the validated API response array plus any IDs
@@ -84,6 +88,19 @@ func (a *Activities) FetchLiveFixtures(ctx context.Context, in FetchLiveFixtures
 		Fixtures: result.Fixtures, FailedIDs: result.FailedIDs(),
 		Failures: providerFetchFailures(result.Failures),
 	}
+	if in.PollID != "" && (err != nil || len(out.FailedIDs) > 0) && a.ProviderHealth != nil {
+		failures := healthFetchFailures(in.IDs, out, err != nil)
+		if len(failures) > 0 {
+			if recordErr := a.ProviderHealth.RecordFetchFailure(ctx, providerintegrity.FetchFailureEvidence{
+				PollID: in.PollID, ObservedAt: in.ObservedAt,
+				Attempt: int(activity.GetInfo(ctx).Attempt), Failures: failures,
+			}); recordErr != nil {
+				// Shadow evidence failure is explicit but cannot turn an otherwise
+				// usable vendor response into a fetch failure or block discovery.
+				activity.GetLogger(ctx).Error("provider failed-attempt evidence write failed", "error", recordErr)
+			}
+		}
+	}
 	if err != nil {
 		wrapped := fmt.Errorf("monitor.FetchLiveFixtures: %w", err)
 		if ctx.Err() != nil {
@@ -126,6 +143,13 @@ type ReconcileFixtureInput struct {
 	// requests independently of response latency and activity retry. Zero keeps
 	// direct callers and historical payloads compatible.
 	ObservedAt time.Time
+	// PollID and HealthGeneration bind production writes to the exact durable
+	// health receipt committed before reconciliation fan-out.
+	PollID           string
+	HealthGeneration int64
+	// LegacyUnprotected is set only by workflow histories created before the
+	// durable health version marker. New/direct production calls fail closed.
+	LegacyUnprotected bool
 }
 
 // ReconcileFixtureOutput reports what happened for this fixture.
@@ -152,9 +176,13 @@ type ReconcileFixtureOutput struct {
 	// from active → completed. See docs/design/proposals/completion-contract.md.
 	Completed bool
 	Errors    []string
-	// ProviderIntegrity is a shadow-only verdict calculated from the stored
-	// pre-write snapshot. It is observable but does not yet alter reconciliation.
+	// ProviderIntegrity is the local verdict calculated from the stored
+	// pre-write snapshot. The guarded repository composes it with durable
+	// fixture and provider health policy before committing.
 	ProviderIntegrity providerintegrity.FixtureVerdict
+	MutationPolicy    providerintegrity.MutationPolicy
+	MutationApplied   bool
+	MutationStale     bool
 
 	// FeedAction is a typed, mutually exclusive live-feed route. Presentation
 	// carries the complete inline projection when that route wins; Update means
@@ -164,8 +192,8 @@ type ReconcileFixtureOutput struct {
 }
 
 // ReconcileFixture is the per-fixture per-cycle work:
-//  1. Snapshot stored facts, refresh the fixture row, and calculate the FF-075
-//     shadow verdict against the stored event history.
+//  1. Snapshot stored facts and calculate the FF-075 local verdict against the
+//     stored event history.
 //  2. Diff API events against pg events (including removed sequence history).
 //  3. For each API event that doesn't match an active pg event: Insert a fresh
 //     generation (seeds debounce_count=1 + records this workflow's presence
@@ -181,6 +209,9 @@ type ReconcileFixtureOutput struct {
 // remain reserved; equivalent provider evidence starts a new generation with a
 // fresh natural key and UUID.
 func (a *Activities) ReconcileFixture(ctx context.Context, in ReconcileFixtureInput) (ReconcileFixtureOutput, error) {
+	if a.ProviderMutations != nil && !in.LegacyUnprotected {
+		return a.reconcileGuarded(ctx, in)
+	}
 	out := ReconcileFixtureOutput{FixtureID: in.APIFixture.Fixture.ID}
 	now := a.now()
 	observedAt := in.ObservedAt.UTC()

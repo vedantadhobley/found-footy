@@ -19,9 +19,11 @@
 //     fires per-chunk HTTP calls in parallel via goroutines. Partial
 //     failures surface as FailedIDs — we log them and let the next
 //     30s cycle naturally re-request (the poll IS the retry).
-//  4. ReconcileFixture — per fixture, calculate the advisory
-//     provider-integrity verdict, refresh row, diff events, and vote
-//     presence/absence. Concurrent via
+//  4. CollectProviderHealth — persist bounded progress/incident evidence,
+//     including failed fetches, before fan-out (new versioned histories only).
+//  5. ReconcileFixture — per fixture, calculate the local integrity verdict,
+//     then atomically compose durable provider/fixture policy with the fixture
+//     refresh, event diff, debounce votes, audits, and completion. Concurrent via
 //     workflow.ExecuteActivity in a loop (dispatched in parallel;
 //     workflow waits for all).
 //
@@ -86,10 +88,16 @@ type ActivePollWorkflowOutput struct {
 	// classification because the score still requires those goals.
 	GoalAbsencesHeld []string
 	UnknownDropped   int // unknown-scorer placeholders hard-deleted this cycle
-	// ProviderIntegrity is the non-enforcing batch verdict. Anomalous fixtures
-	// remain visible here while ordinary reconciliation continues unchanged.
+	// ProviderIntegrity is the diagnostic batch verdict. The repository also
+	// enforces its per-fixture component together with durable health policy.
 	ProviderIntegrity providerintegrity.BatchVerdict
-	Errors            []string
+	// ProviderHealth is durable policy evidence collected before writes.
+	// Nil denotes a history predating the versioned collector.
+	ProviderHealth     *providerintegrity.HealthResult
+	PositiveOnlyWrites int
+	RejectedWrites     int
+	StaleMutationPlans int
+	Errors             []string
 }
 
 // ActivePollWorkflow — the coordinator for the 30s hot path. Called
@@ -168,9 +176,31 @@ func ActivePollWorkflow(ctx workflow.Context, in ActivePollWorkflowInput) (Activ
 	// Partial failures come back as FailedIDs — we log the count and
 	// let the next 30s poll pick them up.
 	var fetchOut monitor.FetchLiveFixturesOutput
-	if err := workflow.ExecuteActivity(ctx, "FetchLiveFixtures",
-		monitor.FetchLiveFixturesInput(listOut),
-	).Get(ctx, &fetchOut); err != nil {
+	healthVersion := workflow.GetVersion(ctx, "provider-health-evidence-v1", workflow.DefaultVersion, 1)
+	guardVersion := workflow.GetVersion(ctx, "provider-mutation-guard-v1", workflow.DefaultVersion, 1)
+	fetchIn := monitor.FetchLiveFixturesInput{IDs: listOut.IDs}
+	if healthVersion != workflow.DefaultVersion {
+		fetchIn.PollID = providerObservationID(ctx)
+		fetchIn.ObservedAt = observedAt
+	}
+	fetchErr := workflow.ExecuteActivity(ctx, "FetchLiveFixtures", fetchIn).Get(ctx, &fetchOut)
+	if healthVersion != workflow.DefaultVersion {
+		if fetchErr != nil {
+			if classified, ok := classifiedProviderFetchFailure(fetchErr); ok {
+				fetchOut = classified
+			}
+		}
+		collected := collectProviderHealth(ctx, monitor.CollectProviderHealthInput{
+			PollID: fetchIn.PollID, ObservedAt: observedAt, RequestedIDs: listOut.IDs,
+			Fetch: fetchOut, FetchFailed: fetchErr != nil,
+		}, &out)
+		if !collected {
+			// A usable provider payload without a durable policy receipt cannot
+			// cross the guarded mutation boundary. The next scheduled poll retries.
+			return out, nil
+		}
+	}
+	if err := fetchErr; err != nil {
 		if classified, ok := classifiedProviderFetchFailure(err); ok {
 			out.FetchedCount = len(classified.Fixtures)
 			out.MissedIDs = len(classified.FailedIDs)
@@ -200,6 +230,12 @@ func ActivePollWorkflow(ctx workflow.Context, in ActivePollWorkflowInput) (Activ
 			"missed_ids", out.MissedIDs)
 		return out, nil
 	}
+	if healthVersion != workflow.DefaultVersion && out.ProviderHealth != nil && out.ProviderHealth.Ignored {
+		logger.Info("ActivePollWorkflow: stale provider observation ignored",
+			"observed_at", out.ProviderHealth.ObservedAt,
+			"generation", out.ProviderHealth.Generation)
+		return out, nil
+	}
 
 	// ── Step 4: ReconcileFixture per fixture, concurrent ──
 	reconcileFutures := make([]workflow.Future, 0, len(fetchOut.Fixtures))
@@ -210,13 +246,21 @@ func ActivePollWorkflow(ctx workflow.Context, in ActivePollWorkflowInput) (Activ
 		RetryPolicy:         baseAO.RetryPolicy,
 	})
 	for _, apiFix := range fetchOut.Fixtures {
+		reconcileIn := monitor.ReconcileFixtureInput{
+			APIFixture: apiFix,
+			WorkflowID: workflowID,
+			ObservedAt: observedAt,
+		}
+		if healthVersion == workflow.DefaultVersion || guardVersion == workflow.DefaultVersion {
+			reconcileIn.LegacyUnprotected = true
+		} else {
+			reconcileIn.ObservedAt = out.ProviderHealth.ObservedAt
+			reconcileIn.PollID = fetchIn.PollID
+			reconcileIn.HealthGeneration = out.ProviderHealth.Generation
+		}
 		reconcileFutures = append(reconcileFutures,
 			workflow.ExecuteActivity(reconcileCtx, "ReconcileFixture",
-				monitor.ReconcileFixtureInput{
-					APIFixture: apiFix,
-					WorkflowID: workflowID,
-					ObservedAt: observedAt,
-				}))
+				reconcileIn))
 	}
 	var removedEventIDs []uuid.UUID
 	var newNamedEventIDs []uuid.UUID
@@ -241,6 +285,15 @@ func ActivePollWorkflow(ctx workflow.Context, in ActivePollWorkflowInput) (Activ
 		newNamedEventIDs = append(newNamedEventIDs, reconcileOut.NewNamedEventIDs...)
 		out.UnknownDropped += reconcileOut.UnknownDropped
 		out.Errors = append(out.Errors, reconcileOut.Errors...)
+		if reconcileOut.MutationStale {
+			out.StaleMutationPlans++
+		}
+		switch reconcileOut.MutationPolicy {
+		case providerintegrity.PolicyPositiveOnly:
+			out.PositiveOnlyWrites++
+		case providerintegrity.PolicyRejected:
+			out.RejectedWrites++
+		}
 		if reconcileOut.ProviderIntegrity.Policy.Valid() {
 			providerVerdicts = append(providerVerdicts, reconcileOut.ProviderIntegrity)
 		}
@@ -262,7 +315,7 @@ func ActivePollWorkflow(ctx workflow.Context, in ActivePollWorkflowInput) (Activ
 	}
 	out.ProviderIntegrity = providerintegrity.AggregateFixtureVerdicts(providerVerdicts)
 	if out.ProviderIntegrity.Anomalous() {
-		logger.Warn("provider integrity shadow anomaly",
+		logger.Warn("provider integrity local aggregate anomaly",
 			"global_policy", out.ProviderIntegrity.Policy,
 			"global_reasons", out.ProviderIntegrity.Reasons,
 			"regressed_fixtures", out.ProviderIntegrity.RegressedFixtures,
@@ -356,6 +409,9 @@ func ActivePollWorkflow(ctx workflow.Context, in ActivePollWorkflowInput) (Activ
 		"stable", len(out.EventsBecameStable),
 		"removed", len(out.EventsRemoved),
 		"unknown_dropped", out.UnknownDropped,
+		"positive_only_writes", out.PositiveOnlyWrites,
+		"rejected_writes", out.RejectedWrites,
+		"stale_mutation_plans", out.StaleMutationPlans,
 		"errors", len(out.Errors),
 	)
 	return out, nil

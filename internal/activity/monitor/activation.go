@@ -6,7 +6,9 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/vedantadhobley/found-footy/internal/contract/auditlog"
 	"github.com/vedantadhobley/found-footy/internal/domain/fixture"
+	"github.com/vedantadhobley/found-footy/internal/domain/providerintegrity"
 	"github.com/vedantadhobley/found-footy/internal/infra/apifootball"
 )
 
@@ -78,7 +80,10 @@ type PollStagingFixturesInput struct {
 	// uses. A staging fixture whose kickoff was corrected into this
 	// window by the vendor gets activated the same tick even if the
 	// API status is still NS.
-	ActivationWindow time.Duration
+	ActivationWindow  time.Duration
+	ObservationID     string
+	ObservedAt        time.Time
+	LegacyUnprotected bool
 }
 
 // PollStagingFixturesOutput reports what happened this tick.
@@ -120,6 +125,10 @@ type PollStagingFixturesOutput struct {
 func (a *Activities) PollStagingFixtures(ctx context.Context, in PollStagingFixturesInput) (PollStagingFixturesOutput, error) {
 	out := PollStagingFixturesOutput{}
 	now := a.now()
+	observedAt := in.ObservedAt.UTC()
+	if observedAt.IsZero() {
+		observedAt = now
+	}
 
 	candidates, err := a.FixtureRepo.ListByState(ctx, fixture.StateStaging)
 	if err != nil {
@@ -155,6 +164,7 @@ func (a *Activities) PollStagingFixtures(ctx context.Context, in PollStagingFixt
 			// Missed this chunk — next tick picks it up naturally.
 			continue
 		}
+		baseline := *f
 		newStatus := fixture.APIStatus{
 			Short: af.Fixture.Status.Short,
 			Long:  af.Fixture.Status.Long,
@@ -168,7 +178,7 @@ func (a *Activities) PollStagingFixtures(ctx context.Context, in PollStagingFixt
 			// Emergency — API says the match is already live.
 			// Refresh the fields Activate doesn't touch (kickoff, status)
 			// FIRST via RecordStagingPoll, then transition.
-			f.RecordStagingPoll(newStatus, newKickoff, now)
+			f.RecordStagingPoll(newStatus, newKickoff, observedAt)
 			if err := f.Activate(now); err != nil {
 				out.Errors = append(out.Errors, fmt.Sprintf("emergency activate fixture=%d: %v", f.ID, err))
 				continue
@@ -179,7 +189,7 @@ func (a *Activities) PollStagingFixtures(ctx context.Context, in PollStagingFixt
 			// Non-Live status. Update the fields, then check if the
 			// (possibly-corrected) kickoff pulls us into the activation
 			// window.
-			f.RecordStagingPoll(newStatus, newKickoff, now)
+			f.RecordStagingPoll(newStatus, newKickoff, observedAt)
 			if f.ShouldActivateNow(now, in.ActivationWindow) {
 				if err := f.Activate(now); err != nil {
 					out.Errors = append(out.Errors, fmt.Sprintf("kickoff activate fixture=%d: %v", f.ID, err))
@@ -189,35 +199,53 @@ func (a *Activities) PollStagingFixtures(ctx context.Context, in PollStagingFixt
 			}
 		}
 
+		var activationAudit *auditlog.Record
 		if activationReason != "" {
 			audit, err := fixtureActivatedAudit(f.ID, now, activationReason)
 			if err != nil {
 				out.Errors = append(out.Errors, fmt.Sprintf("build activation audit fixture=%d: %v", f.ID, err))
 				continue
 			}
-			store, err := a.fixtureAuditStore()
-			if err != nil {
-				return out, err
+			activationAudit = &audit
+		}
+
+		applied := false
+		if a.ProviderMutations != nil && !in.LegacyUnprotected {
+			if in.ObservationID == "" {
+				return out, fmt.Errorf("monitor.PollStagingFixtures: guarded observation ID is required")
 			}
-			var transitioned bool
-			transitioned, err = store.TransitionWithAudit(ctx, f, audit)
-			if err == nil && transitioned {
-				if activationReason == "already_started" {
-					out.EmergencyActivated++
-				} else {
-					out.KickoffActivated++
-				}
+			local := providerintegrity.AssessFixture(providerintegrity.FixtureComparison{
+				Stored: providerFixtureFacts(&baseline), Observed: providerFixtureFacts(f),
+			}).Policy
+			result, applyErr := a.ProviderMutations.ApplyFixture(ctx, providerintegrity.FixtureMutationPlan{
+				Guard: providerintegrity.ObservationGuard{ObservationID: in.ObservationID, ObservedAt: observedAt},
+				Mode:  providerintegrity.MutationModeStaging, Fixture: f,
+				BaselineExists: true, BaselineLastPolled: cloneOptionalTime(baseline.LastPolledAt),
+				LocalPolicy: local, Activate: activationReason != "", ActivationAudit: activationAudit,
+			})
+			err = applyErr
+			applied = applyErr == nil && result.Applied && !result.Stale
+		} else if activationReason != "" {
+			store, storeErr := a.fixtureAuditStore()
+			if storeErr != nil {
+				return out, storeErr
 			}
+			applied, err = store.TransitionWithAudit(ctx, f, *activationAudit)
 		} else {
-			var refreshed bool
-			refreshed, err = a.FixtureRepo.RefreshStagingPoll(ctx, f)
-			if err == nil && !refreshed {
-				continue
-			}
+			applied, err = a.FixtureRepo.RefreshStagingPoll(ctx, f)
 		}
 		if err != nil {
 			out.Errors = append(out.Errors, fmt.Sprintf("persist fixture=%d: %v", f.ID, err))
 			continue
+		}
+		if !applied {
+			continue
+		}
+		switch activationReason {
+		case "already_started":
+			out.EmergencyActivated++
+		case "kickoff_correction":
+			out.KickoffActivated++
 		}
 		out.Polled++
 	}

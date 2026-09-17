@@ -16,6 +16,7 @@ import (
 
 	"github.com/vedantadhobley/found-footy/internal/domain/alias"
 	"github.com/vedantadhobley/found-footy/internal/domain/fixture"
+	"github.com/vedantadhobley/found-footy/internal/domain/providerintegrity"
 	"github.com/vedantadhobley/found-footy/internal/domain/team"
 	"github.com/vedantadhobley/found-footy/internal/infra/apifootball"
 )
@@ -45,8 +46,11 @@ type fixtureFetcher interface {
 type Activities struct {
 	APIFootball fixtureFetcher
 	FixtureRepo fixture.Repo
-	AliasRepo   alias.Repo
-	TeamRepo    team.Repo
+	// ProviderMutations guards every production ingest write under the same
+	// provider policy used by active and staging reconciliation.
+	ProviderMutations providerintegrity.MutationStore
+	AliasRepo         alias.Repo
+	TeamRepo          team.Repo
 
 	// TrackedLeagueIDs — which league IDs Refresh iterates over
 	// (typically the top-5 European club leagues + current major
