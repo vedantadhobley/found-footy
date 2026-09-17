@@ -5,6 +5,20 @@ Every surviving finding must have a stable disposition in
 [`todo.md`](../../todo.md), and any old claim must be verified against current
 code before work begins.
 
+- [Period-label recognition — 2026-09-17](./period-label-recognition-2026-09-17.md)
+  — Barcelona's false admissions, 52 isolated model calls, retained label errors,
+  and the v3 unsupported-offset fix with saved-evidence replay.
+- [Clock-normalization implementation — 2026-09-15](./clock-normalization-implementation-2026-09-15.md)
+  — v2 historical replay, fixed-image prompt comparison, evidence compatibility
+  and remaining OCR limits.
+- [Frozen-clock policy screen — 2026-09-15](./frozen-clock-policy-2026-09-15.md)
+  — saved-data comparison, Nico wrong-time counterexample and period-end lower bounds.
+- [Clock-field failure frequency — 2026-09-14](./clock-field-frequency-2026-09-14.md)
+  — retained observations, changed offline verdicts and parser-fix boundaries.
+- [Broader clock-tolerance review — 2026-09-12 UTC](./clock-tolerance-broader-review-2026-09-12.md)
+  — original-media review, useful replay losses and the running-clock/allowance defect.
+- [Offline clock-tolerance comparison — 2026-09-12 UTC](./clock-tolerance-2026-09-12.md)
+  — saved observations, agreement tradeoffs and unchanged compilation limits.
 - [Assigned versus direct source support — 2026-09-13](./video-direct-support-2026-09-13.md)
   — fixed-selection comparison, 278 attributable events, conditional restored
   scores, one additional visible clip, and non-additive support semantics;

@@ -7,6 +7,9 @@ work.
 
 ## Active proposals
 
+- [Clock-field normalization](./clock-field-normalization.md) — FF-094
+  precision-preserving parser design, compatible secondary timers, reset-clock
+  boundaries and evidence versioning; implemented, production rollout pending.
 - [Reversible video selection](./reversible-video-selection.md) — FF-081 direct
   selected-substitute invariant, offline restoration proof, atomic ownership
   changes and preserved singleton filtering; validation, domain planning and

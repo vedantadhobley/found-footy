@@ -277,6 +277,9 @@ func (p *pipeline) onVisionDone(c clip) func(workflow.Future) {
 				"frame_count": len(vout.Frames), "frame_observations": vout.Frames,
 				"clock_readings": vout.ClockReadings,
 			}
+			if vout.Evaluator != "" { // old completed activities retain their original detail
+				detail["evaluator"] = vout.Evaluator
+			}
 			if vout.DetectedMinute != nil { // clock was read but didn't match — record it so the reject is triageable (#181)
 				detail["detected_minute"], detail["detected_period"] = *vout.DetectedMinute, vout.DetectedPeriod
 				detail["expected_minute"], detail["expected_period"] = vout.ExpectedMinute, vout.ExpectedPeriod

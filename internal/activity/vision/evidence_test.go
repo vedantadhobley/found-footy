@@ -15,7 +15,7 @@ import (
 	dvision "github.com/vedantadhobley/found-footy/internal/domain/vision"
 )
 
-// TestValidateClipCapturesOwnEvidence separates capture from unchanged clock admission.
+// TestValidateClipCapturesOwnEvidence separates optional capture from clock admission.
 func TestValidateClipCapturesOwnEvidence(t *testing.T) {
 	response := framesJSON(
 		map[string]any{"soccer": true, "clock": "22:10"},
@@ -32,6 +32,9 @@ func TestValidateClipCapturesOwnEvidence(t *testing.T) {
 		t.Fatal(err)
 	}
 	proof := out.Evidence
+	if out.Evaluator != dvision.EvaluatorVersion || proof.Evaluator != out.Evaluator {
+		t.Fatal("evaluation version lost across activity/evidence boundary")
+	}
 	if err := proof.Validate(); err != nil {
 		t.Fatal(err)
 	}
@@ -52,7 +55,7 @@ func TestValidateClipCapturesOwnEvidence(t *testing.T) {
 	}
 }
 
-// TestCapturePreservesUnverifiedAndRejectedOutcomes pins the unchanged evaluator
+// TestCapturePreservesUnverifiedAndRejectedOutcomes pins the capture/evaluator
 // boundary, including partial model responses and Temporal-origin provenance.
 func TestCapturePreservesUnverifiedAndRejectedOutcomes(t *testing.T) {
 	for _, tc := range []struct {
@@ -76,6 +79,7 @@ func TestCapturePreservesUnverifiedAndRejectedOutcomes(t *testing.T) {
 			var out ValidateClipOutput
 			require.NoError(t, value.Get(&out))
 			require.Equal(t, tc.outcome, out.Outcome)
+			require.Equal(t, dvision.EvaluatorVersion, out.Evaluator)
 			if tc.outcome == "rejected" {
 				require.Nil(t, out.Evidence)
 				return
@@ -87,4 +91,14 @@ func TestCapturePreservesUnverifiedAndRejectedOutcomes(t *testing.T) {
 			require.Positive(t, out.Evidence.Origin.Attempt)
 		})
 	}
+}
+
+// TestLegacyVerdictDoesNotAcquireEvaluator preserves recorded Temporal result semantics.
+func TestLegacyVerdictDoesNotAcquireEvaluator(t *testing.T) {
+	var out ValidateClipOutput
+	require.NoError(t, json.Unmarshal([]byte(`{"Outcome":"rejected","Reason":"old reason"}`), &out))
+	require.Empty(t, out.Evaluator)
+	encoded, err := json.Marshal(out)
+	require.NoError(t, err)
+	require.NotContains(t, string(encoded), "Evaluator")
 }

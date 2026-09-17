@@ -1,0 +1,54 @@
+[
+  {
+    "Name": "yamal_first_half_penalty_miss",
+    "Provenance": "Original s_f1fab5939d08 media sampled at 25/50/75%; BAR 4-1 RAC, no period label. Wrongly accepted for 89-prime target in production; gold records visible timing only.",
+    "Images": ["/fixtures/yamal-1.jpg", "/fixtures/yamal-2.jpg", "/fixtures/yamal-3.jpg"],
+    "Expected": {"Elapsed": 89, "Extra": 0},
+    "Gold": [
+      {"clock":"44:48","period":null,"added":null,"stoppage_clock":null},
+      {"clock":"44:51","period":null,"added":null,"stoppage_clock":null},
+      {"clock":"44:53","period":null,"added":null,"stoppage_clock":null}
+    ]
+  },
+  {
+    "Name": "jesus_wrong_fixture",
+    "Provenance": "Original s_80a1d7ebe2e8 media sampled at 25/50/75%; MIA 1-0 CAZ. Wrong fixture despite matching tolerance; gold records timing, not event correctness.",
+    "Images": ["/fixtures/jesus-1.jpg", "/fixtures/jesus-2.jpg", "/fixtures/jesus-3.jpg"],
+    "Expected": {"Elapsed": 79, "Extra": 0},
+    "Gold": [
+      {"clock":"77:27","period":null,"added":null,"stoppage_clock":null},
+      {"clock":"77:29","period":null,"added":null,"stoppage_clock":null},
+      {"clock":"77:31","period":null,"added":null,"stoppage_clock":null}
+    ]
+  },
+  {
+    "Name":"maitland_running_plus_five",
+    "Provenance":"Original retained 25/50/75 frames from September 13 review; visible running 95:xx and +5 prime; exact annotation spelling differences are reported.",
+    "Images":[
+      "/src/scratch-audit-2026-09-13/maitland-niles-review/validation/01ff6353-48b1-52b5-a0d7-cc7df19d3b84-frame-1.jpg",
+      "/src/scratch-audit-2026-09-13/maitland-niles-review/validation/01ff6353-48b1-52b5-a0d7-cc7df19d3b84-frame-2.jpg",
+      "/src/scratch-audit-2026-09-13/maitland-niles-review/validation/01ff6353-48b1-52b5-a0d7-cc7df19d3b84-frame-3.jpg"
+    ],
+    "Expected":{"Elapsed":90,"Extra":6},
+    "Gold":[
+      {"clock":"95:04","period":null,"added":"+5′","stoppage_clock":null},
+      {"clock":"95:15","period":null,"added":"+5′","stoppage_clock":null},
+      {"clock":"95:27","period":null,"added":"+5′","stoppage_clock":null}
+    ]
+  },
+  {
+    "Name":"fernandez_running_plus_one",
+    "Provenance":"Original retained 25/50/75 frames from September 12 review, 45:17/25/33 plus announced +1; no explicit half label.",
+    "Images":[
+      "/src/scratch-audit-2026-09-12/clock-tolerance/sheets/699b6ca6-e4a9-5211-b521-201cfafaefef-1.jpg",
+      "/src/scratch-audit-2026-09-12/clock-tolerance/sheets/699b6ca6-e4a9-5211-b521-201cfafaefef-2.jpg",
+      "/src/scratch-audit-2026-09-12/clock-tolerance/sheets/699b6ca6-e4a9-5211-b521-201cfafaefef-3.jpg"
+    ],
+    "Expected":{"Elapsed":45,"Extra":0},
+    "Gold":[
+      {"clock":"45:17","period":null,"added":"+1","stoppage_clock":null},
+      {"clock":"45:25","period":null,"added":"+1","stoppage_clock":null},
+      {"clock":"45:33","period":null,"added":"+1","stoppage_clock":null}
+    ]
+  }
+]

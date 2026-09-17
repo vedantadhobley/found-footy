@@ -462,21 +462,34 @@ the unverified pool instead of being compared against minute zero (FF-031).
   meanings (`45:xx 2H` → 45/90, `15:xx ET2` → 120/105) without widening the
   tolerance. The stoppage parser accepts both `01:48` and `+1:48` model
   output. `periodOf` remains the fallback for conventional unlabelled clocks.
+  FF-094 retains seconds until composition, validates complete timer syntax,
+  and adds secondary time only at a compatible period-ending `MM:00` boundary.
+  Allowances never erase running clocks or cap elapsed time. Compact clocks
+  are not added twice. Unsupported main syntax supplies no usable minute.
 - `evaluate.go` — `Evaluate(frames, Expected, tol)`: soccer/screen majority
   gates → period-aware clock check → `Outcome` (verified/unverified/rejected).
   API ordinal minutes normalize to the broadcast's completed-minute clock as
   `elapsed + extra - 1` before the ±1 tolerance; the period remains an
   independent guard. An explicit wrong half remains a hard reject; an
-  unlabelled reset-clock interpretation can only soft-keep the clip as
-  unverified. Strict at halftime / lenient at ET (see decisions.md).
+  unlabelled reset-clock guess cannot rescue a readable mismatch. Period
+  offsets require observed period evidence; conventional continuous clocks
+  need no label. Strict at halftime / lenient at ET (see decisions.md).
+  A boundary plus allowance without an elapsed timer is unverified, not
+  verified on period alone. Its lower bound and other usable contradictory
+  clocks remain effective; one independently matching reading still suffices.
 - `schema.go` — `FrameObservation` (per-frame JSON, including nullable visible
   `period`) + `VisionResponse` (`{Frames}`, the `response_format` json-schema,
   exactly-3 positional frames) + `DefaultPrompt`. The model must return period
   only from visible scorebug evidence, never from the clock value alone.
+  FF-094 forbids invented seconds and permits cross-frame field identification,
+  not copied/interpolated readings or a new clock-progression gate.
 - `evidence.go` — bounded accepted `Evidence`, with original observations,
   expected time, complete evaluation, sampling and provenance. Validation
   checks identity/shape without reinterpreting historical observations through
   today's evaluator. `EvaluatorVersion` must change with evaluator semantics.
+  The local implementation combines FF-094 and the unsupported-offset removal
+  as `vision-evaluate-v3`; production remains on v1 until its separately approved
+  rollout. See the [visible-period decision](./decisions/2026-09-17-relative-clocks-require-visible-period.md).
 
 Consumed by `internal/activity/vision.ValidateClip`: fetch staged clip →
 `ffmpeg.ExtractFrame` @25/50/75% → one multi-image structured-output vision call
@@ -485,7 +498,9 @@ async per unique clip); the LLM adapter sends `ResponseFormat` plus the public
 `reasoning_effort: none` control required by Control's Gemma structured-output
 contract. Sampling values remain omitted so the selected model profile owns
 their defaults. Clock rejections persist all three raw
-frame observations and normalized readings in candidate `outcome_detail`. At
+frame observations and normalized readings in candidate `outcome_detail`.
+New FF-094 activity results additionally carry `Evaluator`;
+rejected detail stores it as `evaluator`. Old results keep that field absent. At
 the activity boundary, typed permanent
 LLM failures (invalid response/request, missing model, or auth) become
 non-retryable Temporal ApplicationErrors; transient model and infrastructure

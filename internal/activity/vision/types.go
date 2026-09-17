@@ -26,6 +26,8 @@ type ValidateClipInput struct {
 // model observations and ClockReadings carries their normalized timing
 // interpretation so the workflow can persist both for post-hoc diagnosis.
 type ValidateClipOutput struct {
+	// Evaluator is absent in old activity results; replay must not invent it.
+	Evaluator     string `json:"Evaluator,omitempty"`
 	Outcome       string // "verified" | "unverified" | "rejected"
 	MatchedMinute *int   // set only when verified
 	Reason        string

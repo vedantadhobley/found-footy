@@ -27,7 +27,7 @@ func TestParseClockField(t *testing.T) {
 		{"not-a-clock", 0, false},
 	}
 	for _, c := range cases {
-		got, ok := parseClockField(c.in)
+		got, _, ok := parseClockField(c.in)
 		if ok != c.ok || (ok && got.Minute != c.want) {
 			t.Errorf("parseClockField(%q) = (%+v,%v), want minute (%d,%v)", c.in, got, ok, c.want, c.ok)
 		}
@@ -52,7 +52,7 @@ func TestParseClockFieldRetainsPeriodProvenance(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			got, ok := parseClockField(c.in)
+			got, _, ok := parseClockField(c.in)
 			if !ok {
 				t.Fatal("parseClockField returned !ok")
 			}

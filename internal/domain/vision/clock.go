@@ -91,27 +91,46 @@ func (p Period) String() string {
 }
 
 var (
-	reCompactStoppage = regexp.MustCompile(`^(\d+)\s*\+\s*(\d+)`) // "45+2"
-	reMMSS            = regexp.MustCompile(`(\d{1,3}):(\d{2})`)   // "90:00"
+	reCompactStoppage = regexp.MustCompile(`^(45|90|105|120)\s*\+\s*(\d{1,2})(?::(\d{2}))?$`)
+	reMMSS            = regexp.MustCompile(`^(\d{1,3}):(\d{2})$`) // "90:00"
 	reBareMinutes     = regexp.MustCompile(`^(\d{1,3})$`)         // "90"
-	reAdded           = regexp.MustCompile(`\+\s*(\d+)`)          // "+4"
+	reAdded           = regexp.MustCompile(`^\+?\s*(\d{1,2})\s*['′]?$`)
 	rePeriodHints     = regexp.MustCompile(`\b(ET|AET|EXTRA\s*TIME|2H|2ND\s*HALF|1H|1ST\s*HALF)\b`)
 	reETPeriod        = regexp.MustCompile(`\b(ET|AET|EXTRA\s*TIME)\b`)
 	reSecondHalf      = regexp.MustCompile(`\b(2H|2ND\s*HALF)\b`)
 	reFirstHalf       = regexp.MustCompile(`\b(1H|1ST\s*HALF)\b`)
-	reStoppageClock   = regexp.MustCompile(`^(\d{1,2}):(\d{2})`)
 )
+
+// parsedTimer preserves visible precision until auxiliary fields are composed.
+// A minute-only reading must never be mistaken for a frozen MM:00 display.
+type parsedTimer struct {
+	minute       int
+	second       int
+	secondsKnown bool
+}
+
+// parseTimer accepts a complete timer, not a numeric substring of malformed OCR.
+func parseTimer(text string, allowBare bool) (parsedTimer, bool) {
+	if m := reMMSS.FindStringSubmatch(text); m != nil {
+		timer := parsedTimer{minute: atoi(m[1]), second: atoi(m[2]), secondsKnown: true}
+		return timer, timer.second < 60
+	}
+	if allowBare && reBareMinutes.MatchString(text) {
+		return parsedTimer{minute: atoi(text)}, true
+	}
+	return parsedTimer{}, false
+}
 
 // parseClockField parses the MAIN timer field into a structured reading.
 // Handles "MM:SS", bare "MM", compact "45+2", and 1H/2H/ET textual hints.
 // Returns ok=false for empty / non-clock text (NONE/HT/FT). Ported from
 // Python parse_clock_field without collapsing period/stoppage provenance.
-func parseClockField(raw string) (ClockReading, bool) {
+func parseClockField(raw string) (ClockReading, parsedTimer, bool) {
 	r := ClockReading{ExactMinute: true}
 	text := strings.ToUpper(strings.TrimSpace(raw))
 	switch text {
 	case "", "NONE", "HT", "FT", "HALF TIME", "FULL TIME":
-		return ClockReading{}, false
+		return ClockReading{}, parsedTimer{}, false
 	}
 
 	hasET := reETPeriod.MatchString(text)
@@ -126,6 +145,9 @@ func parseClockField(raw string) (ClockReading, bool) {
 	// structurally pinned period. This is the provenance the integer parser
 	// previously discarded.
 	if m := reCompactStoppage.FindStringSubmatch(clean); m != nil {
+		if m[3] != "" && atoi(m[3]) >= 60 {
+			return ClockReading{}, parsedTimer{}, false
+		}
 		base := atoi(m[1])
 		r.Minute = base + atoi(m[2])
 		r.Period = periodOf(base)
@@ -135,17 +157,14 @@ func parseClockField(raw string) (ClockReading, bool) {
 			r.Period = PeriodUnknown
 			r.Ambiguous = true
 		}
-		return r, true
+		return r, parsedTimer{}, true
 	}
 
-	var minutes int
-	if m := reMMSS.FindStringSubmatch(clean); m != nil {
-		minutes = atoi(m[1])
-	} else if m := reBareMinutes.FindStringSubmatch(strings.TrimSpace(clean)); m != nil {
-		minutes = atoi(m[1])
-	} else {
-		return ClockReading{}, false
+	timer, ok := parseTimer(clean, true)
+	if !ok {
+		return ClockReading{}, parsedTimer{}, false
 	}
+	minutes := timer.minute
 
 	r.Minute = minutes
 	r.Period = periodOf(minutes)
@@ -171,7 +190,7 @@ func parseClockField(raw string) (ClockReading, bool) {
 		r.Period = PeriodFirstHalf
 		r.PeriodPinned = true
 	}
-	return r, true
+	return r, timer, true
 }
 
 // parseFrameClock merges the raw main timer with the model's separately
@@ -181,7 +200,7 @@ func parseFrameClock(frameIndex int, f FrameObservation) (ClockReading, bool) {
 	if f.Clock == nil {
 		return ClockReading{}, false
 	}
-	r, ok := parseClockField(*f.Clock)
+	r, timer, ok := parseClockField(*f.Clock)
 	if !ok {
 		return ClockReading{}, false
 	}
@@ -209,27 +228,56 @@ func parseFrameClock(frameIndex int, f FrameObservation) (ClockReading, bool) {
 		}
 	}
 
+	// Only seconds-visible, compatible end boundaries can freeze and accept
+	// elapsed stoppage. Running and compact clocks remain usable even when an
+	// auxiliary field is malformed, redundant or assigned to the wrong role.
+	boundary, compatible := frozenBoundary(r, timer)
+	if !compatible {
+		return r, true
+	}
 	if f.StoppageClock != nil {
 		if stop, hasStop := parseStoppageClockField(*f.StoppageClock); hasStop {
-			if r.Stoppage { // compact and separate stoppage shapes conflict
-				r.Ambiguous = true
-			} else {
-				r.Minute += stop
-				for i := range r.AlternativeMinutes {
-					r.AlternativeMinutes[i] += stop
-				}
-				r.Stoppage = true
-				r.ExactMinute = true
-			}
+			r.Minute = boundary + stop
+			r.AlternativeMinutes = nil
+			r.Stoppage = true
+			return r, true
 		}
 	}
 	if f.Added != nil {
-		if _, hasAdded := parseAddedField(*f.Added); hasAdded && !r.Stoppage {
-			r.Stoppage = true
-			r.ExactMinute = false
+		if _, hasAdded := parseAddedField(*f.Added); hasAdded {
+			r.Minute = boundary // lower bound, not a measured stoppage minute
+			r.AlternativeMinutes = nil
+			r.Stoppage, r.ExactMinute = true, false
 		}
 	}
 	return r, true
+}
+
+// frozenBoundary narrows reset/continuous alternatives to the period's end.
+// It recognizes compatible syntax; it does not claim the video actually froze.
+func frozenBoundary(r ClockReading, timer parsedTimer) (int, bool) {
+	if r.Ambiguous || r.Stoppage || !timer.secondsKnown || timer.second != 0 {
+		return 0, false
+	}
+	var end int
+	switch r.Period {
+	case PeriodFirstHalf:
+		end = 45
+	case PeriodSecondHalf:
+		end = 90
+	case PeriodExtraFirst:
+		end = 105
+	case PeriodExtraSecond:
+		end = 120
+	default:
+		return 0, false
+	}
+	for _, minute := range possibleMinutes(r) {
+		if minute == end {
+			return end, true
+		}
+	}
+	return 0, false
 }
 
 // boundaryAlternatives preserves clock values that are structurally valid in
@@ -291,6 +339,7 @@ func normalizeDisplayedMinute(minute int, period Period) (int, bool) {
 	}
 }
 
+// embeddedPeriod resolves legacy textual hints without consulting API time.
 func embeddedPeriod(hasET, has2H, has1H bool, minute int) Period {
 	switch {
 	case has2H:
@@ -304,6 +353,7 @@ func embeddedPeriod(hasET, has2H, has1H bool, minute int) Period {
 	}
 }
 
+// boolCount detects conflicting explicit period hints.
 func boolCount(values ...bool) int {
 	n := 0
 	for _, value := range values {
@@ -316,7 +366,7 @@ func boolCount(values ...bool) int {
 
 // parseAddedField parses the announced added-time indicator: "+4" → 4.
 // This is the ANNOUNCED total (a "+5" board), not the current stoppage
-// minute — it pins the period as "in stoppage" but not the exact minute.
+// minute. Only a compatible main boundary can make the minute unpinned.
 func parseAddedField(raw string) (int, bool) {
 	t := strings.ToUpper(strings.TrimSpace(raw))
 	if t == "" || t == "NONE" || t == "N/A" {
@@ -331,7 +381,7 @@ func parseAddedField(raw string) (int, bool) {
 // parseStoppageClockField parses the secondary stoppage sub-timer's MINUTES
 // component: "03:57" → 3, "+1:48" → 1. Strips a leading '+' first — gemma
 // returns "01:48", Qwen returns "+1:48" (bake-off 2026-07-28). This is the
-// signal that pins the exact stoppage minute (base + this).
+// signal that pins the exact stoppage minute only beside a compatible boundary.
 func parseStoppageClockField(raw string) (int, bool) {
 	t := strings.TrimSpace(raw)
 	t = strings.TrimPrefix(t, "+")
@@ -340,8 +390,8 @@ func parseStoppageClockField(raw string) (int, bool) {
 	if up == "" || up == "NONE" || up == "N/A" {
 		return 0, false
 	}
-	if m := reStoppageClock.FindStringSubmatch(t); m != nil {
-		return atoi(m[1]), true
+	if timer, ok := parseTimer(t, false); ok && timer.minute < 100 {
+		return timer.minute, true
 	}
 	return 0, false
 }

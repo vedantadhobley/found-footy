@@ -49,6 +49,75 @@ the current branch.
 
 ## Confirmed issues
 
+### FF-094 — added-time announcement incorrectly unpins a running clock
+
+- **Status:** `implemented` — local, not deployed
+- **Severity:** P1
+- **Evidence:** The [broader timestamp review](./design/audits/clock-tolerance-broader-review-2026-09-12.md#ff-094-added-time-label-discards-a-running-clock)
+  observes `45:17, 45:25, 45:33` with a visible `+1` announcement on the
+  Fernández 45′ original, fixture `1570361`, share `s_63b1332db2fb`.
+  The offline characterization reproduces the current parser defect; the
+  historical model's `added` fields are unavailable, so incident frequency
+  and this clip's original path are not established.
+- **Cause:** `parseFrameClock` sets `ExactMinute=false` whenever `Added` parses
+  and no stoppage clock was parsed. It never establishes that the main timer
+  is frozen. Against API 45′/no-extra, the complete observations reject at ±1
+  while main-timer-only observations verify. Against a constructed API 45+4′
+  target, they wrongly verify on period alone at both ±1 and zero tolerance.
+- **Required invariant:** An announced added-time allowance must not erase
+  usable running-clock evidence. Distinguish running clocks from genuinely
+  frozen/ambiguous displays; preserve true frozen-clock, reset-period and
+  no-clock behavior without inventing elapsed time from announced duration.
+- **Related extraction boundary (September 13):** The
+  [Maitland-Niles fresh revalidation](./design/audits/maitland-niles-selection-preview-2026-09-13.md#fresh-clock-failure--not-a-historical-rejection-claim)
+  produced a false rejection when the model reported a visible `+5` allowance
+  as `stoppage_clock: "05:00"` beside `95:xx`. The parser added five minutes
+  to the already running clock. Clearing only the invented secondary field
+  changes that saved response to unverified. This differs from the `Added`
+  branch above; cover both in clock-contract regressions. No frequency claim,
+  runtime fix or historical outcome rewrite follows from this one fresh run.
+- **Production frequency screen (September 14):** The
+  [read-only follow-up](./design/audits/clock-field-frequency-2026-09-14.md)
+  finds the exact Maitland-Niles pattern on four September 6 rejects. Across
+  retained evidence since August 31, 50 rejected rows have positive secondary
+  minutes beside a non-frozen main timer. Removing the suspect secondary fields
+  changes 20 rows across nine events to accepted in offline controls; these are
+  not twenty established lost clips. Three of 74 newly retained natural accepted
+  evaluations, all Adžić 90+4′, change to rejected when faulty secondary/allowance
+  fields stop overriding their running `90:xx` clocks. Candidate repeats, missing
+  older accepted evidence and unreviewed footage preclude an overall error rate.
+- **Research proposal (September 14):** [Clock-field normalization](./design/proposals/clock-field-normalization.md)
+  keeps the existing independent observations and inference cost, retains
+  seconds until composition, and permits secondary addition only at a compatible
+  period-ending boundary. Constructed probes also expose wrong reset-clock
+  alternatives and invalid seconds/compact-base acceptance. Accepted evidence
+  needs a new evaluator identifier; rejected evidence should retain it too.
+- **Agreed transcription rule (September 14):** Do not invent `:00` for a
+  minute-only allowance. Preserve absent secondary timers as null. This does
+  not authorize runtime changes or settle the frozen-clock acceptance policy.
+- **Isolated policy replay (September 15):** The
+  [frozen-clock screen](./design/audits/frozen-clock-policy-2026-09-15.md)
+  leaves all included outcomes unchanged with a period-end lower-bound guard.
+  Blanket soft acceptance would admit the saved `90:00 +2` reading for Nico's
+  46′ target as unverified. Preserve that contradiction. None of 159 natural
+  accepted evaluations exercises the proposed downgrade; missing older raw
+  evidence limits the no-public-impact finding. Parser and prompt remain unchanged.
+- **Implementation (September 15):** User approved the bounded unverified
+  frozen-clock policy. `vision-evaluate-v2` retains seconds, validates full
+  timer syntax, preserves running main clocks and permits secondary addition
+  only at a compatible period-ending boundary. Prompt wording forbids invented
+  seconds; field identification may use the existing three images without a
+  progression gate. New rejections carry evaluator provenance; old evidence
+  and completed activity outputs remain unchanged. No migration or extra call.
+  See the [decision](./decisions/2026-09-15-clock-fields-preserve-visible-evidence.md)
+  and [implementation replay](./design/audits/clock-normalization-implementation-2026-09-15.md).
+- **September 17 follow-up:** Local `vision-evaluate-v3` retains this
+  normalization and removes the unlabelled relative-offset fallback under
+  FF-003. See the [visible-period decision](./decisions/2026-09-17-relative-clocks-require-visible-period.md).
+- **Next:** Review verification and authorize a production rollout separately.
+  Existing exact-byte v1 acceptances are not revalidated by deployment. Any
+  historical repair needs its own media/selection review and approval.
+
 ### FF-093 — accepted vision evidence expires with workflow history
 
 - **Status:** `implemented` locally; not deployed
@@ -1157,6 +1226,21 @@ the current branch.
   in an Atletico shirt rather than goal footage. Rank 1 remains the legitimate
   clock-verified goal, so this is a secondary-result precision failure rather
   than total event coverage loss.
+- **Multi-goal presentation evidence:** The
+  [Lens 90+3′ winner investigation](./design/audits/lens-winner-selection-2026-09-11.md)
+  records a two-goal source replacing a focused cut after one sampled 92:44
+  clock and a strong dHash overlap. A clip-level timestamp verdict does not
+  establish which action opens the video. FF-081 owns the replacement-policy
+  failure; exact visual scene boundaries remain unconfirmed pending media
+  inspection approval. Do not infer a cross-event ownership or parser defect.
+- **Adjacent-goal admission:** Mastantuono's 29′ and 30′ goals have overlapping
+  allowed clock windows under the intended API-minus-one ±1 rule. First-goal
+  footage with 28:xx readings was accepted into the second event, alongside
+  the genuine 29:xx second-goal cut. The
+  [September 11 incident](./design/audits/mastantuono-bridge-removal-2026-09-11.md)
+  distinguishes that semantic ambiguity from FF-092, which then removed the
+  genuine second-goal clip through a losing bridge. Clock arithmetic did not
+  fail; do not globally remove buildup tolerance as an untested shortcut.
 - **Cause:** Search intentionally permits team-only matches for recall. The
   video validator receives frames plus the expected minute, but not the stored
   tweet text, and it classifies football/screen/clock rather than semantic
@@ -1165,6 +1249,64 @@ the current branch.
   clock is absent. A matching clock is also only timestamp evidence: the fixed
   three-frame sample can validate a genuine wrapper while missing an inserted
   scene, and the pipeline has no edit/scene-consistency check.
+- **Offline tolerance comparison (September 12 UTC):** The
+  [saved-observation experiment](./design/audits/clock-tolerance-2026-09-12.md)
+  reproduces all 108 recorded vision verdicts across thirteen event workflows.
+  Zero tolerance rejects four Mastantuono cross-admissions between the 29′ and
+  30′ goals; the other 104 outcomes stay unchanged. This incident-selected
+  sample does not establish a production false-positive/negative rate. The
+  existing legitimate Abdelkarim `28:56`/API-30′ regression would reject,
+  multi-goal compilations with an exact-minute sample still pass, and special
+  clock fallbacks remain active. No production acceptance change. Preserve
+  FF-081 replacement suitability as a separate problem. The broader review
+  below adds original-media evidence without enlarging this exact replay.
+- **Agreed timestamp direction:** Prefer narrowing the minute window over
+  requiring clocks in all three frames. The follow-up on the same sample keeps
+  31/39 verified candidates under mandatory three-frame agreement, versus
+  35/39 at zero tolerance, while removing only one of the four known
+  cross-admissions. Agreement among usable readings remains a separate design
+  question; missing clocks and ambiguous frozen timers must not automatically
+  count as contradictions. The [comparison](./design/audits/clock-tolerance-2026-09-12.md#follow-up-require-agreement-across-frames)
+  records the cases and experimental semantics. Production remains unchanged;
+  this direction did not authorize a global zero-tolerance rollout.
+- **Broader review (September 12 UTC):** A
+  [fourteen-date screen and eight preselected original clips](./design/audits/clock-tolerance-broader-review-2026-09-12.md)
+  show why strict timing is a tradeoff. Three goal-footage main-timer controls
+  reject at zero; two non-goal sequences and a sideline-reaction cut also
+  reject. Sancet retains an exact later sample despite its earlier stored
+  minute. Farrington's visible `29:53` conflicts with its stored minute 25 and
+  source attribution; cause remains unresolved. These are agent-read controls,
+  not recovered OCR or population correctness rates. FF-093 prevents a faithful
+  older accepted-candidate replay; FF-094 independently bypasses minute checks
+  for some running-clock/added-label inputs. Fix that parser defect and retain
+  evidence before deciding a global allowance change. No production change.
+- **FF-094 prompt benchmark (September 15):** The
+  [fixed-image comparison](./design/audits/clock-normalization-implementation-2026-09-15.md#fixed-image-prompt-test)
+  avoids invented secondary timers on the two original allowance examples but
+  both prompts invent a bare `35` on a Farrington frame with no visible clock.
+  Both also classify a graphics-only vendor scorebug diagram as soccer.
+  Neither is a new production incident; they show remaining transcription and
+  content-gate limits. Farrington remains rejected; no additional policy change.
+- **Barcelona recovery and period-label benchmark (September 17):** The
+  [52-call comparison](./design/audits/period-label-recognition-2026-09-17.md)
+  confirms that Jesus's wrong-fixture clip passed on accurate 77:xx timing,
+  while Yamal's earlier 44:xx penalty miss was soft-kept for his 89′ goal
+  through an unlabelled half-relative fallback. Neither was a dedup replacement
+  or OCR-time error. Experimental role wording distinguishes several ordinal,
+  superscript and P/p labels from allowances, but still reads `1re` as `ET1`.
+  Require positive evidence for half-relative offsets; validate label recognition
+  independently of added-time composition. The benchmark itself changed no
+  runtime policy; the implementation below is a separate approved step.
+- **Unsupported-offset fix (September 17):** Implemented locally, not deployed.
+  `vision-evaluate-v3` removes hypothetical H2/ET1/ET2 offsets for unlabelled
+  clocks. Yamal's correct 44:xx reading now rejects for his 89′ goal. Explicit
+  reset clocks, continuous clocks and added-time handling remain supported;
+  no experimental period prompt or schema change. The
+  [decision](./decisions/2026-09-17-relative-clocks-require-visible-period.md)
+  and [replay](./design/audits/period-label-recognition-2026-09-17.md#implementation-follow-up)
+  record tests, evidence limits and the tradeoff for unreadable half labels.
+  Jesus's wrong-fixture admission remains unresolved. Old acceptances and
+  exact-byte reuse are unchanged; existing public clips need separate repair.
 - **Constraints:** Keep event-scoped perceptual dedup; fixture-scoped exact or
   fuzzy uniqueness would incorrectly reject a goal-plus-card sequence,
   compilation, or another genuine multi-event clip. Do not implement
@@ -1182,8 +1324,9 @@ the current branch.
   supports them; ambiguous candidates need an explicit confidence/fallback
   policy rather than forced exclusive ownership. Preserve the Lens, Gordon,
   and Lee Kang-in assets as three distinct regression classes.
-- **Rollout:** Design work only; this did not block the 2026-08-17 correctness
-  and lifecycle release.
+- **Rollout:** Broader semantic validation remains design work. The September
+  17 offset fix awaits separate production approval; it performs no historical
+  media removal or revalidation. This issue did not block the August 17 release.
 - **Source relation:** Cross-event dedup was discussed and rejected on
   2026-07-25. The 2026-08-17 audit preserves FF-003's architectural evidence;
   the two 2026-08-19 meme samples expand its scope from no-clock attribution

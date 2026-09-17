@@ -123,14 +123,24 @@ func Evaluate(frames []FrameObservation, exp Expected, tol int) Evaluation {
 	}
 	ev.ClockReadings = readings
 
-	softKeep := false
+	softKeep, unpinned, boundaryContradiction, hasExact := false, false, false, false
 	for _, reading := range readings {
 		if reading.Ambiguous {
 			softKeep = true
 			continue
 		}
 		periodPinned := reading.PeriodPinned || reading.Stoppage
+		if reading.Stoppage && !reading.ExactMinute && reading.Period == expectedPeriod {
+			// This is a lower bound, not a measured minute. It cannot verify
+			// any stoppage event or erase an incompatible running clock.
+			unpinned = true
+			boundaryContradiction = boundaryContradiction || expectedMinute+tol < reading.Minute
+			continue
+		}
+		hasExact = hasExact || reading.ExactMinute
 
+		// Period offsets come from observed labels in the parser. The API target
+		// cannot rescue a wrong clock by suggesting a missing half.
 		// Candidate 1 — direct: right period AND within ±tol. Exact boundary
 		// clocks may carry a second parser-supported convention; both remain
 		// visual evidence, while the API only selects which one matches.
@@ -145,13 +155,7 @@ func Evaluate(frames []FrameObservation, exp Expected, tol int) Evaluation {
 				}
 			}
 		}
-		// Candidate 2 — frozen boundary, no sub-timer to pin the exact
-		// stoppage minute, but the right period's stoppage: accept on
-		// period alone (two goals in one stoppage window are ~never confused).
-		if reading.Stoppage && !reading.ExactMinute && expectedStoppage && reading.Period == expectedPeriod {
-			return ev.verify(reading.Minute, "frozen-boundary stoppage, period match (minute unpinned)")
-		}
-		// Candidate 3 — OCR leading-digit rebase: the model dropped the
+		// Candidate 2 — OCR leading-digit rebase: the model dropped the
 		// leading digit of a stoppage clock ("92:36"→"02:36"); api elapsed
 		// IS the dropped base. Only when the API expects stoppage and the
 		// scorebug did not explicitly identify a conflicting period.
@@ -172,21 +176,21 @@ func Evaluate(frames []FrameObservation, exp Expected, tol int) Evaluation {
 				}
 			}
 		}
-		// A bare low clock can be a reset-per-period display. The API expectation
-		// may reveal that interpretation, but without a visible period it is not
-		// strong enough to VERIFY the clip. Preserve it in the unverified pool.
-		if !periodPinned && relativeClockCouldMatch(reading.Minute, expectedPeriod, expectedMinute, tol) {
-			softKeep = true
-		}
 	}
 
 	switch {
 	case len(readings) == 0:
 		ev.Outcome = OutcomeUnverified
 		ev.Reason = "no clock visible"
+	case boundaryContradiction:
+		ev.Outcome = OutcomeRejected
+		ev.Reason = "frozen period boundary is later than expected window"
 	case softKeep:
 		ev.Outcome = OutcomeUnverified
 		ev.Reason = "clock interpretation ambiguous — kept, not clock-verified"
+	case unpinned && !hasExact:
+		ev.Outcome = OutcomeUnverified
+		ev.Reason = "frozen boundary with no elapsed timer — minute unverified"
 	default:
 		ev.Outcome = OutcomeRejected
 		ev.Reason = "clock present but does not match expected (wrong minute or wrong half)"
@@ -214,27 +218,9 @@ func possibleMinutes(reading ClockReading) []int {
 	return minutes
 }
 
+// isPeriodBoundary recognizes regulation and extra-time ending minutes.
 func isPeriodBoundary(minute int) bool {
 	return minute == 45 || minute == 90 || minute == 105 || minute == 120
-}
-
-// relativeClockCouldMatch reports whether a clock with no period evidence has
-// a plausible reset-per-period interpretation matching the expected event.
-// It is deliberately a soft-keep signal only; API context cannot manufacture
-// the visual evidence required for a verified verdict.
-func relativeClockCouldMatch(displayed int, period Period, expected, tol int) bool {
-	match := func(candidate int) bool { return abs(candidate-expected) <= tol }
-	switch period {
-	case PeriodSecondHalf:
-		return displayed < 45 && match(45+displayed)
-	case PeriodExtraFirst:
-		return displayed <= 15 && match(90+displayed)
-	case PeriodExtraSecond:
-		return (displayed <= 15 && match(105+displayed)) ||
-			(displayed <= 30 && match(90+displayed))
-	default:
-		return false
-	}
 }
 
 // verify is a small helper to set the verified outcome + matched minute.
@@ -245,6 +231,7 @@ func (ev Evaluation) verify(minute int, reason string) Evaluation {
 	return ev
 }
 
+// abs measures the distance between completed clock minutes.
 func abs(n int) int {
 	if n < 0 {
 		return -n

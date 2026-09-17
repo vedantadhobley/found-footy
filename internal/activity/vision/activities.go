@@ -114,6 +114,7 @@ func (a *Activities) ValidateClip(ctx context.Context, in ValidateClipInput) (Va
 	}
 
 	ev := dvision.Evaluate(vr.Frames, dvision.Expected{Elapsed: in.APIElapsed, Extra: in.APIExtra}, a.Cfg.ToleranceMinutes)
+	out.Evaluator = dvision.EvaluatorVersion
 	out.Outcome = string(ev.Outcome)
 	out.MatchedMinute = ev.MatchedMinute
 	out.Reason = ev.Reason

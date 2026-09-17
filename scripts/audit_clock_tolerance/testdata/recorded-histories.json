@@ -1,0 +1,5460 @@
+[
+  {
+    "Source": "scratch-audit-2026-09-11/ff092-history/25d3d39e-06fc-4f3c-8013-84f0de3cdf25.json",
+    "SHA256": "aa61960ee34f389c06fab334c7806564a99dfd2835606e51169daa7a228f0e69",
+    "RunID": "25d3d39e-06fc-4f3c-8013-84f0de3cdf25",
+    "Context": {
+      "event_id": "6330425f-c49f-4799-8f3b-02895e35d824",
+      "fixture_id": 1575164,
+      "player_name": "Robin Gosens",
+      "team_name": "FC Schalke 04"
+    },
+    "Scheduled": 2,
+    "Observations": [
+      {
+        "ScheduleID": "186",
+        "Input": {
+          "EventID": "6330425f-c49f-4799-8f3b-02895e35d824",
+          "FixtureID": 1575164,
+          "StagingKey": "staging/1575164/6330425f-c49f-4799-8f3b-02895e35d824/2098485870990877178.mp4",
+          "APIElapsed": 25,
+          "APIExtra": 0
+        },
+        "Output": {
+          "Outcome": "verified",
+          "Reason": "clock matches minute+period",
+          "MatchedMinute": 24,
+          "Frames": [
+            {
+              "soccer": true,
+              "screen": false,
+              "clock": "24:00",
+              "period": null,
+              "added": null,
+              "stoppage_clock": null
+            },
+            {
+              "soccer": true,
+              "screen": false,
+              "clock": "24:02",
+              "period": null,
+              "added": null,
+              "stoppage_clock": null
+            },
+            {
+              "soccer": true,
+              "screen": false,
+              "clock": "24:04",
+              "period": null,
+              "added": null,
+              "stoppage_clock": null
+            }
+          ]
+        }
+      },
+      {
+        "ScheduleID": "486",
+        "Input": {
+          "EventID": "6330425f-c49f-4799-8f3b-02895e35d824",
+          "FixtureID": 1575164,
+          "StagingKey": "staging/1575164/6330425f-c49f-4799-8f3b-02895e35d824/2098486563231477796.mp4",
+          "APIElapsed": 25,
+          "APIExtra": 0
+        },
+        "Output": {
+          "Outcome": "verified",
+          "Reason": "clock matches minute+period",
+          "MatchedMinute": 24,
+          "Frames": [
+            {
+              "soccer": true,
+              "screen": false,
+              "clock": "24:11",
+              "period": null,
+              "added": null,
+              "stoppage_clock": null
+            },
+            {
+              "soccer": true,
+              "screen": false,
+              "clock": "24:30",
+              "period": null,
+              "added": null,
+              "stoppage_clock": null
+            },
+            {
+              "soccer": true,
+              "screen": false,
+              "clock": "24:50",
+              "period": null,
+              "added": null,
+              "stoppage_clock": null
+            }
+          ]
+        }
+      }
+    ]
+  },
+  {
+    "Source": "scratch-audit-2026-09-11/ff092-history/43ba86e3-7be0-472b-94e1-4b96d40da7d0.json",
+    "SHA256": "a17d849f22c492f97d22984e696a17820320598b202baa2ef619293ef44c3a1d",
+    "RunID": "43ba86e3-7be0-472b-94e1-4b96d40da7d0",
+    "Context": {
+      "event_id": "08f87009-edef-49e4-af2c-54658787a46f",
+      "fixture_id": 1550126,
+      "player_name": "A. Hainaut",
+      "team_name": "Venezia"
+    },
+    "Scheduled": 9,
+    "Observations": [
+      {
+        "ScheduleID": "276",
+        "Input": {
+          "EventID": "08f87009-edef-49e4-af2c-54658787a46f",
+          "FixtureID": 1550126,
+          "StagingKey": "staging/1550126/08f87009-edef-49e4-af2c-54658787a46f/2098510793616523397.mp4",
+          "APIElapsed": 86,
+          "APIExtra": 0
+        },
+        "Output": {
+          "Outcome": "verified",
+          "Reason": "clock matches minute+period",
+          "MatchedMinute": 85,
+          "Frames": [
+            {
+              "soccer": true,
+              "screen": false,
+              "clock": "85:22",
+              "period": null,
+              "added": null,
+              "stoppage_clock": null
+            },
+            {
+              "soccer": true,
+              "screen": false,
+              "clock": "85:25",
+              "period": null,
+              "added": null,
+              "stoppage_clock": null
+            },
+            {
+              "soccer": true,
+              "screen": false,
+              "clock": "85:28",
+              "period": null,
+              "added": null,
+              "stoppage_clock": null
+            }
+          ]
+        }
+      },
+      {
+        "ScheduleID": "239",
+        "Input": {
+          "EventID": "08f87009-edef-49e4-af2c-54658787a46f",
+          "FixtureID": 1550126,
+          "StagingKey": "staging/1550126/08f87009-edef-49e4-af2c-54658787a46f/2098510206401384635.mp4",
+          "APIElapsed": 86,
+          "APIExtra": 0
+        },
+        "Output": {
+          "Outcome": "rejected",
+          "Reason": "clock present but does not match expected (wrong minute or wrong half)",
+          "MatchedMinute": null,
+          "Frames": [
+            {
+              "soccer": true,
+              "screen": false,
+              "clock": "83:15",
+              "period": null,
+              "added": null,
+              "stoppage_clock": null
+            },
+            {
+              "soccer": true,
+              "screen": false,
+              "clock": "83:17",
+              "period": null,
+              "added": null,
+              "stoppage_clock": null
+            },
+            {
+              "soccer": true,
+              "screen": false,
+              "clock": "83:20",
+              "period": null,
+              "added": null,
+              "stoppage_clock": null
+            }
+          ]
+        }
+      },
+      {
+        "ScheduleID": "264",
+        "Input": {
+          "EventID": "08f87009-edef-49e4-af2c-54658787a46f",
+          "FixtureID": 1550126,
+          "StagingKey": "staging/1550126/08f87009-edef-49e4-af2c-54658787a46f/2098510294376931414.mp4",
+          "APIElapsed": 86,
+          "APIExtra": 0
+        },
+        "Output": {
+          "Outcome": "rejected",
+          "Reason": "clock present but does not match expected (wrong minute or wrong half)",
+          "MatchedMinute": null,
+          "Frames": [
+            {
+              "soccer": true,
+              "screen": false,
+              "clock": "83:13",
+              "period": null,
+              "added": null,
+              "stoppage_clock": null
+            },
+            {
+              "soccer": true,
+              "screen": false,
+              "clock": "83:15",
+              "period": null,
+              "added": null,
+              "stoppage_clock": null
+            },
+            {
+              "soccer": true,
+              "screen": false,
+              "clock": "83:18",
+              "period": null,
+              "added": null,
+              "stoppage_clock": null
+            }
+          ]
+        }
+      },
+      {
+        "ScheduleID": "543",
+        "Input": {
+          "EventID": "08f87009-edef-49e4-af2c-54658787a46f",
+          "FixtureID": 1550126,
+          "StagingKey": "staging/1550126/08f87009-edef-49e4-af2c-54658787a46f/2098510852689117474.mp4",
+          "APIElapsed": 86,
+          "APIExtra": 0
+        },
+        "Output": {
+          "Outcome": "rejected",
+          "Reason": "clock present but does not match expected (wrong minute or wrong half)",
+          "MatchedMinute": null,
+          "Frames": [
+            {
+              "soccer": true,
+              "screen": false,
+              "clock": "83:13",
+              "period": null,
+              "added": null,
+              "stoppage_clock": null
+            },
+            {
+              "soccer": true,
+              "screen": false,
+              "clock": "83:15",
+              "period": null,
+              "added": null,
+              "stoppage_clock": null
+            },
+            {
+              "soccer": true,
+              "screen": false,
+              "clock": "83:18",
+              "period": null,
+              "added": null,
+              "stoppage_clock": null
+            }
+          ]
+        }
+      },
+      {
+        "ScheduleID": "549",
+        "Input": {
+          "EventID": "08f87009-edef-49e4-af2c-54658787a46f",
+          "FixtureID": 1550126,
+          "StagingKey": "staging/1550126/08f87009-edef-49e4-af2c-54658787a46f/2098510866001895706.mp4",
+          "APIElapsed": 86,
+          "APIExtra": 0
+        },
+        "Output": {
+          "Outcome": "rejected",
+          "Reason": "clock present but does not match expected (wrong minute or wrong half)",
+          "MatchedMinute": null,
+          "Frames": [
+            {
+              "soccer": true,
+              "screen": false,
+              "clock": "83:15",
+              "period": null,
+              "added": null,
+              "stoppage_clock": null
+            },
+            {
+              "soccer": true,
+              "screen": false,
+              "clock": "83:17",
+              "period": null,
+              "added": null,
+              "stoppage_clock": null
+            },
+            {
+              "soccer": true,
+              "screen": false,
+              "clock": "83:20",
+              "period": null,
+              "added": null,
+              "stoppage_clock": null
+            }
+          ]
+        }
+      },
+      {
+        "ScheduleID": "766",
+        "Input": {
+          "EventID": "08f87009-edef-49e4-af2c-54658787a46f",
+          "FixtureID": 1550126,
+          "StagingKey": "staging/1550126/08f87009-edef-49e4-af2c-54658787a46f/2098511093043790262.mp4",
+          "APIElapsed": 86,
+          "APIExtra": 0
+        },
+        "Output": {
+          "Outcome": "rejected",
+          "Reason": "clock present but does not match expected (wrong minute or wrong half)",
+          "MatchedMinute": null,
+          "Frames": [
+            {
+              "soccer": true,
+              "screen": false,
+              "clock": "83:15",
+              "period": null,
+              "added": null,
+              "stoppage_clock": null
+            },
+            {
+              "soccer": true,
+              "screen": false,
+              "clock": "83:17",
+              "period": null,
+              "added": null,
+              "stoppage_clock": null
+            },
+            {
+              "soccer": true,
+              "screen": false,
+              "clock": "83:20",
+              "period": null,
+              "added": null,
+              "stoppage_clock": null
+            }
+          ]
+        }
+      },
+      {
+        "ScheduleID": "870",
+        "Input": {
+          "EventID": "08f87009-edef-49e4-af2c-54658787a46f",
+          "FixtureID": 1550126,
+          "StagingKey": "staging/1550126/08f87009-edef-49e4-af2c-54658787a46f/2098511148593410192.mp4",
+          "APIElapsed": 86,
+          "APIExtra": 0
+        },
+        "Output": {
+          "Outcome": "rejected",
+          "Reason": "clock present but does not match expected (wrong minute or wrong half)",
+          "MatchedMinute": null,
+          "Frames": [
+            {
+              "soccer": true,
+              "screen": false,
+              "clock": "83:15",
+              "period": null,
+              "added": null,
+              "stoppage_clock": null
+            },
+            {
+              "soccer": true,
+              "screen": false,
+              "clock": "83:17",
+              "period": null,
+              "added": null,
+              "stoppage_clock": null
+            },
+            {
+              "soccer": true,
+              "screen": false,
+              "clock": "83:20",
+              "period": null,
+              "added": null,
+              "stoppage_clock": null
+            }
+          ]
+        }
+      },
+      {
+        "ScheduleID": "1103",
+        "Input": {
+          "EventID": "08f87009-edef-49e4-af2c-54658787a46f",
+          "FixtureID": 1550126,
+          "StagingKey": "staging/1550126/08f87009-edef-49e4-af2c-54658787a46f/2098512502673768834.mp4",
+          "APIElapsed": 86,
+          "APIExtra": 0
+        },
+        "Output": {
+          "Outcome": "rejected",
+          "Reason": "clock present but does not match expected (wrong minute or wrong half)",
+          "MatchedMinute": null,
+          "Frames": [
+            {
+              "soccer": true,
+              "screen": false,
+              "clock": "83:19",
+              "period": null,
+              "added": null,
+              "stoppage_clock": null
+            },
+            {
+              "soccer": true,
+              "screen": false,
+              "clock": null,
+              "period": null,
+              "added": null,
+              "stoppage_clock": null
+            },
+            {
+              "soccer": true,
+              "screen": false,
+              "clock": null,
+              "period": null,
+              "added": null,
+              "stoppage_clock": null
+            }
+          ]
+        }
+      },
+      {
+        "ScheduleID": "1406",
+        "Input": {
+          "EventID": "08f87009-edef-49e4-af2c-54658787a46f",
+          "FixtureID": 1550126,
+          "StagingKey": "staging/1550126/08f87009-edef-49e4-af2c-54658787a46f/2098513182822167008.mp4",
+          "APIElapsed": 86,
+          "APIExtra": 0
+        },
+        "Output": {
+          "Outcome": "rejected",
+          "Reason": "clock present but does not match expected (wrong minute or wrong half)",
+          "MatchedMinute": null,
+          "Frames": [
+            {
+              "soccer": true,
+              "screen": false,
+              "clock": "28:01",
+              "period": null,
+              "added": null,
+              "stoppage_clock": null
+            },
+            {
+              "soccer": true,
+              "screen": false,
+              "clock": "28:02",
+              "period": null,
+              "added": null,
+              "stoppage_clock": null
+            },
+            {
+              "soccer": true,
+              "screen": false,
+              "clock": "28:04",
+              "period": null,
+              "added": null,
+              "stoppage_clock": null
+            }
+          ]
+        }
+      }
+    ]
+  },
+  {
+    "Source": "scratch-audit-2026-09-11/ff092-history/5028b90a-7fa2-4e1b-a082-3f199a1e1a99.json",
+    "SHA256": "ea7e814e1df4098f0e036ebf6fe3a5254aebee0d3e4332df26b49a84a0c7aa5f",
+    "RunID": "5028b90a-7fa2-4e1b-a082-3f199a1e1a99",
+    "Context": {
+      "event_id": "d7db1660-1055-4651-b3ef-75d4e6dc3ad3",
+      "fixture_id": 1550126,
+      "player_name": "F. Mastantuono",
+      "team_name": "Fiorentina"
+    },
+    "Scheduled": 9,
+    "Observations": [
+      {
+        "ScheduleID": "205",
+        "Input": {
+          "EventID": "d7db1660-1055-4651-b3ef-75d4e6dc3ad3",
+          "FixtureID": 1550126,
+          "StagingKey": "staging/1550126/d7db1660-1055-4651-b3ef-75d4e6dc3ad3/2098490937458450528.mp4",
+          "APIElapsed": 30,
+          "APIExtra": 0
+        },
+        "Output": {
+          "Outcome": "verified",
+          "Reason": "clock matches minute+period",
+          "MatchedMinute": 28,
+          "Frames": [
+            {
+              "soccer": true,
+              "screen": false,
+              "clock": "28:01",
+              "period": null,
+              "added": null,
+              "stoppage_clock": null
+            },
+            {
+              "soccer": true,
+              "screen": false,
+              "clock": "28:02",
+              "period": null,
+              "added": null,
+              "stoppage_clock": null
+            },
+            {
+              "soccer": true,
+              "screen": false,
+              "clock": "28:04",
+              "period": null,
+              "added": null,
+              "stoppage_clock": null
+            }
+          ]
+        }
+      },
+      {
+        "ScheduleID": "247",
+        "Input": {
+          "EventID": "d7db1660-1055-4651-b3ef-75d4e6dc3ad3",
+          "FixtureID": 1550126,
+          "StagingKey": "staging/1550126/d7db1660-1055-4651-b3ef-75d4e6dc3ad3/2098491102789767598.mp4",
+          "APIElapsed": 30,
+          "APIExtra": 0
+        },
+        "Output": {
+          "Outcome": "verified",
+          "Reason": "clock matches minute+period",
+          "MatchedMinute": 28,
+          "Frames": [
+            {
+              "soccer": true,
+              "screen": false,
+              "clock": "27:59",
+              "period": null,
+              "added": null,
+              "stoppage_clock": null
+            },
+            {
+              "soccer": true,
+              "screen": false,
+              "clock": "28:03",
+              "period": null,
+              "added": null,
+              "stoppage_clock": null
+            },
+            {
+              "soccer": true,
+              "screen": false,
+              "clock": "28:08",
+              "period": null,
+              "added": null,
+              "stoppage_clock": null
+            }
+          ]
+        }
+      },
+      {
+        "ScheduleID": "217",
+        "Input": {
+          "EventID": "d7db1660-1055-4651-b3ef-75d4e6dc3ad3",
+          "FixtureID": 1550126,
+          "StagingKey": "staging/1550126/d7db1660-1055-4651-b3ef-75d4e6dc3ad3/2098491069528785033.mp4",
+          "APIElapsed": 30,
+          "APIExtra": 0
+        },
+        "Output": {
+          "Outcome": "verified",
+          "Reason": "clock matches minute+period",
+          "MatchedMinute": 29,
+          "Frames": [
+            {
+              "soccer": true,
+              "screen": false,
+              "clock": "29:36",
+              "period": null,
+              "added": null,
+              "stoppage_clock": null
+            },
+            {
+              "soccer": true,
+              "screen": false,
+              "clock": "29:39",
+              "period": null,
+              "added": null,
+              "stoppage_clock": null
+            },
+            {
+              "soccer": true,
+              "screen": false,
+              "clock": "29:42",
+              "period": null,
+              "added": null,
+              "stoppage_clock": null
+            }
+          ]
+        }
+      },
+      {
+        "ScheduleID": "259",
+        "Input": {
+          "EventID": "d7db1660-1055-4651-b3ef-75d4e6dc3ad3",
+          "FixtureID": 1550126,
+          "StagingKey": "staging/1550126/d7db1660-1055-4651-b3ef-75d4e6dc3ad3/2098491021763964969.mp4",
+          "APIElapsed": 30,
+          "APIExtra": 0
+        },
+        "Output": {
+          "Outcome": "rejected",
+          "Reason": "clock present but does not match expected (wrong minute or wrong half)",
+          "MatchedMinute": null,
+          "Frames": [
+            {
+              "soccer": true,
+              "screen": false,
+              "clock": "21:24",
+              "period": null,
+              "added": null,
+              "stoppage_clock": null
+            },
+            {
+              "soccer": true,
+              "screen": false,
+              "clock": null,
+              "period": null,
+              "added": null,
+              "stoppage_clock": null
+            },
+            {
+              "soccer": true,
+              "screen": false,
+              "clock": null,
+              "period": null,
+              "added": null,
+              "stoppage_clock": null
+            }
+          ]
+        }
+      },
+      {
+        "ScheduleID": "578",
+        "Input": {
+          "EventID": "d7db1660-1055-4651-b3ef-75d4e6dc3ad3",
+          "FixtureID": 1550126,
+          "StagingKey": "staging/1550126/d7db1660-1055-4651-b3ef-75d4e6dc3ad3/2098491721390629348.mp4",
+          "APIElapsed": 30,
+          "APIExtra": 0
+        },
+        "Output": {
+          "Outcome": "verified",
+          "Reason": "clock matches minute+period",
+          "MatchedMinute": 29,
+          "Frames": [
+            {
+              "soccer": true,
+              "screen": false,
+              "clock": "29:39",
+              "period": null,
+              "added": null,
+              "stoppage_clock": null
+            },
+            {
+              "soccer": true,
+              "screen": false,
+              "clock": "29:41",
+              "period": null,
+              "added": null,
+              "stoppage_clock": null
+            },
+            {
+              "soccer": true,
+              "screen": false,
+              "clock": "29:43",
+              "period": null,
+              "added": null,
+              "stoppage_clock": null
+            }
+          ]
+        }
+      },
+      {
+        "ScheduleID": "792",
+        "Input": {
+          "EventID": "d7db1660-1055-4651-b3ef-75d4e6dc3ad3",
+          "FixtureID": 1550126,
+          "StagingKey": "staging/1550126/d7db1660-1055-4651-b3ef-75d4e6dc3ad3/2098492383193120829.mp4",
+          "APIElapsed": 30,
+          "APIExtra": 0
+        },
+        "Output": {
+          "Outcome": "verified",
+          "Reason": "clock matches minute+period",
+          "MatchedMinute": 28,
+          "Frames": [
+            {
+              "soccer": true,
+              "screen": false,
+              "clock": "28:04",
+              "period": null,
+              "added": null,
+              "stoppage_clock": null
+            },
+            {
+              "soccer": true,
+              "screen": false,
+              "clock": "29:39",
+              "period": null,
+              "added": null,
+              "stoppage_clock": null
+            },
+            {
+              "soccer": true,
+              "screen": false,
+              "clock": "29:42",
+              "period": null,
+              "added": null,
+              "stoppage_clock": null
+            }
+          ]
+        }
+      },
+      {
+        "ScheduleID": "1038",
+        "Input": {
+          "EventID": "d7db1660-1055-4651-b3ef-75d4e6dc3ad3",
+          "FixtureID": 1550126,
+          "StagingKey": "staging/1550126/d7db1660-1055-4651-b3ef-75d4e6dc3ad3/2098493056031010914.mp4",
+          "APIElapsed": 30,
+          "APIExtra": 0
+        },
+        "Output": {
+          "Outcome": "verified",
+          "Reason": "clock matches minute+period",
+          "MatchedMinute": 28,
+          "Frames": [
+            {
+              "soccer": true,
+              "screen": false,
+              "clock": "28:04",
+              "period": null,
+              "added": null,
+              "stoppage_clock": null
+            },
+            {
+              "soccer": true,
+              "screen": false,
+              "clock": "29:39",
+              "period": null,
+              "added": null,
+              "stoppage_clock": null
+            },
+            {
+              "soccer": true,
+              "screen": false,
+              "clock": "29:42",
+              "period": null,
+              "added": null,
+              "stoppage_clock": null
+            }
+          ]
+        }
+      },
+      {
+        "ScheduleID": "1101",
+        "Input": {
+          "EventID": "d7db1660-1055-4651-b3ef-75d4e6dc3ad3",
+          "FixtureID": 1550126,
+          "StagingKey": "staging/1550126/d7db1660-1055-4651-b3ef-75d4e6dc3ad3/2098493042252460353.mp4",
+          "APIElapsed": 30,
+          "APIExtra": 0
+        },
+        "Output": {
+          "Outcome": "unverified",
+          "Reason": "no clock visible",
+          "MatchedMinute": null,
+          "Frames": [
+            {
+              "soccer": true,
+              "screen": false,
+              "clock": null,
+              "period": null,
+              "added": null,
+              "stoppage_clock": null
+            },
+            {
+              "soccer": true,
+              "screen": false,
+              "clock": null,
+              "period": null,
+              "added": null,
+              "stoppage_clock": null
+            },
+            {
+              "soccer": true,
+              "screen": false,
+              "clock": null,
+              "period": null,
+              "added": null,
+              "stoppage_clock": null
+            }
+          ]
+        }
+      },
+      {
+        "ScheduleID": "1403",
+        "Input": {
+          "EventID": "d7db1660-1055-4651-b3ef-75d4e6dc3ad3",
+          "FixtureID": 1550126,
+          "StagingKey": "staging/1550126/d7db1660-1055-4651-b3ef-75d4e6dc3ad3/2098493684417233271.mp4",
+          "APIElapsed": 30,
+          "APIExtra": 0
+        },
+        "Output": {
+          "Outcome": "verified",
+          "Reason": "clock matches minute+period",
+          "MatchedMinute": 28,
+          "Frames": [
+            {
+              "soccer": true,
+              "screen": false,
+              "clock": "28:04",
+              "period": null,
+              "added": null,
+              "stoppage_clock": null
+            },
+            {
+              "soccer": true,
+              "screen": false,
+              "clock": "29:39",
+              "period": null,
+              "added": null,
+              "stoppage_clock": null
+            },
+            {
+              "soccer": true,
+              "screen": false,
+              "clock": "29:42",
+              "period": null,
+              "added": null,
+              "stoppage_clock": null
+            }
+          ]
+        }
+      }
+    ]
+  },
+  {
+    "Source": "scratch-audit-2026-09-11/ff092-history/5f2a76dd-2fe3-4321-bc59-c0c44c43e931.json",
+    "SHA256": "9d93ba1eb2217ad81162c0d34a376d4536e8d9e5cd036e031bb100ae55d688fd",
+    "RunID": "5f2a76dd-2fe3-4321-bc59-c0c44c43e931",
+    "Context": {
+      "event_id": "3a75ddd9-1d37-4b81-b47b-d3fdd56440ba",
+      "fixture_id": 1575164,
+      "player_name": "Tim Skarke",
+      "team_name": "Union Berlin"
+    },
+    "Scheduled": 4,
+    "Observations": [
+      {
+        "ScheduleID": "192",
+        "Input": {
+          "EventID": "3a75ddd9-1d37-4b81-b47b-d3fdd56440ba",
+          "FixtureID": 1575164,
+          "StagingKey": "staging/1575164/3a75ddd9-1d37-4b81-b47b-d3fdd56440ba/2098508862764556394.mp4",
+          "APIElapsed": 90,
+          "APIExtra": 6
+        },
+        "Output": {
+          "Outcome": "verified",
+          "Reason": "clock matches minute+period",
+          "MatchedMinute": 95,
+          "Frames": [
+            {
+              "soccer": true,
+              "screen": false,
+              "clock": "90:00",
+              "period": null,
+              "added": null,
+              "stoppage_clock": null
+            },
+            {
+              "soccer": true,
+              "screen": false,
+              "clock": "90:00",
+              "period": null,
+              "added": "+12",
+              "stoppage_clock": "5:43"
+            },
+            {
+              "soccer": true,
+              "screen": false,
+              "clock": "90:00",
+              "period": null,
+              "added": "+12",
+              "stoppage_clock": "5:56"
+            }
+          ]
+        }
+      },
+      {
+        "ScheduleID": "468",
+        "Input": {
+          "EventID": "3a75ddd9-1d37-4b81-b47b-d3fdd56440ba",
+          "FixtureID": 1575164,
+          "StagingKey": "staging/1575164/3a75ddd9-1d37-4b81-b47b-d3fdd56440ba/2098510031964524719.mp4",
+          "APIElapsed": 90,
+          "APIExtra": 6
+        },
+        "Output": {
+          "Outcome": "rejected",
+          "Reason": "clock present but does not match expected (wrong minute or wrong half)",
+          "MatchedMinute": null,
+          "Frames": [
+            {
+              "soccer": true,
+              "screen": false,
+              "clock": "12:08",
+              "period": null,
+              "added": "+2",
+              "stoppage_clock": "00:00"
+            },
+            {
+              "soccer": true,
+              "screen": false,
+              "clock": "12:11",
+              "period": null,
+              "added": "+2",
+              "stoppage_clock": "00:00"
+            },
+            {
+              "soccer": true,
+              "screen": false,
+              "clock": "12:14",
+              "period": null,
+              "added": "+2",
+              "stoppage_clock": "00:00"
+            }
+          ]
+        }
+      },
+      {
+        "ScheduleID": "592",
+        "Input": {
+          "EventID": "3a75ddd9-1d37-4b81-b47b-d3fdd56440ba",
+          "FixtureID": 1575164,
+          "StagingKey": "staging/1575164/3a75ddd9-1d37-4b81-b47b-d3fdd56440ba/2098510636481179659.mp4",
+          "APIElapsed": 90,
+          "APIExtra": 6
+        },
+        "Output": {
+          "Outcome": "rejected",
+          "Reason": "clock present but does not match expected (wrong minute or wrong half)",
+          "MatchedMinute": null,
+          "Frames": [
+            {
+              "soccer": true,
+              "screen": false,
+              "clock": "12:08",
+              "period": null,
+              "added": "+12",
+              "stoppage_clock": "90:00"
+            },
+            {
+              "soccer": true,
+              "screen": false,
+              "clock": "12:11",
+              "period": null,
+              "added": "+12",
+              "stoppage_clock": "90:00"
+            },
+            {
+              "soccer": true,
+              "screen": false,
+              "clock": "12:14",
+              "period": null,
+              "added": "+12",
+              "stoppage_clock": "90:00"
+            }
+          ]
+        }
+      },
+      {
+        "ScheduleID": "675",
+        "Input": {
+          "EventID": "3a75ddd9-1d37-4b81-b47b-d3fdd56440ba",
+          "FixtureID": 1575164,
+          "StagingKey": "staging/1575164/3a75ddd9-1d37-4b81-b47b-d3fdd56440ba/2098511166830006769.mp4",
+          "APIElapsed": 90,
+          "APIExtra": 6
+        },
+        "Output": {
+          "Outcome": "rejected",
+          "Reason": "clock present but does not match expected (wrong minute or wrong half)",
+          "MatchedMinute": null,
+          "Frames": [
+            {
+              "soccer": true,
+              "screen": false,
+              "clock": "90:00",
+              "period": null,
+              "added": null,
+              "stoppage_clock": null
+            },
+            {
+              "soccer": true,
+              "screen": false,
+              "clock": "12:43",
+              "period": null,
+              "added": "+12",
+              "stoppage_clock": "12:43"
+            },
+            {
+              "soccer": true,
+              "screen": false,
+              "clock": "13:04",
+              "period": null,
+              "added": "+12",
+              "stoppage_clock": "13:04"
+            }
+          ]
+        }
+      }
+    ]
+  },
+  {
+    "Source": "scratch-audit-2026-09-11/ff092-history/73c6aaa0-c06a-4a5b-88f4-90fda89f5bed.json",
+    "SHA256": "04b8b3d029eadd7c553d820bcb63eafd900f0bc9c33ff0155d11b9b34a2d02c2",
+    "RunID": "73c6aaa0-c06a-4a5b-88f4-90fda89f5bed",
+    "Context": {
+      "event_id": "af01516f-a61e-42b9-8a44-bd7af21e93d4",
+      "fixture_id": 1550126,
+      "player_name": "M. Pellegrino",
+      "team_name": "Fiorentina"
+    },
+    "Scheduled": 7,
+    "Observations": [
+      {
+        "ScheduleID": "152",
+        "Input": {
+          "EventID": "af01516f-a61e-42b9-8a44-bd7af21e93d4",
+          "FixtureID": 1550126,
+          "StagingKey": "staging/1550126/af01516f-a61e-42b9-8a44-bd7af21e93d4/2098505869595992255.mp4",
+          "APIElapsed": 66,
+          "APIExtra": 0
+        },
+        "Output": {
+          "Outcome": "verified",
+          "Reason": "clock matches minute+period",
+          "MatchedMinute": 65,
+          "Frames": [
+            {
+              "soccer": true,
+              "screen": false,
+              "clock": "65:43",
+              "period": null,
+              "added": null,
+              "stoppage_clock": null
+            },
+            {
+              "soccer": true,
+              "screen": false,
+              "clock": "65:44",
+              "period": null,
+              "added": null,
+              "stoppage_clock": null
+            },
+            {
+              "soccer": true,
+              "screen": false,
+              "clock": "65:46",
+              "period": null,
+              "added": null,
+              "stoppage_clock": null
+            }
+          ]
+        }
+      },
+      {
+        "ScheduleID": "292",
+        "Input": {
+          "EventID": "af01516f-a61e-42b9-8a44-bd7af21e93d4",
+          "FixtureID": 1550126,
+          "StagingKey": "staging/1550126/af01516f-a61e-42b9-8a44-bd7af21e93d4/2098506165575471596.mp4",
+          "APIElapsed": 66,
+          "APIExtra": 0
+        },
+        "Output": {
+          "Outcome": "verified",
+          "Reason": "clock matches minute+period",
+          "MatchedMinute": 65,
+          "Frames": [
+            {
+              "soccer": true,
+              "screen": false,
+              "clock": "65:45",
+              "period": null,
+              "added": null,
+              "stoppage_clock": null
+            },
+            {
+              "soccer": true,
+              "screen": false,
+              "clock": "65:48",
+              "period": null,
+              "added": null,
+              "stoppage_clock": null
+            },
+            {
+              "soccer": true,
+              "screen": false,
+              "clock": "65:50",
+              "period": null,
+              "added": null,
+              "stoppage_clock": null
+            }
+          ]
+        }
+      },
+      {
+        "ScheduleID": "487",
+        "Input": {
+          "EventID": "af01516f-a61e-42b9-8a44-bd7af21e93d4",
+          "FixtureID": 1550126,
+          "StagingKey": "staging/1550126/af01516f-a61e-42b9-8a44-bd7af21e93d4/2098506533025861792.mp4",
+          "APIElapsed": 66,
+          "APIExtra": 0
+        },
+        "Output": {
+          "Outcome": "unverified",
+          "Reason": "no clock visible",
+          "MatchedMinute": null,
+          "Frames": [
+            {
+              "soccer": true,
+              "screen": false,
+              "clock": null,
+              "period": null,
+              "added": null,
+              "stoppage_clock": null
+            },
+            {
+              "soccer": true,
+              "screen": false,
+              "clock": null,
+              "period": null,
+              "added": null,
+              "stoppage_clock": null
+            },
+            {
+              "soccer": true,
+              "screen": false,
+              "clock": null,
+              "period": null,
+              "added": null,
+              "stoppage_clock": null
+            }
+          ]
+        }
+      },
+      {
+        "ScheduleID": "597",
+        "Input": {
+          "EventID": "af01516f-a61e-42b9-8a44-bd7af21e93d4",
+          "FixtureID": 1550126,
+          "StagingKey": "staging/1550126/af01516f-a61e-42b9-8a44-bd7af21e93d4/2098506964900909492.mp4",
+          "APIElapsed": 66,
+          "APIExtra": 0
+        },
+        "Output": {
+          "Outcome": "rejected",
+          "Reason": "clock present but does not match expected (wrong minute or wrong half)",
+          "MatchedMinute": null,
+          "Frames": [
+            {
+              "soccer": true,
+              "screen": false,
+              "clock": "28:04",
+              "period": null,
+              "added": null,
+              "stoppage_clock": null
+            },
+            {
+              "soccer": true,
+              "screen": false,
+              "clock": "29:39",
+              "period": null,
+              "added": null,
+              "stoppage_clock": null
+            },
+            {
+              "soccer": true,
+              "screen": false,
+              "clock": "29:42",
+              "period": null,
+              "added": null,
+              "stoppage_clock": null
+            }
+          ]
+        }
+      },
+      {
+        "ScheduleID": "737",
+        "Input": {
+          "EventID": "af01516f-a61e-42b9-8a44-bd7af21e93d4",
+          "FixtureID": 1550126,
+          "StagingKey": "staging/1550126/af01516f-a61e-42b9-8a44-bd7af21e93d4/2098507045200605478.mp4",
+          "APIElapsed": 66,
+          "APIExtra": 0
+        },
+        "Output": {
+          "Outcome": "rejected",
+          "Reason": "clock present but does not match expected (wrong minute or wrong half)",
+          "MatchedMinute": null,
+          "Frames": [
+            {
+              "soccer": true,
+              "screen": false,
+              "clock": "28:04",
+              "period": null,
+              "added": null,
+              "stoppage_clock": null
+            },
+            {
+              "soccer": true,
+              "screen": false,
+              "clock": "29:39",
+              "period": null,
+              "added": null,
+              "stoppage_clock": null
+            },
+            {
+              "soccer": true,
+              "screen": false,
+              "clock": "29:42",
+              "period": null,
+              "added": null,
+              "stoppage_clock": null
+            }
+          ]
+        }
+      },
+      {
+        "ScheduleID": "897",
+        "Input": {
+          "EventID": "af01516f-a61e-42b9-8a44-bd7af21e93d4",
+          "FixtureID": 1550126,
+          "StagingKey": "staging/1550126/af01516f-a61e-42b9-8a44-bd7af21e93d4/2098507690846904701.mp4",
+          "APIElapsed": 66,
+          "APIExtra": 0
+        },
+        "Output": {
+          "Outcome": "rejected",
+          "Reason": "clock present but does not match expected (wrong minute or wrong half)",
+          "MatchedMinute": null,
+          "Frames": [
+            {
+              "soccer": true,
+              "screen": false,
+              "clock": "29:39",
+              "period": null,
+              "added": null,
+              "stoppage_clock": null
+            },
+            {
+              "soccer": true,
+              "screen": false,
+              "clock": "29:41",
+              "period": null,
+              "added": null,
+              "stoppage_clock": null
+            },
+            {
+              "soccer": true,
+              "screen": false,
+              "clock": "29:43",
+              "period": null,
+              "added": null,
+              "stoppage_clock": null
+            }
+          ]
+        }
+      },
+      {
+        "ScheduleID": "926",
+        "Input": {
+          "EventID": "af01516f-a61e-42b9-8a44-bd7af21e93d4",
+          "FixtureID": 1550126,
+          "StagingKey": "staging/1550126/af01516f-a61e-42b9-8a44-bd7af21e93d4/2098508043713392693.mp4",
+          "APIElapsed": 66,
+          "APIExtra": 0
+        },
+        "Output": {
+          "Outcome": "verified",
+          "Reason": "clock matches minute+period",
+          "MatchedMinute": 65,
+          "Frames": [
+            {
+              "soccer": true,
+              "screen": false,
+              "clock": "65:54",
+              "period": null,
+              "added": null,
+              "stoppage_clock": null
+            },
+            {
+              "soccer": true,
+              "screen": false,
+              "clock": null,
+              "period": null,
+              "added": null,
+              "stoppage_clock": null
+            },
+            {
+              "soccer": true,
+              "screen": false,
+              "clock": null,
+              "period": null,
+              "added": null,
+              "stoppage_clock": null
+            }
+          ]
+        }
+      }
+    ]
+  },
+  {
+    "Source": "scratch-audit-2026-09-11/ff092-history/7fd25070-3053-4e7b-9e65-72231844455a.json",
+    "SHA256": "ae40990a38e96f002e4495501fda773a8a2d1e1bc42258f94b3bce93166cbcbb",
+    "RunID": "7fd25070-3053-4e7b-9e65-72231844455a",
+    "Context": {
+      "event_id": "d0a46df7-e3fc-4892-b748-ee584124f5de",
+      "fixture_id": 1550126,
+      "player_name": "F. Mastantuono",
+      "team_name": "Fiorentina"
+    },
+    "Scheduled": 11,
+    "Observations": [
+      {
+        "ScheduleID": "121",
+        "Input": {
+          "EventID": "d0a46df7-e3fc-4892-b748-ee584124f5de",
+          "FixtureID": 1550126,
+          "StagingKey": "staging/1550126/d0a46df7-e3fc-4892-b748-ee584124f5de/2098490393234931957.mp4",
+          "APIElapsed": 29,
+          "APIExtra": 0
+        },
+        "Output": {
+          "Outcome": "rejected",
+          "Reason": "clock present but does not match expected (wrong minute or wrong half)",
+          "MatchedMinute": null,
+          "Frames": [
+            {
+              "soccer": true,
+              "screen": false,
+              "clock": "21:15",
+              "period": null,
+              "added": null,
+              "stoppage_clock": null
+            },
+            {
+              "soccer": true,
+              "screen": false,
+              "clock": "21:17",
+              "period": null,
+              "added": null,
+              "stoppage_clock": null
+            },
+            {
+              "soccer": true,
+              "screen": false,
+              "clock": "21:20",
+              "period": null,
+              "added": null,
+              "stoppage_clock": null
+            }
+          ]
+        }
+      },
+      {
+        "ScheduleID": "252",
+        "Input": {
+          "EventID": "d0a46df7-e3fc-4892-b748-ee584124f5de",
+          "FixtureID": 1550126,
+          "StagingKey": "staging/1550126/d0a46df7-e3fc-4892-b748-ee584124f5de/2098490782982218060.mp4",
+          "APIElapsed": 29,
+          "APIExtra": 0
+        },
+        "Output": {
+          "Outcome": "verified",
+          "Reason": "clock matches minute+period",
+          "MatchedMinute": 27,
+          "Frames": [
+            {
+              "soccer": true,
+              "screen": false,
+              "clock": "27:59",
+              "period": null,
+              "added": null,
+              "stoppage_clock": null
+            },
+            {
+              "soccer": true,
+              "screen": false,
+              "clock": "28:03",
+              "period": null,
+              "added": null,
+              "stoppage_clock": null
+            },
+            {
+              "soccer": true,
+              "screen": false,
+              "clock": "28:08",
+              "period": null,
+              "added": null,
+              "stoppage_clock": null
+            }
+          ]
+        }
+      },
+      {
+        "ScheduleID": "240",
+        "Input": {
+          "EventID": "d0a46df7-e3fc-4892-b748-ee584124f5de",
+          "FixtureID": 1550126,
+          "StagingKey": "staging/1550126/d0a46df7-e3fc-4892-b748-ee584124f5de/2098490428068634977.mp4",
+          "APIElapsed": 29,
+          "APIExtra": 0
+        },
+        "Output": {
+          "Outcome": "rejected",
+          "Reason": "clock present but does not match expected (wrong minute or wrong half)",
+          "MatchedMinute": null,
+          "Frames": [
+            {
+              "soccer": true,
+              "screen": false,
+              "clock": "21:14",
+              "period": null,
+              "added": null,
+              "stoppage_clock": null
+            },
+            {
+              "soccer": true,
+              "screen": false,
+              "clock": "21:16",
+              "period": null,
+              "added": null,
+              "stoppage_clock": "1:17"
+            },
+            {
+              "soccer": true,
+              "screen": false,
+              "clock": "21:18",
+              "period": null,
+              "added": null,
+              "stoppage_clock": "21:19"
+            }
+          ]
+        }
+      },
+      {
+        "ScheduleID": "477",
+        "Input": {
+          "EventID": "d0a46df7-e3fc-4892-b748-ee584124f5de",
+          "FixtureID": 1550126,
+          "StagingKey": "staging/1550126/d0a46df7-e3fc-4892-b748-ee584124f5de/2098491069528785033.mp4",
+          "APIElapsed": 29,
+          "APIExtra": 0
+        },
+        "Output": {
+          "Outcome": "verified",
+          "Reason": "clock matches minute+period",
+          "MatchedMinute": 29,
+          "Frames": [
+            {
+              "soccer": true,
+              "screen": false,
+              "clock": "29:36",
+              "period": null,
+              "added": null,
+              "stoppage_clock": null
+            },
+            {
+              "soccer": true,
+              "screen": false,
+              "clock": "29:39",
+              "period": null,
+              "added": null,
+              "stoppage_clock": null
+            },
+            {
+              "soccer": true,
+              "screen": false,
+              "clock": "29:42",
+              "period": null,
+              "added": null,
+              "stoppage_clock": null
+            }
+          ]
+        }
+      },
+      {
+        "ScheduleID": "483",
+        "Input": {
+          "EventID": "d0a46df7-e3fc-4892-b748-ee584124f5de",
+          "FixtureID": 1550126,
+          "StagingKey": "staging/1550126/d0a46df7-e3fc-4892-b748-ee584124f5de/2098491021763964969.mp4",
+          "APIElapsed": 29,
+          "APIExtra": 0
+        },
+        "Output": {
+          "Outcome": "rejected",
+          "Reason": "clock present but does not match expected (wrong minute or wrong half)",
+          "MatchedMinute": null,
+          "Frames": [
+            {
+              "soccer": true,
+              "screen": false,
+              "clock": "21:24",
+              "period": null,
+              "added": null,
+              "stoppage_clock": null
+            },
+            {
+              "soccer": true,
+              "screen": false,
+              "clock": null,
+              "period": null,
+              "added": null,
+              "stoppage_clock": null
+            },
+            {
+              "soccer": true,
+              "screen": false,
+              "clock": null,
+              "period": null,
+              "added": null,
+              "stoppage_clock": null
+            }
+          ]
+        }
+      },
+      {
+        "ScheduleID": "681",
+        "Input": {
+          "EventID": "d0a46df7-e3fc-4892-b748-ee584124f5de",
+          "FixtureID": 1550126,
+          "StagingKey": "staging/1550126/d0a46df7-e3fc-4892-b748-ee584124f5de/2098491499054845989.mp4",
+          "APIElapsed": 29,
+          "APIExtra": 0
+        },
+        "Output": {
+          "Outcome": "verified",
+          "Reason": "clock matches minute+period",
+          "MatchedMinute": 29,
+          "Frames": [
+            {
+              "soccer": true,
+              "screen": false,
+              "clock": "29:39",
+              "period": null,
+              "added": null,
+              "stoppage_clock": null
+            },
+            {
+              "soccer": true,
+              "screen": false,
+              "clock": "29:41",
+              "period": null,
+              "added": null,
+              "stoppage_clock": null
+            },
+            {
+              "soccer": true,
+              "screen": false,
+              "clock": "29:43",
+              "period": null,
+              "added": null,
+              "stoppage_clock": null
+            }
+          ]
+        }
+      },
+      {
+        "ScheduleID": "964",
+        "Input": {
+          "EventID": "d0a46df7-e3fc-4892-b748-ee584124f5de",
+          "FixtureID": 1550126,
+          "StagingKey": "staging/1550126/d0a46df7-e3fc-4892-b748-ee584124f5de/2098491598120071467.mp4",
+          "APIElapsed": 29,
+          "APIExtra": 0
+        },
+        "Output": {
+          "Outcome": "verified",
+          "Reason": "clock matches minute+period",
+          "MatchedMinute": 28,
+          "Frames": [
+            {
+              "soccer": true,
+              "screen": false,
+              "clock": "28:01",
+              "period": null,
+              "added": null,
+              "stoppage_clock": null
+            },
+            {
+              "soccer": true,
+              "screen": false,
+              "clock": "28:02",
+              "period": null,
+              "added": null,
+              "stoppage_clock": null
+            },
+            {
+              "soccer": true,
+              "screen": false,
+              "clock": "28:04",
+              "period": null,
+              "added": null,
+              "stoppage_clock": null
+            }
+          ]
+        }
+      },
+      {
+        "ScheduleID": "1216",
+        "Input": {
+          "EventID": "d0a46df7-e3fc-4892-b748-ee584124f5de",
+          "FixtureID": 1550126,
+          "StagingKey": "staging/1550126/d0a46df7-e3fc-4892-b748-ee584124f5de/2098492383193120829.mp4",
+          "APIElapsed": 29,
+          "APIExtra": 0
+        },
+        "Output": {
+          "Outcome": "verified",
+          "Reason": "clock matches minute+period",
+          "MatchedMinute": 28,
+          "Frames": [
+            {
+              "soccer": true,
+              "screen": false,
+              "clock": "28:04",
+              "period": null,
+              "added": null,
+              "stoppage_clock": null
+            },
+            {
+              "soccer": true,
+              "screen": false,
+              "clock": "29:39",
+              "period": null,
+              "added": null,
+              "stoppage_clock": null
+            },
+            {
+              "soccer": true,
+              "screen": false,
+              "clock": "29:42",
+              "period": null,
+              "added": null,
+              "stoppage_clock": null
+            }
+          ]
+        }
+      },
+      {
+        "ScheduleID": "1547",
+        "Input": {
+          "EventID": "d0a46df7-e3fc-4892-b748-ee584124f5de",
+          "FixtureID": 1550126,
+          "StagingKey": "staging/1550126/d0a46df7-e3fc-4892-b748-ee584124f5de/2098492462947799423.mp4",
+          "APIElapsed": 29,
+          "APIExtra": 0
+        },
+        "Output": {
+          "Outcome": "verified",
+          "Reason": "clock matches minute+period",
+          "MatchedMinute": 28,
+          "Frames": [
+            {
+              "soccer": true,
+              "screen": false,
+              "clock": "28:08",
+              "period": null,
+              "added": null,
+              "stoppage_clock": null
+            },
+            {
+              "soccer": true,
+              "screen": false,
+              "clock": "29:25",
+              "period": null,
+              "added": null,
+              "stoppage_clock": null
+            },
+            {
+              "soccer": true,
+              "screen": false,
+              "clock": "29:41",
+              "period": null,
+              "added": null,
+              "stoppage_clock": null
+            }
+          ]
+        }
+      },
+      {
+        "ScheduleID": "1848",
+        "Input": {
+          "EventID": "d0a46df7-e3fc-4892-b748-ee584124f5de",
+          "FixtureID": 1550126,
+          "StagingKey": "staging/1550126/d0a46df7-e3fc-4892-b748-ee584124f5de/2098493563822838100.mp4",
+          "APIElapsed": 29,
+          "APIExtra": 0
+        },
+        "Output": {
+          "Outcome": "verified",
+          "Reason": "clock matches minute+period",
+          "MatchedMinute": 28,
+          "Frames": [
+            {
+              "soccer": true,
+              "screen": false,
+              "clock": "28:04",
+              "period": null,
+              "added": null,
+              "stoppage_clock": null
+            },
+            {
+              "soccer": true,
+              "screen": false,
+              "clock": "29:39",
+              "period": null,
+              "added": null,
+              "stoppage_clock": null
+            },
+            {
+              "soccer": true,
+              "screen": false,
+              "clock": "29:42",
+              "period": null,
+              "added": null,
+              "stoppage_clock": null
+            }
+          ]
+        }
+      },
+      {
+        "ScheduleID": "2084",
+        "Input": {
+          "EventID": "d0a46df7-e3fc-4892-b748-ee584124f5de",
+          "FixtureID": 1550126,
+          "StagingKey": "staging/1550126/d0a46df7-e3fc-4892-b748-ee584124f5de/2098493684417233271.mp4",
+          "APIElapsed": 29,
+          "APIExtra": 0
+        },
+        "Output": {
+          "Outcome": "verified",
+          "Reason": "clock matches minute+period",
+          "MatchedMinute": 28,
+          "Frames": [
+            {
+              "soccer": true,
+              "screen": false,
+              "clock": "28:04",
+              "period": null,
+              "added": null,
+              "stoppage_clock": null
+            },
+            {
+              "soccer": true,
+              "screen": false,
+              "clock": "29:39",
+              "period": null,
+              "added": null,
+              "stoppage_clock": null
+            },
+            {
+              "soccer": true,
+              "screen": false,
+              "clock": "29:42",
+              "period": null,
+              "added": null,
+              "stoppage_clock": null
+            }
+          ]
+        }
+      }
+    ]
+  },
+  {
+    "Source": "scratch-audit-2026-09-11/ff092-history/88b1e247-ac91-4513-b5f8-dbfe0cca60e7.json",
+    "SHA256": "bb346461e29c75b95eda8913aaba3bce796255f303bc5d44751f5f81fe2a48e9",
+    "RunID": "88b1e247-ac91-4513-b5f8-dbfe0cca60e7",
+    "Context": {
+      "event_id": "182ce755-87ef-4fd5-9523-8b3ea7e9c8fc",
+      "fixture_id": 1550126,
+      "player_name": "A. Adams",
+      "team_name": "Venezia"
+    },
+    "Scheduled": 23,
+    "Observations": [
+      {
+        "ScheduleID": "140",
+        "Input": {
+          "EventID": "182ce755-87ef-4fd5-9523-8b3ea7e9c8fc",
+          "FixtureID": 1550126,
+          "StagingKey": "staging/1550126/182ce755-87ef-4fd5-9523-8b3ea7e9c8fc/2098488423149343141.mp4",
+          "APIElapsed": 22,
+          "APIExtra": 0
+        },
+        "Output": {
+          "Outcome": "unverified",
+          "Reason": "no clock visible",
+          "MatchedMinute": null,
+          "Frames": [
+            {
+              "soccer": true,
+              "screen": false,
+              "clock": null,
+              "period": null,
+              "added": null,
+              "stoppage_clock": null
+            },
+            {
+              "soccer": true,
+              "screen": false,
+              "clock": null,
+              "period": null,
+              "added": null,
+              "stoppage_clock": null
+            },
+            {
+              "soccer": true,
+              "screen": false,
+              "clock": null,
+              "period": null,
+              "added": null,
+              "stoppage_clock": null
+            }
+          ]
+        }
+      },
+      {
+        "ScheduleID": "158",
+        "Input": {
+          "EventID": "182ce755-87ef-4fd5-9523-8b3ea7e9c8fc",
+          "FixtureID": 1550126,
+          "StagingKey": "staging/1550126/182ce755-87ef-4fd5-9523-8b3ea7e9c8fc/2098489119932584318.mp4",
+          "APIElapsed": 22,
+          "APIExtra": 0
+        },
+        "Output": {
+          "Outcome": "rejected",
+          "Reason": "not soccer (minority soccer vote)",
+          "MatchedMinute": null,
+          "Frames": [
+            {
+              "soccer": false,
+              "screen": false,
+              "clock": null,
+              "period": null,
+              "added": null,
+              "stoppage_clock": null
+            },
+            {
+              "soccer": false,
+              "screen": false,
+              "clock": null,
+              "period": null,
+              "added": null,
+              "stoppage_clock": null
+            },
+            {
+              "soccer": false,
+              "screen": false,
+              "clock": null,
+              "period": null,
+              "added": null,
+              "stoppage_clock": null
+            }
+          ]
+        }
+      },
+      {
+        "ScheduleID": "146",
+        "Input": {
+          "EventID": "182ce755-87ef-4fd5-9523-8b3ea7e9c8fc",
+          "FixtureID": 1550126,
+          "StagingKey": "staging/1550126/182ce755-87ef-4fd5-9523-8b3ea7e9c8fc/2098489144875844050.mp4",
+          "APIElapsed": 22,
+          "APIExtra": 0
+        },
+        "Output": {
+          "Outcome": "verified",
+          "Reason": "clock matches minute+period",
+          "MatchedMinute": 21,
+          "Frames": [
+            {
+              "soccer": true,
+              "screen": false,
+              "clock": "21:14",
+              "period": null,
+              "added": null,
+              "stoppage_clock": null
+            },
+            {
+              "soccer": true,
+              "screen": false,
+              "clock": "21:16",
+              "period": null,
+              "added": null,
+              "stoppage_clock": "1:17"
+            },
+            {
+              "soccer": true,
+              "screen": false,
+              "clock": "21:18",
+              "period": null,
+              "added": null,
+              "stoppage_clock": "1:19"
+            }
+          ]
+        }
+      },
+      {
+        "ScheduleID": "152",
+        "Input": {
+          "EventID": "182ce755-87ef-4fd5-9523-8b3ea7e9c8fc",
+          "FixtureID": 1550126,
+          "StagingKey": "staging/1550126/182ce755-87ef-4fd5-9523-8b3ea7e9c8fc/2098489129168191511.mp4",
+          "APIElapsed": 22,
+          "APIExtra": 0
+        },
+        "Output": {
+          "Outcome": "verified",
+          "Reason": "clock matches minute+period",
+          "MatchedMinute": 21,
+          "Frames": [
+            {
+              "soccer": true,
+              "screen": false,
+              "clock": "21:15",
+              "period": null,
+              "added": null,
+              "stoppage_clock": null
+            },
+            {
+              "soccer": true,
+              "screen": false,
+              "clock": "21:17",
+              "period": null,
+              "added": null,
+              "stoppage_clock": null
+            },
+            {
+              "soccer": true,
+              "screen": false,
+              "clock": "21:20",
+              "period": null,
+              "added": null,
+              "stoppage_clock": null
+            }
+          ]
+        }
+      },
+      {
+        "ScheduleID": "806",
+        "Input": {
+          "EventID": "182ce755-87ef-4fd5-9523-8b3ea7e9c8fc",
+          "FixtureID": 1550126,
+          "StagingKey": "staging/1550126/182ce755-87ef-4fd5-9523-8b3ea7e9c8fc/2098490790578168083.mp4",
+          "APIElapsed": 22,
+          "APIExtra": 0
+        },
+        "Output": {
+          "Outcome": "rejected",
+          "Reason": "clock present but does not match expected (wrong minute or wrong half)",
+          "MatchedMinute": null,
+          "Frames": [
+            {
+              "soccer": true,
+              "screen": false,
+              "clock": "27:59",
+              "period": null,
+              "added": null,
+              "stoppage_clock": null
+            },
+            {
+              "soccer": true,
+              "screen": false,
+              "clock": "28:03",
+              "period": null,
+              "added": null,
+              "stoppage_clock": null
+            },
+            {
+              "soccer": true,
+              "screen": false,
+              "clock": "28:08",
+              "period": null,
+              "added": null,
+              "stoppage_clock": null
+            }
+          ]
+        }
+      },
+      {
+        "ScheduleID": "971",
+        "Input": {
+          "EventID": "182ce755-87ef-4fd5-9523-8b3ea7e9c8fc",
+          "FixtureID": 1550126,
+          "StagingKey": "staging/1550126/182ce755-87ef-4fd5-9523-8b3ea7e9c8fc/2098491072963907921.mp4",
+          "APIElapsed": 22,
+          "APIExtra": 0
+        },
+        "Output": {
+          "Outcome": "rejected",
+          "Reason": "clock present but does not match expected (wrong minute or wrong half)",
+          "MatchedMinute": null,
+          "Frames": [
+            {
+              "soccer": true,
+              "screen": false,
+              "clock": "28:01",
+              "period": null,
+              "added": null,
+              "stoppage_clock": null
+            },
+            {
+              "soccer": true,
+              "screen": false,
+              "clock": "28:02",
+              "period": null,
+              "added": null,
+              "stoppage_clock": null
+            },
+            {
+              "soccer": true,
+              "screen": false,
+              "clock": "28:04",
+              "period": null,
+              "added": null,
+              "stoppage_clock": null
+            }
+          ]
+        }
+      },
+      {
+        "ScheduleID": "989",
+        "Input": {
+          "EventID": "182ce755-87ef-4fd5-9523-8b3ea7e9c8fc",
+          "FixtureID": 1550126,
+          "StagingKey": "staging/1550126/182ce755-87ef-4fd5-9523-8b3ea7e9c8fc/2098491151837786346.mp4",
+          "APIElapsed": 22,
+          "APIExtra": 0
+        },
+        "Output": {
+          "Outcome": "rejected",
+          "Reason": "clock present but does not match expected (wrong minute or wrong half)",
+          "MatchedMinute": null,
+          "Frames": [
+            {
+              "soccer": true,
+              "screen": false,
+              "clock": "29:36",
+              "period": null,
+              "added": null,
+              "stoppage_clock": null
+            },
+            {
+              "soccer": true,
+              "screen": false,
+              "clock": "29:39",
+              "period": null,
+              "added": null,
+              "stoppage_clock": null
+            },
+            {
+              "soccer": true,
+              "screen": false,
+              "clock": "29:42",
+              "period": null,
+              "added": null,
+              "stoppage_clock": null
+            }
+          ]
+        }
+      },
+      {
+        "ScheduleID": "1025",
+        "Input": {
+          "EventID": "182ce755-87ef-4fd5-9523-8b3ea7e9c8fc",
+          "FixtureID": 1550126,
+          "StagingKey": "staging/1550126/182ce755-87ef-4fd5-9523-8b3ea7e9c8fc/2098490964176142696.mp4",
+          "APIElapsed": 22,
+          "APIExtra": 0
+        },
+        "Output": {
+          "Outcome": "rejected",
+          "Reason": "clock present but does not match expected (wrong minute or wrong half)",
+          "MatchedMinute": null,
+          "Frames": [
+            {
+              "soccer": true,
+              "screen": false,
+              "clock": "27:59",
+              "period": null,
+              "added": null,
+              "stoppage_clock": null
+            },
+            {
+              "soccer": true,
+              "screen": false,
+              "clock": "28:03",
+              "period": null,
+              "added": null,
+              "stoppage_clock": null
+            },
+            {
+              "soccer": true,
+              "screen": false,
+              "clock": "28:08",
+              "period": null,
+              "added": null,
+              "stoppage_clock": null
+            }
+          ]
+        }
+      },
+      {
+        "ScheduleID": "1031",
+        "Input": {
+          "EventID": "182ce755-87ef-4fd5-9523-8b3ea7e9c8fc",
+          "FixtureID": 1550126,
+          "StagingKey": "staging/1550126/182ce755-87ef-4fd5-9523-8b3ea7e9c8fc/2098490893137567914.mp4",
+          "APIElapsed": 22,
+          "APIExtra": 0
+        },
+        "Output": {
+          "Outcome": "rejected",
+          "Reason": "not soccer (minority soccer vote)",
+          "MatchedMinute": null,
+          "Frames": [
+            {
+              "soccer": false,
+              "screen": false,
+              "clock": null,
+              "period": null,
+              "added": null,
+              "stoppage_clock": null
+            },
+            {
+              "soccer": false,
+              "screen": false,
+              "clock": null,
+              "period": null,
+              "added": null,
+              "stoppage_clock": null
+            },
+            {
+              "soccer": false,
+              "screen": false,
+              "clock": null,
+              "period": null,
+              "added": null,
+              "stoppage_clock": null
+            }
+          ]
+        }
+      },
+      {
+        "ScheduleID": "1317",
+        "Input": {
+          "EventID": "182ce755-87ef-4fd5-9523-8b3ea7e9c8fc",
+          "FixtureID": 1550126,
+          "StagingKey": "staging/1550126/182ce755-87ef-4fd5-9523-8b3ea7e9c8fc/2098491401277444311.mp4",
+          "APIElapsed": 22,
+          "APIExtra": 0
+        },
+        "Output": {
+          "Outcome": "rejected",
+          "Reason": "clock present but does not match expected (wrong minute or wrong half)",
+          "MatchedMinute": null,
+          "Frames": [
+            {
+              "soccer": true,
+              "screen": false,
+              "clock": "27:59",
+              "period": null,
+              "added": null,
+              "stoppage_clock": null
+            },
+            {
+              "soccer": true,
+              "screen": false,
+              "clock": "28:03",
+              "period": null,
+              "added": null,
+              "stoppage_clock": null
+            },
+            {
+              "soccer": true,
+              "screen": false,
+              "clock": "28:08",
+              "period": null,
+              "added": null,
+              "stoppage_clock": null
+            }
+          ]
+        }
+      },
+      {
+        "ScheduleID": "1043",
+        "Input": {
+          "EventID": "182ce755-87ef-4fd5-9523-8b3ea7e9c8fc",
+          "FixtureID": 1550126,
+          "StagingKey": "staging/1550126/182ce755-87ef-4fd5-9523-8b3ea7e9c8fc/2098491021763964969.mp4",
+          "APIElapsed": 22,
+          "APIExtra": 0
+        },
+        "Output": {
+          "Outcome": "verified",
+          "Reason": "clock matches minute+period",
+          "MatchedMinute": 21,
+          "Frames": [
+            {
+              "soccer": true,
+              "screen": false,
+              "clock": "21:24",
+              "period": null,
+              "added": null,
+              "stoppage_clock": null
+            },
+            {
+              "soccer": true,
+              "screen": false,
+              "clock": null,
+              "period": null,
+              "added": null,
+              "stoppage_clock": null
+            },
+            {
+              "soccer": true,
+              "screen": false,
+              "clock": null,
+              "period": null,
+              "added": null,
+              "stoppage_clock": null
+            }
+          ]
+        }
+      },
+      {
+        "ScheduleID": "1270",
+        "Input": {
+          "EventID": "182ce755-87ef-4fd5-9523-8b3ea7e9c8fc",
+          "FixtureID": 1550126,
+          "StagingKey": "staging/1550126/182ce755-87ef-4fd5-9523-8b3ea7e9c8fc/2098491356444332335.mp4",
+          "APIElapsed": 22,
+          "APIExtra": 0
+        },
+        "Output": {
+          "Outcome": "rejected",
+          "Reason": "clock present but does not match expected (wrong minute or wrong half)",
+          "MatchedMinute": null,
+          "Frames": [
+            {
+              "soccer": true,
+              "screen": false,
+              "clock": "29:39",
+              "period": null,
+              "added": null,
+              "stoppage_clock": null
+            },
+            {
+              "soccer": true,
+              "screen": false,
+              "clock": "29:41",
+              "period": null,
+              "added": null,
+              "stoppage_clock": null
+            },
+            {
+              "soccer": true,
+              "screen": false,
+              "clock": "29:43",
+              "period": null,
+              "added": null,
+              "stoppage_clock": null
+            }
+          ]
+        }
+      },
+      {
+        "ScheduleID": "1299",
+        "Input": {
+          "EventID": "182ce755-87ef-4fd5-9523-8b3ea7e9c8fc",
+          "FixtureID": 1550126,
+          "StagingKey": "staging/1550126/182ce755-87ef-4fd5-9523-8b3ea7e9c8fc/2098491191688138763.mp4",
+          "APIElapsed": 22,
+          "APIExtra": 0
+        },
+        "Output": {
+          "Outcome": "rejected",
+          "Reason": "clock present but does not match expected (wrong minute or wrong half)",
+          "MatchedMinute": null,
+          "Frames": [
+            {
+              "soccer": true,
+              "screen": false,
+              "clock": "29:36",
+              "period": null,
+              "added": null,
+              "stoppage_clock": null
+            },
+            {
+              "soccer": true,
+              "screen": false,
+              "clock": "29:39",
+              "period": null,
+              "added": null,
+              "stoppage_clock": null
+            },
+            {
+              "soccer": true,
+              "screen": false,
+              "clock": "29:42",
+              "period": null,
+              "added": null,
+              "stoppage_clock": null
+            }
+          ]
+        }
+      },
+      {
+        "ScheduleID": "1590",
+        "Input": {
+          "EventID": "182ce755-87ef-4fd5-9523-8b3ea7e9c8fc",
+          "FixtureID": 1550126,
+          "StagingKey": "staging/1550126/182ce755-87ef-4fd5-9523-8b3ea7e9c8fc/2098491480536916389.mp4",
+          "APIElapsed": 22,
+          "APIExtra": 0
+        },
+        "Output": {
+          "Outcome": "rejected",
+          "Reason": "clock present but does not match expected (wrong minute or wrong half)",
+          "MatchedMinute": null,
+          "Frames": [
+            {
+              "soccer": true,
+              "screen": false,
+              "clock": "29:39",
+              "period": null,
+              "added": null,
+              "stoppage_clock": null
+            },
+            {
+              "soccer": true,
+              "screen": false,
+              "clock": "29:41",
+              "period": null,
+              "added": null,
+              "stoppage_clock": null
+            },
+            {
+              "soccer": true,
+              "screen": false,
+              "clock": "29:43",
+              "period": null,
+              "added": null,
+              "stoppage_clock": null
+            }
+          ]
+        }
+      },
+      {
+        "ScheduleID": "1596",
+        "Input": {
+          "EventID": "182ce755-87ef-4fd5-9523-8b3ea7e9c8fc",
+          "FixtureID": 1550126,
+          "StagingKey": "staging/1550126/182ce755-87ef-4fd5-9523-8b3ea7e9c8fc/2098491517086171148.mp4",
+          "APIElapsed": 22,
+          "APIExtra": 0
+        },
+        "Output": {
+          "Outcome": "rejected",
+          "Reason": "clock present but does not match expected (wrong minute or wrong half)",
+          "MatchedMinute": null,
+          "Frames": [
+            {
+              "soccer": true,
+              "screen": false,
+              "clock": "29:36",
+              "period": null,
+              "added": null,
+              "stoppage_clock": null
+            },
+            {
+              "soccer": true,
+              "screen": false,
+              "clock": "29:39",
+              "period": null,
+              "added": null,
+              "stoppage_clock": null
+            },
+            {
+              "soccer": true,
+              "screen": false,
+              "clock": "29:42",
+              "period": null,
+              "added": null,
+              "stoppage_clock": null
+            }
+          ]
+        }
+      },
+      {
+        "ScheduleID": "1659",
+        "Input": {
+          "EventID": "182ce755-87ef-4fd5-9523-8b3ea7e9c8fc",
+          "FixtureID": 1550126,
+          "StagingKey": "staging/1550126/182ce755-87ef-4fd5-9523-8b3ea7e9c8fc/2098491499054845989.mp4",
+          "APIElapsed": 22,
+          "APIExtra": 0
+        },
+        "Output": {
+          "Outcome": "rejected",
+          "Reason": "clock present but does not match expected (wrong minute or wrong half)",
+          "MatchedMinute": null,
+          "Frames": [
+            {
+              "soccer": true,
+              "screen": false,
+              "clock": "29:39",
+              "period": null,
+              "added": null,
+              "stoppage_clock": null
+            },
+            {
+              "soccer": true,
+              "screen": false,
+              "clock": "29:41",
+              "period": null,
+              "added": null,
+              "stoppage_clock": null
+            },
+            {
+              "soccer": true,
+              "screen": false,
+              "clock": "29:43",
+              "period": null,
+              "added": null,
+              "stoppage_clock": null
+            }
+          ]
+        }
+      },
+      {
+        "ScheduleID": "1602",
+        "Input": {
+          "EventID": "182ce755-87ef-4fd5-9523-8b3ea7e9c8fc",
+          "FixtureID": 1550126,
+          "StagingKey": "staging/1550126/182ce755-87ef-4fd5-9523-8b3ea7e9c8fc/2098491369744728539.mp4",
+          "APIElapsed": 22,
+          "APIExtra": 0
+        },
+        "Output": {
+          "Outcome": "rejected",
+          "Reason": "clock present but does not match expected (wrong minute or wrong half)",
+          "MatchedMinute": null,
+          "Frames": [
+            {
+              "soccer": true,
+              "screen": false,
+              "clock": "27:59",
+              "period": null,
+              "added": null,
+              "stoppage_clock": null
+            },
+            {
+              "soccer": true,
+              "screen": false,
+              "clock": "28:03",
+              "period": null,
+              "added": null,
+              "stoppage_clock": null
+            },
+            {
+              "soccer": true,
+              "screen": false,
+              "clock": "28:08",
+              "period": null,
+              "added": null,
+              "stoppage_clock": null
+            }
+          ]
+        }
+      },
+      {
+        "ScheduleID": "1894",
+        "Input": {
+          "EventID": "182ce755-87ef-4fd5-9523-8b3ea7e9c8fc",
+          "FixtureID": 1550126,
+          "StagingKey": "staging/1550126/182ce755-87ef-4fd5-9523-8b3ea7e9c8fc/2098491846380921123.mp4",
+          "APIElapsed": 22,
+          "APIExtra": 0
+        },
+        "Output": {
+          "Outcome": "rejected",
+          "Reason": "clock present but does not match expected (wrong minute or wrong half)",
+          "MatchedMinute": null,
+          "Frames": [
+            {
+              "soccer": true,
+              "screen": false,
+              "clock": "29:39",
+              "period": null,
+              "added": null,
+              "stoppage_clock": null
+            },
+            {
+              "soccer": true,
+              "screen": false,
+              "clock": "29:41",
+              "period": null,
+              "added": null,
+              "stoppage_clock": null
+            },
+            {
+              "soccer": true,
+              "screen": false,
+              "clock": "29:43",
+              "period": null,
+              "added": null,
+              "stoppage_clock": null
+            }
+          ]
+        }
+      },
+      {
+        "ScheduleID": "1906",
+        "Input": {
+          "EventID": "182ce755-87ef-4fd5-9523-8b3ea7e9c8fc",
+          "FixtureID": 1550126,
+          "StagingKey": "staging/1550126/182ce755-87ef-4fd5-9523-8b3ea7e9c8fc/2098492198845071796.mp4",
+          "APIElapsed": 22,
+          "APIExtra": 0
+        },
+        "Output": {
+          "Outcome": "unverified",
+          "Reason": "no clock visible",
+          "MatchedMinute": null,
+          "Frames": [
+            {
+              "soccer": true,
+              "screen": false,
+              "clock": null,
+              "period": null,
+              "added": null,
+              "stoppage_clock": null
+            },
+            {
+              "soccer": true,
+              "screen": false,
+              "clock": null,
+              "period": null,
+              "added": null,
+              "stoppage_clock": null
+            },
+            {
+              "soccer": true,
+              "screen": false,
+              "clock": null,
+              "period": null,
+              "added": null,
+              "stoppage_clock": null
+            }
+          ]
+        }
+      },
+      {
+        "ScheduleID": "2091",
+        "Input": {
+          "EventID": "182ce755-87ef-4fd5-9523-8b3ea7e9c8fc",
+          "FixtureID": 1550126,
+          "StagingKey": "staging/1550126/182ce755-87ef-4fd5-9523-8b3ea7e9c8fc/2098492671144640847.mp4",
+          "APIElapsed": 22,
+          "APIExtra": 0
+        },
+        "Output": {
+          "Outcome": "rejected",
+          "Reason": "clock present but does not match expected (wrong minute or wrong half)",
+          "MatchedMinute": null,
+          "Frames": [
+            {
+              "soccer": true,
+              "screen": false,
+              "clock": "28:01",
+              "period": null,
+              "added": null,
+              "stoppage_clock": null
+            },
+            {
+              "soccer": true,
+              "screen": false,
+              "clock": "28:02",
+              "period": null,
+              "added": null,
+              "stoppage_clock": null
+            },
+            {
+              "soccer": true,
+              "screen": false,
+              "clock": "28:04",
+              "period": null,
+              "added": null,
+              "stoppage_clock": null
+            }
+          ]
+        }
+      },
+      {
+        "ScheduleID": "2186",
+        "Input": {
+          "EventID": "182ce755-87ef-4fd5-9523-8b3ea7e9c8fc",
+          "FixtureID": 1550126,
+          "StagingKey": "staging/1550126/182ce755-87ef-4fd5-9523-8b3ea7e9c8fc/2098492462947799423.mp4",
+          "APIElapsed": 22,
+          "APIExtra": 0
+        },
+        "Output": {
+          "Outcome": "rejected",
+          "Reason": "clock present but does not match expected (wrong minute or wrong half)",
+          "MatchedMinute": null,
+          "Frames": [
+            {
+              "soccer": true,
+              "screen": false,
+              "clock": "28:08",
+              "period": null,
+              "added": null,
+              "stoppage_clock": null
+            },
+            {
+              "soccer": true,
+              "screen": false,
+              "clock": "29:25",
+              "period": null,
+              "added": null,
+              "stoppage_clock": null
+            },
+            {
+              "soccer": true,
+              "screen": false,
+              "clock": "29:41",
+              "period": null,
+              "added": null,
+              "stoppage_clock": null
+            }
+          ]
+        }
+      },
+      {
+        "ScheduleID": "2323",
+        "Input": {
+          "EventID": "182ce755-87ef-4fd5-9523-8b3ea7e9c8fc",
+          "FixtureID": 1550126,
+          "StagingKey": "staging/1550126/182ce755-87ef-4fd5-9523-8b3ea7e9c8fc/2098493053786861568.mp4",
+          "APIElapsed": 22,
+          "APIExtra": 0
+        },
+        "Output": {
+          "Outcome": "rejected",
+          "Reason": "clock present but does not match expected (wrong minute or wrong half)",
+          "MatchedMinute": null,
+          "Frames": [
+            {
+              "soccer": true,
+              "screen": false,
+              "clock": "29:39",
+              "period": null,
+              "added": null,
+              "stoppage_clock": null
+            },
+            {
+              "soccer": true,
+              "screen": false,
+              "clock": "29:41",
+              "period": null,
+              "added": null,
+              "stoppage_clock": null
+            },
+            {
+              "soccer": true,
+              "screen": false,
+              "clock": "29:43",
+              "period": null,
+              "added": null,
+              "stoppage_clock": null
+            }
+          ]
+        }
+      },
+      {
+        "ScheduleID": "2445",
+        "Input": {
+          "EventID": "182ce755-87ef-4fd5-9523-8b3ea7e9c8fc",
+          "FixtureID": 1550126,
+          "StagingKey": "staging/1550126/182ce755-87ef-4fd5-9523-8b3ea7e9c8fc/2098492901500031090.mp4",
+          "APIElapsed": 22,
+          "APIExtra": 0
+        },
+        "Output": {
+          "Outcome": "rejected",
+          "Reason": "clock present but does not match expected (wrong minute or wrong half)",
+          "MatchedMinute": null,
+          "Frames": [
+            {
+              "soccer": true,
+              "screen": false,
+              "clock": "29:39",
+              "period": null,
+              "added": null,
+              "stoppage_clock": null
+            },
+            {
+              "soccer": true,
+              "screen": false,
+              "clock": "29:41",
+              "period": null,
+              "added": null,
+              "stoppage_clock": null
+            },
+            {
+              "soccer": true,
+              "screen": false,
+              "clock": "29:43",
+              "period": null,
+              "added": null,
+              "stoppage_clock": null
+            }
+          ]
+        }
+      }
+    ]
+  },
+  {
+    "Source": "scratch-audit-2026-09-11/ff092-history/e1a29ad6-9255-47a5-8a97-0b63e3fdcb11.json",
+    "SHA256": "4fac19573d9169db1b615032a1489918efd28dd65f325209a195ce01b8aa6315",
+    "RunID": "e1a29ad6-9255-47a5-8a97-0b63e3fdcb11",
+    "Context": {
+      "event_id": "0a4122ff-4746-4857-ac8d-626c393ea094",
+      "fixture_id": 1552763,
+      "player_name": "Adrien Thomasson",
+      "team_name": "Rennes"
+    },
+    "Scheduled": 2,
+    "Observations": [
+      {
+        "ScheduleID": "183",
+        "Input": {
+          "EventID": "0a4122ff-4746-4857-ac8d-626c393ea094",
+          "FixtureID": 1552763,
+          "StagingKey": "staging/1552763/0a4122ff-4746-4857-ac8d-626c393ea094/2098501206817841465.mp4",
+          "APIElapsed": 52,
+          "APIExtra": 0
+        },
+        "Output": {
+          "Outcome": "verified",
+          "Reason": "clock matches minute+period",
+          "MatchedMinute": 51,
+          "Frames": [
+            {
+              "soccer": true,
+              "screen": false,
+              "clock": "51:40",
+              "period": null,
+              "added": null,
+              "stoppage_clock": null
+            },
+            {
+              "soccer": true,
+              "screen": false,
+              "clock": "51:47",
+              "period": null,
+              "added": null,
+              "stoppage_clock": null
+            },
+            {
+              "soccer": true,
+              "screen": false,
+              "clock": "51:54",
+              "period": null,
+              "added": null,
+              "stoppage_clock": null
+            }
+          ]
+        }
+      },
+      {
+        "ScheduleID": "359",
+        "Input": {
+          "EventID": "0a4122ff-4746-4857-ac8d-626c393ea094",
+          "FixtureID": 1552763,
+          "StagingKey": "staging/1552763/0a4122ff-4746-4857-ac8d-626c393ea094/2098501634305261893.mp4",
+          "APIElapsed": 52,
+          "APIExtra": 0
+        },
+        "Output": {
+          "Outcome": "rejected",
+          "Reason": "clock present but does not match expected (wrong minute or wrong half)",
+          "MatchedMinute": null,
+          "Frames": [
+            {
+              "soccer": true,
+              "screen": false,
+              "clock": "55:08",
+              "period": null,
+              "added": null,
+              "stoppage_clock": null
+            },
+            {
+              "soccer": true,
+              "screen": false,
+              "clock": "55:09",
+              "period": null,
+              "added": null,
+              "stoppage_clock": null
+            },
+            {
+              "soccer": true,
+              "screen": false,
+              "clock": "55:10",
+              "period": null,
+              "added": null,
+              "stoppage_clock": null
+            }
+          ]
+        }
+      }
+    ]
+  },
+  {
+    "Source": "scratch-audit-2026-09-11/ff092-history/e6ba33da-faf1-4d74-839c-5f0827208e60.json",
+    "SHA256": "d62f7ac24d767e38c5cc4cf90d5dae8ed1ae0461aec461889c112307eafbfc7c",
+    "RunID": "e6ba33da-faf1-4d74-839c-5f0827208e60",
+    "Context": {
+      "event_id": "2e219059-e3d2-49cc-a074-e02b8b9d1d4f",
+      "fixture_id": 1575164,
+      "player_name": "Maximilian Wöber",
+      "team_name": "FC Schalke 04"
+    },
+    "Scheduled": 3,
+    "Observations": [
+      {
+        "ScheduleID": "144",
+        "Input": {
+          "EventID": "2e219059-e3d2-49cc-a074-e02b8b9d1d4f",
+          "FixtureID": 1575164,
+          "StagingKey": "staging/1575164/2e219059-e3d2-49cc-a074-e02b8b9d1d4f/2098510142127972408.mp4",
+          "APIElapsed": 90,
+          "APIExtra": 13
+        },
+        "Output": {
+          "Outcome": "rejected",
+          "Reason": "clock present but does not match expected (wrong minute or wrong half)",
+          "MatchedMinute": null,
+          "Frames": [
+            {
+              "soccer": true,
+              "screen": false,
+              "clock": "12:08",
+              "period": null,
+              "added": null,
+              "stoppage_clock": "12:08"
+            },
+            {
+              "soccer": true,
+              "screen": false,
+              "clock": "12:11",
+              "period": null,
+              "added": null,
+              "stoppage_clock": "12:11"
+            },
+            {
+              "soccer": true,
+              "screen": false,
+              "clock": "12:14",
+              "period": null,
+              "added": null,
+              "stoppage_clock": "12:14"
+            }
+          ]
+        }
+      },
+      {
+        "ScheduleID": "327",
+        "Input": {
+          "EventID": "2e219059-e3d2-49cc-a074-e02b8b9d1d4f",
+          "FixtureID": 1575164,
+          "StagingKey": "staging/1575164/2e219059-e3d2-49cc-a074-e02b8b9d1d4f/2098510636481179659.mp4",
+          "APIElapsed": 90,
+          "APIExtra": 13
+        },
+        "Output": {
+          "Outcome": "verified",
+          "Reason": "OCR leading-digit rebase",
+          "MatchedMinute": 102,
+          "Frames": [
+            {
+              "soccer": true,
+              "screen": false,
+              "clock": "12:08",
+              "period": null,
+              "added": "12",
+              "stoppage_clock": null
+            },
+            {
+              "soccer": true,
+              "screen": false,
+              "clock": "12:11",
+              "period": null,
+              "added": "12",
+              "stoppage_clock": null
+            },
+            {
+              "soccer": true,
+              "screen": false,
+              "clock": "12:14",
+              "period": null,
+              "added": "12",
+              "stoppage_clock": null
+            }
+          ]
+        }
+      },
+      {
+        "ScheduleID": "436",
+        "Input": {
+          "EventID": "2e219059-e3d2-49cc-a074-e02b8b9d1d4f",
+          "FixtureID": 1575164,
+          "StagingKey": "staging/1575164/2e219059-e3d2-49cc-a074-e02b8b9d1d4f/2098511166830006769.mp4",
+          "APIElapsed": 90,
+          "APIExtra": 13
+        },
+        "Output": {
+          "Outcome": "verified",
+          "Reason": "clock matches minute+period",
+          "MatchedMinute": 102,
+          "Frames": [
+            {
+              "soccer": true,
+              "screen": false,
+              "clock": "90:00",
+              "period": null,
+              "added": null,
+              "stoppage_clock": null
+            },
+            {
+              "soccer": true,
+              "screen": false,
+              "clock": "90:00",
+              "period": null,
+              "added": null,
+              "stoppage_clock": "12:43"
+            },
+            {
+              "soccer": true,
+              "screen": false,
+              "clock": "90:00",
+              "period": null,
+              "added": null,
+              "stoppage_clock": "13:04"
+            }
+          ]
+        }
+      }
+    ]
+  },
+  {
+    "Source": "scratch-audit-2026-09-11/ff092-history/e902cc87-8d70-4630-834d-0307c2eff6dc.json",
+    "SHA256": "e051ff331bfc432e438757c35503c62c7fe0ebdcf697d05067cbcbe4153e5490",
+    "RunID": "e902cc87-8d70-4630-834d-0307c2eff6dc",
+    "Context": {
+      "event_id": "19660bf5-aa01-4f5d-83e9-0dfc3a3d5eb3",
+      "fixture_id": 1575164,
+      "player_name": "Adil Aouchiche",
+      "team_name": "FC Schalke 04"
+    },
+    "Scheduled": 3,
+    "Observations": [
+      {
+        "ScheduleID": "219",
+        "Input": {
+          "EventID": "19660bf5-aa01-4f5d-83e9-0dfc3a3d5eb3",
+          "FixtureID": 1575164,
+          "StagingKey": "staging/1575164/19660bf5-aa01-4f5d-83e9-0dfc3a3d5eb3/2098496760150680046.mp4",
+          "APIElapsed": 46,
+          "APIExtra": 0
+        },
+        "Output": {
+          "Outcome": "rejected",
+          "Reason": "clock present but does not match expected (wrong minute or wrong half)",
+          "MatchedMinute": null,
+          "Frames": [
+            {
+              "soccer": true,
+              "screen": false,
+              "clock": "47:54",
+              "period": null,
+              "added": null,
+              "stoppage_clock": null
+            },
+            {
+              "soccer": true,
+              "screen": false,
+              "clock": "47:57",
+              "period": null,
+              "added": null,
+              "stoppage_clock": null
+            },
+            {
+              "soccer": true,
+              "screen": false,
+              "clock": "48:01",
+              "period": null,
+              "added": null,
+              "stoppage_clock": null
+            }
+          ]
+        }
+      },
+      {
+        "ScheduleID": "399",
+        "Input": {
+          "EventID": "19660bf5-aa01-4f5d-83e9-0dfc3a3d5eb3",
+          "FixtureID": 1575164,
+          "StagingKey": "staging/1575164/19660bf5-aa01-4f5d-83e9-0dfc3a3d5eb3/2098497124526694502.mp4",
+          "APIElapsed": 46,
+          "APIExtra": 0
+        },
+        "Output": {
+          "Outcome": "rejected",
+          "Reason": "clock present but does not match expected (wrong minute or wrong half)",
+          "MatchedMinute": null,
+          "Frames": [
+            {
+              "soccer": true,
+              "screen": false,
+              "clock": "47:54",
+              "period": null,
+              "added": null,
+              "stoppage_clock": null
+            },
+            {
+              "soccer": true,
+              "screen": false,
+              "clock": "47:57",
+              "period": null,
+              "added": null,
+              "stoppage_clock": null
+            },
+            {
+              "soccer": true,
+              "screen": false,
+              "clock": "48:01",
+              "period": null,
+              "added": null,
+              "stoppage_clock": null
+            }
+          ]
+        }
+      },
+      {
+        "ScheduleID": "633",
+        "Input": {
+          "EventID": "19660bf5-aa01-4f5d-83e9-0dfc3a3d5eb3",
+          "FixtureID": 1575164,
+          "StagingKey": "staging/1575164/19660bf5-aa01-4f5d-83e9-0dfc3a3d5eb3/2098498297497264620.mp4",
+          "APIElapsed": 46,
+          "APIExtra": 0
+        },
+        "Output": {
+          "Outcome": "rejected",
+          "Reason": "clock present but does not match expected (wrong minute or wrong half)",
+          "MatchedMinute": null,
+          "Frames": [
+            {
+              "soccer": true,
+              "screen": false,
+              "clock": "47:54",
+              "period": null,
+              "added": null,
+              "stoppage_clock": null
+            },
+            {
+              "soccer": true,
+              "screen": false,
+              "clock": "47:57",
+              "period": null,
+              "added": null,
+              "stoppage_clock": null
+            },
+            {
+              "soccer": true,
+              "screen": false,
+              "clock": "48:01",
+              "period": null,
+              "added": null,
+              "stoppage_clock": null
+            }
+          ]
+        }
+      }
+    ]
+  },
+  {
+    "Source": "scratch-audit-2026-09-11/ff092-history/f050dcaf-54c0-4b91-9f90-f5852fc233cd.json",
+    "SHA256": "9350b78b216e03a44ab70d63333cfdcd7d5a410781f15f252eec072a92c4c5c6",
+    "RunID": "f050dcaf-54c0-4b91-9f90-f5852fc233cd",
+    "Context": {
+      "event_id": "f48edad7-bd4b-4a06-9182-084254f83543",
+      "fixture_id": 1570381,
+      "player_name": "Juan Antonio Iglesias Sánchez",
+      "team_name": "Sevilla"
+    },
+    "Scheduled": 13,
+    "Observations": [
+      {
+        "ScheduleID": "250",
+        "Input": {
+          "EventID": "f48edad7-bd4b-4a06-9182-084254f83543",
+          "FixtureID": 1570381,
+          "StagingKey": "staging/1570381/f48edad7-bd4b-4a06-9182-084254f83543/2098514075986563291.mp4",
+          "APIElapsed": 81,
+          "APIExtra": 0
+        },
+        "Output": {
+          "Outcome": "verified",
+          "Reason": "clock matches minute+period",
+          "MatchedMinute": 80,
+          "Frames": [
+            {
+              "soccer": true,
+              "screen": false,
+              "clock": "80:26",
+              "period": null,
+              "added": null,
+              "stoppage_clock": null
+            },
+            {
+              "soccer": true,
+              "screen": false,
+              "clock": "80:28",
+              "period": null,
+              "added": null,
+              "stoppage_clock": null
+            },
+            {
+              "soccer": true,
+              "screen": false,
+              "clock": "80:29",
+              "period": null,
+              "added": null,
+              "stoppage_clock": null
+            }
+          ]
+        }
+      },
+      {
+        "ScheduleID": "268",
+        "Input": {
+          "EventID": "f48edad7-bd4b-4a06-9182-084254f83543",
+          "FixtureID": 1570381,
+          "StagingKey": "staging/1570381/f48edad7-bd4b-4a06-9182-084254f83543/2098513989068108107.mp4",
+          "APIElapsed": 81,
+          "APIExtra": 0
+        },
+        "Output": {
+          "Outcome": "verified",
+          "Reason": "clock matches minute+period",
+          "MatchedMinute": 80,
+          "Frames": [
+            {
+              "soccer": true,
+              "screen": false,
+              "clock": "80:27",
+              "period": null,
+              "added": null,
+              "stoppage_clock": null
+            },
+            {
+              "soccer": true,
+              "screen": false,
+              "clock": "80:31",
+              "period": null,
+              "added": null,
+              "stoppage_clock": null
+            },
+            {
+              "soccer": true,
+              "screen": false,
+              "clock": "80:34",
+              "period": null,
+              "added": null,
+              "stoppage_clock": null
+            }
+          ]
+        }
+      },
+      {
+        "ScheduleID": "720",
+        "Input": {
+          "EventID": "f48edad7-bd4b-4a06-9182-084254f83543",
+          "FixtureID": 1570381,
+          "StagingKey": "staging/1570381/f48edad7-bd4b-4a06-9182-084254f83543/2098514577637998835.mp4",
+          "APIElapsed": 81,
+          "APIExtra": 0
+        },
+        "Output": {
+          "Outcome": "verified",
+          "Reason": "clock matches minute+period",
+          "MatchedMinute": 80,
+          "Frames": [
+            {
+              "soccer": true,
+              "screen": false,
+              "clock": "20:15",
+              "period": null,
+              "added": null,
+              "stoppage_clock": null
+            },
+            {
+              "soccer": true,
+              "screen": false,
+              "clock": "20:15",
+              "period": null,
+              "added": null,
+              "stoppage_clock": null
+            },
+            {
+              "soccer": true,
+              "screen": false,
+              "clock": "80:03",
+              "period": null,
+              "added": null,
+              "stoppage_clock": null
+            }
+          ]
+        }
+      },
+      {
+        "ScheduleID": "726",
+        "Input": {
+          "EventID": "f48edad7-bd4b-4a06-9182-084254f83543",
+          "FixtureID": 1570381,
+          "StagingKey": "staging/1570381/f48edad7-bd4b-4a06-9182-084254f83543/2098514486311186515.mp4",
+          "APIElapsed": 81,
+          "APIExtra": 0
+        },
+        "Output": {
+          "Outcome": "rejected",
+          "Reason": "not soccer (minority soccer vote)",
+          "MatchedMinute": null,
+          "Frames": [
+            {
+              "soccer": false,
+              "screen": false,
+              "clock": null,
+              "period": null,
+              "added": null,
+              "stoppage_clock": null
+            },
+            {
+              "soccer": false,
+              "screen": false,
+              "clock": null,
+              "period": null,
+              "added": null,
+              "stoppage_clock": null
+            },
+            {
+              "soccer": false,
+              "screen": false,
+              "clock": null,
+              "period": null,
+              "added": null,
+              "stoppage_clock": null
+            }
+          ]
+        }
+      },
+      {
+        "ScheduleID": "986",
+        "Input": {
+          "EventID": "f48edad7-bd4b-4a06-9182-084254f83543",
+          "FixtureID": 1570381,
+          "StagingKey": "staging/1570381/f48edad7-bd4b-4a06-9182-084254f83543/2098515140304101656.mp4",
+          "APIElapsed": 81,
+          "APIExtra": 0
+        },
+        "Output": {
+          "Outcome": "rejected",
+          "Reason": "not soccer (minority soccer vote)",
+          "MatchedMinute": null,
+          "Frames": [
+            {
+              "soccer": false,
+              "screen": false,
+              "clock": null,
+              "period": null,
+              "added": null,
+              "stoppage_clock": null
+            },
+            {
+              "soccer": false,
+              "screen": false,
+              "clock": null,
+              "period": null,
+              "added": null,
+              "stoppage_clock": null
+            },
+            {
+              "soccer": false,
+              "screen": false,
+              "clock": null,
+              "period": null,
+              "added": null,
+              "stoppage_clock": null
+            }
+          ]
+        }
+      },
+      {
+        "ScheduleID": "1300",
+        "Input": {
+          "EventID": "f48edad7-bd4b-4a06-9182-084254f83543",
+          "FixtureID": 1570381,
+          "StagingKey": "staging/1570381/f48edad7-bd4b-4a06-9182-084254f83543/2098515585113997764.mp4",
+          "APIElapsed": 81,
+          "APIExtra": 0
+        },
+        "Output": {
+          "Outcome": "rejected",
+          "Reason": "not soccer (minority soccer vote)",
+          "MatchedMinute": null,
+          "Frames": [
+            {
+              "soccer": false,
+              "screen": false,
+              "clock": null,
+              "period": null,
+              "added": null,
+              "stoppage_clock": null
+            },
+            {
+              "soccer": false,
+              "screen": false,
+              "clock": null,
+              "period": null,
+              "added": null,
+              "stoppage_clock": null
+            },
+            {
+              "soccer": false,
+              "screen": false,
+              "clock": null,
+              "period": null,
+              "added": null,
+              "stoppage_clock": null
+            }
+          ]
+        }
+      },
+      {
+        "ScheduleID": "1400",
+        "Input": {
+          "EventID": "f48edad7-bd4b-4a06-9182-084254f83543",
+          "FixtureID": 1570381,
+          "StagingKey": "staging/1570381/f48edad7-bd4b-4a06-9182-084254f83543/2098515872264434133.mp4",
+          "APIElapsed": 81,
+          "APIExtra": 0
+        },
+        "Output": {
+          "Outcome": "rejected",
+          "Reason": "clock present but does not match expected (wrong minute or wrong half)",
+          "MatchedMinute": null,
+          "Frames": [
+            {
+              "soccer": true,
+              "screen": false,
+              "clock": "88:09",
+              "period": null,
+              "added": null,
+              "stoppage_clock": null
+            },
+            {
+              "soccer": true,
+              "screen": false,
+              "clock": "88:12",
+              "period": null,
+              "added": null,
+              "stoppage_clock": null
+            },
+            {
+              "soccer": true,
+              "screen": false,
+              "clock": "88:15",
+              "period": null,
+              "added": null,
+              "stoppage_clock": null
+            }
+          ]
+        }
+      },
+      {
+        "ScheduleID": "1547",
+        "Input": {
+          "EventID": "f48edad7-bd4b-4a06-9182-084254f83543",
+          "FixtureID": 1570381,
+          "StagingKey": "staging/1570381/f48edad7-bd4b-4a06-9182-084254f83543/2098516054838263844.mp4",
+          "APIElapsed": 81,
+          "APIExtra": 0
+        },
+        "Output": {
+          "Outcome": "verified",
+          "Reason": "clock matches minute+period",
+          "MatchedMinute": 80,
+          "Frames": [
+            {
+              "soccer": true,
+              "screen": false,
+              "clock": "80:32",
+              "period": null,
+              "added": null,
+              "stoppage_clock": null
+            },
+            {
+              "soccer": true,
+              "screen": false,
+              "clock": "81:06",
+              "period": null,
+              "added": null,
+              "stoppage_clock": null
+            },
+            {
+              "soccer": true,
+              "screen": false,
+              "clock": "81:16",
+              "period": null,
+              "added": null,
+              "stoppage_clock": null
+            }
+          ]
+        }
+      },
+      {
+        "ScheduleID": "1553",
+        "Input": {
+          "EventID": "f48edad7-bd4b-4a06-9182-084254f83543",
+          "FixtureID": 1570381,
+          "StagingKey": "staging/1570381/f48edad7-bd4b-4a06-9182-084254f83543/2098516180126548104.mp4",
+          "APIElapsed": 81,
+          "APIExtra": 0
+        },
+        "Output": {
+          "Outcome": "rejected",
+          "Reason": "not soccer (minority soccer vote)",
+          "MatchedMinute": null,
+          "Frames": [
+            {
+              "soccer": false,
+              "screen": false,
+              "clock": null,
+              "period": null,
+              "added": null,
+              "stoppage_clock": null
+            },
+            {
+              "soccer": false,
+              "screen": false,
+              "clock": null,
+              "period": null,
+              "added": null,
+              "stoppage_clock": null
+            },
+            {
+              "soccer": false,
+              "screen": false,
+              "clock": null,
+              "period": null,
+              "added": null,
+              "stoppage_clock": null
+            }
+          ]
+        }
+      },
+      {
+        "ScheduleID": "1880",
+        "Input": {
+          "EventID": "f48edad7-bd4b-4a06-9182-084254f83543",
+          "FixtureID": 1570381,
+          "StagingKey": "staging/1570381/f48edad7-bd4b-4a06-9182-084254f83543/2098517077032124588.mp4",
+          "APIElapsed": 81,
+          "APIExtra": 0
+        },
+        "Output": {
+          "Outcome": "rejected",
+          "Reason": "not soccer (minority soccer vote)",
+          "MatchedMinute": null,
+          "Frames": [
+            {
+              "soccer": false,
+              "screen": false,
+              "clock": null,
+              "period": null,
+              "added": null,
+              "stoppage_clock": null
+            },
+            {
+              "soccer": false,
+              "screen": false,
+              "clock": null,
+              "period": null,
+              "added": null,
+              "stoppage_clock": null
+            },
+            {
+              "soccer": false,
+              "screen": false,
+              "clock": null,
+              "period": null,
+              "added": null,
+              "stoppage_clock": null
+            }
+          ]
+        }
+      },
+      {
+        "ScheduleID": "1892",
+        "Input": {
+          "EventID": "f48edad7-bd4b-4a06-9182-084254f83543",
+          "FixtureID": 1570381,
+          "StagingKey": "staging/1570381/f48edad7-bd4b-4a06-9182-084254f83543/2098516934182772760.mp4",
+          "APIElapsed": 81,
+          "APIExtra": 0
+        },
+        "Output": {
+          "Outcome": "rejected",
+          "Reason": "not soccer (minority soccer vote)",
+          "MatchedMinute": null,
+          "Frames": [
+            {
+              "soccer": false,
+              "screen": false,
+              "clock": null,
+              "period": null,
+              "added": null,
+              "stoppage_clock": null
+            },
+            {
+              "soccer": false,
+              "screen": false,
+              "clock": null,
+              "period": null,
+              "added": null,
+              "stoppage_clock": null
+            },
+            {
+              "soccer": false,
+              "screen": false,
+              "clock": null,
+              "period": null,
+              "added": null,
+              "stoppage_clock": null
+            }
+          ]
+        }
+      },
+      {
+        "ScheduleID": "2061",
+        "Input": {
+          "EventID": "f48edad7-bd4b-4a06-9182-084254f83543",
+          "FixtureID": 1570381,
+          "StagingKey": "staging/1570381/f48edad7-bd4b-4a06-9182-084254f83543/2098517496751890794.mp4",
+          "APIElapsed": 81,
+          "APIExtra": 0
+        },
+        "Output": {
+          "Outcome": "rejected",
+          "Reason": "not soccer (minority soccer vote)",
+          "MatchedMinute": null,
+          "Frames": [
+            {
+              "soccer": false,
+              "screen": false,
+              "clock": null,
+              "period": null,
+              "added": null,
+              "stoppage_clock": null
+            },
+            {
+              "soccer": false,
+              "screen": false,
+              "clock": null,
+              "period": null,
+              "added": null,
+              "stoppage_clock": null
+            },
+            {
+              "soccer": false,
+              "screen": false,
+              "clock": null,
+              "period": null,
+              "added": null,
+              "stoppage_clock": null
+            }
+          ]
+        }
+      },
+      {
+        "ScheduleID": "2067",
+        "Input": {
+          "EventID": "f48edad7-bd4b-4a06-9182-084254f83543",
+          "FixtureID": 1570381,
+          "StagingKey": "staging/1570381/f48edad7-bd4b-4a06-9182-084254f83543/2098517608580386997.mp4",
+          "APIElapsed": 81,
+          "APIExtra": 0
+        },
+        "Output": {
+          "Outcome": "rejected",
+          "Reason": "not soccer (minority soccer vote)",
+          "MatchedMinute": null,
+          "Frames": [
+            {
+              "soccer": false,
+              "screen": false,
+              "clock": null,
+              "period": null,
+              "added": null,
+              "stoppage_clock": null
+            },
+            {
+              "soccer": false,
+              "screen": false,
+              "clock": null,
+              "period": null,
+              "added": null,
+              "stoppage_clock": null
+            },
+            {
+              "soccer": false,
+              "screen": false,
+              "clock": null,
+              "period": null,
+              "added": null,
+              "stoppage_clock": null
+            }
+          ]
+        }
+      }
+    ]
+  },
+  {
+    "Source": "scratch-audit-2026-09-11/ff092-history/f6a3ebe1-360c-4766-bedf-b81ea2b6b0fd.json",
+    "SHA256": "fccd64df50b63bcc45900fdc72b3d268afa0cfcffbf01b1a80763a82274bcbf7",
+    "RunID": "f6a3ebe1-360c-4766-bedf-b81ea2b6b0fd",
+    "Context": {
+      "event_id": "553648ee-2cf0-4161-bde2-7a0d9141103c",
+      "fixture_id": 1550126,
+      "player_name": "F. Mastantuono",
+      "team_name": "Fiorentina"
+    },
+    "Scheduled": 15,
+    "Observations": [
+      {
+        "ScheduleID": "282",
+        "Input": {
+          "EventID": "553648ee-2cf0-4161-bde2-7a0d9141103c",
+          "FixtureID": 1550126,
+          "StagingKey": "staging/1550126/553648ee-2cf0-4161-bde2-7a0d9141103c/2098510537919197195.mp4",
+          "APIElapsed": 84,
+          "APIExtra": 0
+        },
+        "Output": {
+          "Outcome": "verified",
+          "Reason": "clock matches minute+period",
+          "MatchedMinute": 83,
+          "Frames": [
+            {
+              "soccer": true,
+              "screen": false,
+              "clock": "83:15",
+              "period": null,
+              "added": null,
+              "stoppage_clock": null
+            },
+            {
+              "soccer": true,
+              "screen": false,
+              "clock": "83:17",
+              "period": null,
+              "added": null,
+              "stoppage_clock": null
+            },
+            {
+              "soccer": true,
+              "screen": false,
+              "clock": "83:20",
+              "period": null,
+              "added": null,
+              "stoppage_clock": null
+            }
+          ]
+        }
+      },
+      {
+        "ScheduleID": "318",
+        "Input": {
+          "EventID": "553648ee-2cf0-4161-bde2-7a0d9141103c",
+          "FixtureID": 1550126,
+          "StagingKey": "staging/1550126/553648ee-2cf0-4161-bde2-7a0d9141103c/2098510510048129067.mp4",
+          "APIElapsed": 84,
+          "APIExtra": 0
+        },
+        "Output": {
+          "Outcome": "verified",
+          "Reason": "clock matches minute+period",
+          "MatchedMinute": 83,
+          "Frames": [
+            {
+              "soccer": true,
+              "screen": false,
+              "clock": "83:13",
+              "period": null,
+              "added": null,
+              "stoppage_clock": null
+            },
+            {
+              "soccer": true,
+              "screen": false,
+              "clock": "83:15",
+              "period": null,
+              "added": null,
+              "stoppage_clock": null
+            },
+            {
+              "soccer": true,
+              "screen": false,
+              "clock": "83:18",
+              "period": null,
+              "added": null,
+              "stoppage_clock": null
+            }
+          ]
+        }
+      },
+      {
+        "ScheduleID": "577",
+        "Input": {
+          "EventID": "553648ee-2cf0-4161-bde2-7a0d9141103c",
+          "FixtureID": 1550126,
+          "StagingKey": "staging/1550126/553648ee-2cf0-4161-bde2-7a0d9141103c/2098510793616523397.mp4",
+          "APIElapsed": 84,
+          "APIExtra": 0
+        },
+        "Output": {
+          "Outcome": "rejected",
+          "Reason": "clock present but does not match expected (wrong minute or wrong half)",
+          "MatchedMinute": null,
+          "Frames": [
+            {
+              "soccer": true,
+              "screen": false,
+              "clock": "85:22",
+              "period": null,
+              "added": null,
+              "stoppage_clock": null
+            },
+            {
+              "soccer": true,
+              "screen": false,
+              "clock": "85:25",
+              "period": null,
+              "added": null,
+              "stoppage_clock": null
+            },
+            {
+              "soccer": true,
+              "screen": false,
+              "clock": "85:28",
+              "period": null,
+              "added": null,
+              "stoppage_clock": null
+            }
+          ]
+        }
+      },
+      {
+        "ScheduleID": "809",
+        "Input": {
+          "EventID": "553648ee-2cf0-4161-bde2-7a0d9141103c",
+          "FixtureID": 1550126,
+          "StagingKey": "staging/1550126/553648ee-2cf0-4161-bde2-7a0d9141103c/2098511116821217663.mp4",
+          "APIElapsed": 84,
+          "APIExtra": 0
+        },
+        "Output": {
+          "Outcome": "rejected",
+          "Reason": "clock present but does not match expected (wrong minute or wrong half)",
+          "MatchedMinute": null,
+          "Frames": [
+            {
+              "soccer": true,
+              "screen": false,
+              "clock": "85:22",
+              "period": null,
+              "added": null,
+              "stoppage_clock": null
+            },
+            {
+              "soccer": true,
+              "screen": false,
+              "clock": "85:25",
+              "period": null,
+              "added": null,
+              "stoppage_clock": null
+            },
+            {
+              "soccer": true,
+              "screen": false,
+              "clock": "85:28",
+              "period": null,
+              "added": null,
+              "stoppage_clock": null
+            }
+          ]
+        }
+      },
+      {
+        "ScheduleID": "797",
+        "Input": {
+          "EventID": "553648ee-2cf0-4161-bde2-7a0d9141103c",
+          "FixtureID": 1550126,
+          "StagingKey": "staging/1550126/553648ee-2cf0-4161-bde2-7a0d9141103c/2098511090602664268.mp4",
+          "APIElapsed": 84,
+          "APIExtra": 0
+        },
+        "Output": {
+          "Outcome": "rejected",
+          "Reason": "clock present but does not match expected (wrong minute or wrong half)",
+          "MatchedMinute": null,
+          "Frames": [
+            {
+              "soccer": true,
+              "screen": false,
+              "clock": "65:45",
+              "period": null,
+              "added": null,
+              "stoppage_clock": null
+            },
+            {
+              "soccer": true,
+              "screen": false,
+              "clock": "65:48",
+              "period": null,
+              "added": null,
+              "stoppage_clock": null
+            },
+            {
+              "soccer": true,
+              "screen": false,
+              "clock": "65:50",
+              "period": null,
+              "added": null,
+              "stoppage_clock": null
+            }
+          ]
+        }
+      },
+      {
+        "ScheduleID": "1271",
+        "Input": {
+          "EventID": "553648ee-2cf0-4161-bde2-7a0d9141103c",
+          "FixtureID": 1550126,
+          "StagingKey": "staging/1550126/553648ee-2cf0-4161-bde2-7a0d9141103c/2098511507235438674.mp4",
+          "APIElapsed": 84,
+          "APIExtra": 0
+        },
+        "Output": {
+          "Outcome": "rejected",
+          "Reason": "not soccer (minority soccer vote)",
+          "MatchedMinute": null,
+          "Frames": [
+            {
+              "soccer": false,
+              "screen": false,
+              "clock": null,
+              "period": null,
+              "added": null,
+              "stoppage_clock": null
+            },
+            {
+              "soccer": false,
+              "screen": false,
+              "clock": null,
+              "period": null,
+              "added": null,
+              "stoppage_clock": null
+            },
+            {
+              "soccer": false,
+              "screen": false,
+              "clock": null,
+              "period": null,
+              "added": null,
+              "stoppage_clock": null
+            }
+          ]
+        }
+      },
+      {
+        "ScheduleID": "1265",
+        "Input": {
+          "EventID": "553648ee-2cf0-4161-bde2-7a0d9141103c",
+          "FixtureID": 1550126,
+          "StagingKey": "staging/1550126/553648ee-2cf0-4161-bde2-7a0d9141103c/2098511455632892055.mp4",
+          "APIElapsed": 84,
+          "APIExtra": 0
+        },
+        "Output": {
+          "Outcome": "unverified",
+          "Reason": "no clock visible",
+          "MatchedMinute": null,
+          "Frames": [
+            {
+              "soccer": true,
+              "screen": false,
+              "clock": null,
+              "period": null,
+              "added": null,
+              "stoppage_clock": null
+            },
+            {
+              "soccer": true,
+              "screen": false,
+              "clock": null,
+              "period": null,
+              "added": null,
+              "stoppage_clock": null
+            },
+            {
+              "soccer": true,
+              "screen": false,
+              "clock": null,
+              "period": null,
+              "added": null,
+              "stoppage_clock": null
+            }
+          ]
+        }
+      },
+      {
+        "ScheduleID": "1554",
+        "Input": {
+          "EventID": "553648ee-2cf0-4161-bde2-7a0d9141103c",
+          "FixtureID": 1550126,
+          "StagingKey": "staging/1550126/553648ee-2cf0-4161-bde2-7a0d9141103c/2098511783485231230.mp4",
+          "APIElapsed": 84,
+          "APIExtra": 0
+        },
+        "Output": {
+          "Outcome": "rejected",
+          "Reason": "clock present but does not match expected (wrong minute or wrong half)",
+          "MatchedMinute": null,
+          "Frames": [
+            {
+              "soccer": true,
+              "screen": false,
+              "clock": "29:39",
+              "period": null,
+              "added": null,
+              "stoppage_clock": null
+            },
+            {
+              "soccer": true,
+              "screen": false,
+              "clock": "29:41",
+              "period": null,
+              "added": null,
+              "stoppage_clock": null
+            },
+            {
+              "soccer": true,
+              "screen": false,
+              "clock": "29:43",
+              "period": null,
+              "added": null,
+              "stoppage_clock": null
+            }
+          ]
+        }
+      },
+      {
+        "ScheduleID": "1560",
+        "Input": {
+          "EventID": "553648ee-2cf0-4161-bde2-7a0d9141103c",
+          "FixtureID": 1550126,
+          "StagingKey": "staging/1550126/553648ee-2cf0-4161-bde2-7a0d9141103c/2098512005330088414.mp4",
+          "APIElapsed": 84,
+          "APIExtra": 0
+        },
+        "Output": {
+          "Outcome": "rejected",
+          "Reason": "not soccer (minority soccer vote)",
+          "MatchedMinute": null,
+          "Frames": [
+            {
+              "soccer": false,
+              "screen": false,
+              "clock": null,
+              "period": null,
+              "added": null,
+              "stoppage_clock": null
+            },
+            {
+              "soccer": false,
+              "screen": false,
+              "clock": null,
+              "period": null,
+              "added": null,
+              "stoppage_clock": null
+            },
+            {
+              "soccer": false,
+              "screen": false,
+              "clock": null,
+              "period": null,
+              "added": null,
+              "stoppage_clock": null
+            }
+          ]
+        }
+      },
+      {
+        "ScheduleID": "1566",
+        "Input": {
+          "EventID": "553648ee-2cf0-4161-bde2-7a0d9141103c",
+          "FixtureID": 1550126,
+          "StagingKey": "staging/1550126/553648ee-2cf0-4161-bde2-7a0d9141103c/2098511810559115676.mp4",
+          "APIElapsed": 84,
+          "APIExtra": 0
+        },
+        "Output": {
+          "Outcome": "rejected",
+          "Reason": "not soccer (minority soccer vote)",
+          "MatchedMinute": null,
+          "Frames": [
+            {
+              "soccer": false,
+              "screen": false,
+              "clock": null,
+              "period": null,
+              "added": null,
+              "stoppage_clock": null
+            },
+            {
+              "soccer": false,
+              "screen": false,
+              "clock": null,
+              "period": null,
+              "added": null,
+              "stoppage_clock": null
+            },
+            {
+              "soccer": false,
+              "screen": false,
+              "clock": null,
+              "period": null,
+              "added": null,
+              "stoppage_clock": null
+            }
+          ]
+        }
+      },
+      {
+        "ScheduleID": "1847",
+        "Input": {
+          "EventID": "553648ee-2cf0-4161-bde2-7a0d9141103c",
+          "FixtureID": 1550126,
+          "StagingKey": "staging/1550126/553648ee-2cf0-4161-bde2-7a0d9141103c/2098512191682908344.mp4",
+          "APIElapsed": 84,
+          "APIExtra": 0
+        },
+        "Output": {
+          "Outcome": "rejected",
+          "Reason": "not soccer (minority soccer vote)",
+          "MatchedMinute": null,
+          "Frames": [
+            {
+              "soccer": false,
+              "screen": false,
+              "clock": null,
+              "period": null,
+              "added": null,
+              "stoppage_clock": null
+            },
+            {
+              "soccer": false,
+              "screen": false,
+              "clock": null,
+              "period": null,
+              "added": null,
+              "stoppage_clock": null
+            },
+            {
+              "soccer": false,
+              "screen": false,
+              "clock": null,
+              "period": null,
+              "added": null,
+              "stoppage_clock": null
+            }
+          ]
+        }
+      },
+      {
+        "ScheduleID": "2016",
+        "Input": {
+          "EventID": "553648ee-2cf0-4161-bde2-7a0d9141103c",
+          "FixtureID": 1550126,
+          "StagingKey": "staging/1550126/553648ee-2cf0-4161-bde2-7a0d9141103c/2098512502673768834.mp4",
+          "APIElapsed": 84,
+          "APIExtra": 0
+        },
+        "Output": {
+          "Outcome": "verified",
+          "Reason": "clock matches minute+period",
+          "MatchedMinute": 83,
+          "Frames": [
+            {
+              "soccer": true,
+              "screen": false,
+              "clock": "83:19",
+              "period": null,
+              "added": null,
+              "stoppage_clock": null
+            },
+            {
+              "soccer": true,
+              "screen": false,
+              "clock": null,
+              "period": null,
+              "added": null,
+              "stoppage_clock": null
+            },
+            {
+              "soccer": true,
+              "screen": false,
+              "clock": null,
+              "period": null,
+              "added": null,
+              "stoppage_clock": null
+            }
+          ]
+        }
+      },
+      {
+        "ScheduleID": "2144",
+        "Input": {
+          "EventID": "553648ee-2cf0-4161-bde2-7a0d9141103c",
+          "FixtureID": 1550126,
+          "StagingKey": "staging/1550126/553648ee-2cf0-4161-bde2-7a0d9141103c/2098512590007836832.mp4",
+          "APIElapsed": 84,
+          "APIExtra": 0
+        },
+        "Output": {
+          "Outcome": "rejected",
+          "Reason": "not soccer (minority soccer vote)",
+          "MatchedMinute": null,
+          "Frames": [
+            {
+              "soccer": false,
+              "screen": false,
+              "clock": null,
+              "period": null,
+              "added": null,
+              "stoppage_clock": null
+            },
+            {
+              "soccer": false,
+              "screen": false,
+              "clock": null,
+              "period": null,
+              "added": null,
+              "stoppage_clock": null
+            },
+            {
+              "soccer": false,
+              "screen": false,
+              "clock": null,
+              "period": null,
+              "added": null,
+              "stoppage_clock": null
+            }
+          ]
+        }
+      },
+      {
+        "ScheduleID": "2502",
+        "Input": {
+          "EventID": "553648ee-2cf0-4161-bde2-7a0d9141103c",
+          "FixtureID": 1550126,
+          "StagingKey": "staging/1550126/553648ee-2cf0-4161-bde2-7a0d9141103c/2098513182822167008.mp4",
+          "APIElapsed": 84,
+          "APIExtra": 0
+        },
+        "Output": {
+          "Outcome": "rejected",
+          "Reason": "clock present but does not match expected (wrong minute or wrong half)",
+          "MatchedMinute": null,
+          "Frames": [
+            {
+              "soccer": true,
+              "screen": false,
+              "clock": "28:01",
+              "period": null,
+              "added": null,
+              "stoppage_clock": null
+            },
+            {
+              "soccer": true,
+              "screen": false,
+              "clock": "28:02",
+              "period": null,
+              "added": null,
+              "stoppage_clock": null
+            },
+            {
+              "soccer": true,
+              "screen": false,
+              "clock": "28:04",
+              "period": null,
+              "added": null,
+              "stoppage_clock": null
+            }
+          ]
+        }
+      },
+      {
+        "ScheduleID": "2874",
+        "Input": {
+          "EventID": "553648ee-2cf0-4161-bde2-7a0d9141103c",
+          "FixtureID": 1550126,
+          "StagingKey": "staging/1550126/553648ee-2cf0-4161-bde2-7a0d9141103c/2098513961239068973.mp4",
+          "APIElapsed": 84,
+          "APIExtra": 0
+        },
+        "Output": {
+          "Outcome": "rejected",
+          "Reason": "not soccer (minority soccer vote)",
+          "MatchedMinute": null,
+          "Frames": [
+            {
+              "soccer": false,
+              "screen": false,
+              "clock": null,
+              "period": null,
+              "added": null,
+              "stoppage_clock": null
+            },
+            {
+              "soccer": false,
+              "screen": false,
+              "clock": null,
+              "period": null,
+              "added": null,
+              "stoppage_clock": null
+            },
+            {
+              "soccer": false,
+              "screen": false,
+              "clock": null,
+              "period": null,
+              "added": null,
+              "stoppage_clock": null
+            }
+          ]
+        }
+      }
+    ]
+  },
+  {
+    "Source": "scratch-audit-2026-09-11/mastantuono/first-history.json",
+    "SHA256": "ae40990a38e96f002e4495501fda773a8a2d1e1bc42258f94b3bce93166cbcbb",
+    "RunID": "7fd25070-3053-4e7b-9e65-72231844455a",
+    "Context": {
+      "event_id": "d0a46df7-e3fc-4892-b748-ee584124f5de",
+      "fixture_id": 1550126,
+      "player_name": "F. Mastantuono",
+      "team_name": "Fiorentina"
+    },
+    "Scheduled": 11,
+    "Observations": [
+      {
+        "ScheduleID": "121",
+        "Input": {
+          "EventID": "d0a46df7-e3fc-4892-b748-ee584124f5de",
+          "FixtureID": 1550126,
+          "StagingKey": "staging/1550126/d0a46df7-e3fc-4892-b748-ee584124f5de/2098490393234931957.mp4",
+          "APIElapsed": 29,
+          "APIExtra": 0
+        },
+        "Output": {
+          "Outcome": "rejected",
+          "Reason": "clock present but does not match expected (wrong minute or wrong half)",
+          "MatchedMinute": null,
+          "Frames": [
+            {
+              "soccer": true,
+              "screen": false,
+              "clock": "21:15",
+              "period": null,
+              "added": null,
+              "stoppage_clock": null
+            },
+            {
+              "soccer": true,
+              "screen": false,
+              "clock": "21:17",
+              "period": null,
+              "added": null,
+              "stoppage_clock": null
+            },
+            {
+              "soccer": true,
+              "screen": false,
+              "clock": "21:20",
+              "period": null,
+              "added": null,
+              "stoppage_clock": null
+            }
+          ]
+        }
+      },
+      {
+        "ScheduleID": "252",
+        "Input": {
+          "EventID": "d0a46df7-e3fc-4892-b748-ee584124f5de",
+          "FixtureID": 1550126,
+          "StagingKey": "staging/1550126/d0a46df7-e3fc-4892-b748-ee584124f5de/2098490782982218060.mp4",
+          "APIElapsed": 29,
+          "APIExtra": 0
+        },
+        "Output": {
+          "Outcome": "verified",
+          "Reason": "clock matches minute+period",
+          "MatchedMinute": 27,
+          "Frames": [
+            {
+              "soccer": true,
+              "screen": false,
+              "clock": "27:59",
+              "period": null,
+              "added": null,
+              "stoppage_clock": null
+            },
+            {
+              "soccer": true,
+              "screen": false,
+              "clock": "28:03",
+              "period": null,
+              "added": null,
+              "stoppage_clock": null
+            },
+            {
+              "soccer": true,
+              "screen": false,
+              "clock": "28:08",
+              "period": null,
+              "added": null,
+              "stoppage_clock": null
+            }
+          ]
+        }
+      },
+      {
+        "ScheduleID": "240",
+        "Input": {
+          "EventID": "d0a46df7-e3fc-4892-b748-ee584124f5de",
+          "FixtureID": 1550126,
+          "StagingKey": "staging/1550126/d0a46df7-e3fc-4892-b748-ee584124f5de/2098490428068634977.mp4",
+          "APIElapsed": 29,
+          "APIExtra": 0
+        },
+        "Output": {
+          "Outcome": "rejected",
+          "Reason": "clock present but does not match expected (wrong minute or wrong half)",
+          "MatchedMinute": null,
+          "Frames": [
+            {
+              "soccer": true,
+              "screen": false,
+              "clock": "21:14",
+              "period": null,
+              "added": null,
+              "stoppage_clock": null
+            },
+            {
+              "soccer": true,
+              "screen": false,
+              "clock": "21:16",
+              "period": null,
+              "added": null,
+              "stoppage_clock": "1:17"
+            },
+            {
+              "soccer": true,
+              "screen": false,
+              "clock": "21:18",
+              "period": null,
+              "added": null,
+              "stoppage_clock": "21:19"
+            }
+          ]
+        }
+      },
+      {
+        "ScheduleID": "477",
+        "Input": {
+          "EventID": "d0a46df7-e3fc-4892-b748-ee584124f5de",
+          "FixtureID": 1550126,
+          "StagingKey": "staging/1550126/d0a46df7-e3fc-4892-b748-ee584124f5de/2098491069528785033.mp4",
+          "APIElapsed": 29,
+          "APIExtra": 0
+        },
+        "Output": {
+          "Outcome": "verified",
+          "Reason": "clock matches minute+period",
+          "MatchedMinute": 29,
+          "Frames": [
+            {
+              "soccer": true,
+              "screen": false,
+              "clock": "29:36",
+              "period": null,
+              "added": null,
+              "stoppage_clock": null
+            },
+            {
+              "soccer": true,
+              "screen": false,
+              "clock": "29:39",
+              "period": null,
+              "added": null,
+              "stoppage_clock": null
+            },
+            {
+              "soccer": true,
+              "screen": false,
+              "clock": "29:42",
+              "period": null,
+              "added": null,
+              "stoppage_clock": null
+            }
+          ]
+        }
+      },
+      {
+        "ScheduleID": "483",
+        "Input": {
+          "EventID": "d0a46df7-e3fc-4892-b748-ee584124f5de",
+          "FixtureID": 1550126,
+          "StagingKey": "staging/1550126/d0a46df7-e3fc-4892-b748-ee584124f5de/2098491021763964969.mp4",
+          "APIElapsed": 29,
+          "APIExtra": 0
+        },
+        "Output": {
+          "Outcome": "rejected",
+          "Reason": "clock present but does not match expected (wrong minute or wrong half)",
+          "MatchedMinute": null,
+          "Frames": [
+            {
+              "soccer": true,
+              "screen": false,
+              "clock": "21:24",
+              "period": null,
+              "added": null,
+              "stoppage_clock": null
+            },
+            {
+              "soccer": true,
+              "screen": false,
+              "clock": null,
+              "period": null,
+              "added": null,
+              "stoppage_clock": null
+            },
+            {
+              "soccer": true,
+              "screen": false,
+              "clock": null,
+              "period": null,
+              "added": null,
+              "stoppage_clock": null
+            }
+          ]
+        }
+      },
+      {
+        "ScheduleID": "681",
+        "Input": {
+          "EventID": "d0a46df7-e3fc-4892-b748-ee584124f5de",
+          "FixtureID": 1550126,
+          "StagingKey": "staging/1550126/d0a46df7-e3fc-4892-b748-ee584124f5de/2098491499054845989.mp4",
+          "APIElapsed": 29,
+          "APIExtra": 0
+        },
+        "Output": {
+          "Outcome": "verified",
+          "Reason": "clock matches minute+period",
+          "MatchedMinute": 29,
+          "Frames": [
+            {
+              "soccer": true,
+              "screen": false,
+              "clock": "29:39",
+              "period": null,
+              "added": null,
+              "stoppage_clock": null
+            },
+            {
+              "soccer": true,
+              "screen": false,
+              "clock": "29:41",
+              "period": null,
+              "added": null,
+              "stoppage_clock": null
+            },
+            {
+              "soccer": true,
+              "screen": false,
+              "clock": "29:43",
+              "period": null,
+              "added": null,
+              "stoppage_clock": null
+            }
+          ]
+        }
+      },
+      {
+        "ScheduleID": "964",
+        "Input": {
+          "EventID": "d0a46df7-e3fc-4892-b748-ee584124f5de",
+          "FixtureID": 1550126,
+          "StagingKey": "staging/1550126/d0a46df7-e3fc-4892-b748-ee584124f5de/2098491598120071467.mp4",
+          "APIElapsed": 29,
+          "APIExtra": 0
+        },
+        "Output": {
+          "Outcome": "verified",
+          "Reason": "clock matches minute+period",
+          "MatchedMinute": 28,
+          "Frames": [
+            {
+              "soccer": true,
+              "screen": false,
+              "clock": "28:01",
+              "period": null,
+              "added": null,
+              "stoppage_clock": null
+            },
+            {
+              "soccer": true,
+              "screen": false,
+              "clock": "28:02",
+              "period": null,
+              "added": null,
+              "stoppage_clock": null
+            },
+            {
+              "soccer": true,
+              "screen": false,
+              "clock": "28:04",
+              "period": null,
+              "added": null,
+              "stoppage_clock": null
+            }
+          ]
+        }
+      },
+      {
+        "ScheduleID": "1216",
+        "Input": {
+          "EventID": "d0a46df7-e3fc-4892-b748-ee584124f5de",
+          "FixtureID": 1550126,
+          "StagingKey": "staging/1550126/d0a46df7-e3fc-4892-b748-ee584124f5de/2098492383193120829.mp4",
+          "APIElapsed": 29,
+          "APIExtra": 0
+        },
+        "Output": {
+          "Outcome": "verified",
+          "Reason": "clock matches minute+period",
+          "MatchedMinute": 28,
+          "Frames": [
+            {
+              "soccer": true,
+              "screen": false,
+              "clock": "28:04",
+              "period": null,
+              "added": null,
+              "stoppage_clock": null
+            },
+            {
+              "soccer": true,
+              "screen": false,
+              "clock": "29:39",
+              "period": null,
+              "added": null,
+              "stoppage_clock": null
+            },
+            {
+              "soccer": true,
+              "screen": false,
+              "clock": "29:42",
+              "period": null,
+              "added": null,
+              "stoppage_clock": null
+            }
+          ]
+        }
+      },
+      {
+        "ScheduleID": "1547",
+        "Input": {
+          "EventID": "d0a46df7-e3fc-4892-b748-ee584124f5de",
+          "FixtureID": 1550126,
+          "StagingKey": "staging/1550126/d0a46df7-e3fc-4892-b748-ee584124f5de/2098492462947799423.mp4",
+          "APIElapsed": 29,
+          "APIExtra": 0
+        },
+        "Output": {
+          "Outcome": "verified",
+          "Reason": "clock matches minute+period",
+          "MatchedMinute": 28,
+          "Frames": [
+            {
+              "soccer": true,
+              "screen": false,
+              "clock": "28:08",
+              "period": null,
+              "added": null,
+              "stoppage_clock": null
+            },
+            {
+              "soccer": true,
+              "screen": false,
+              "clock": "29:25",
+              "period": null,
+              "added": null,
+              "stoppage_clock": null
+            },
+            {
+              "soccer": true,
+              "screen": false,
+              "clock": "29:41",
+              "period": null,
+              "added": null,
+              "stoppage_clock": null
+            }
+          ]
+        }
+      },
+      {
+        "ScheduleID": "1848",
+        "Input": {
+          "EventID": "d0a46df7-e3fc-4892-b748-ee584124f5de",
+          "FixtureID": 1550126,
+          "StagingKey": "staging/1550126/d0a46df7-e3fc-4892-b748-ee584124f5de/2098493563822838100.mp4",
+          "APIElapsed": 29,
+          "APIExtra": 0
+        },
+        "Output": {
+          "Outcome": "verified",
+          "Reason": "clock matches minute+period",
+          "MatchedMinute": 28,
+          "Frames": [
+            {
+              "soccer": true,
+              "screen": false,
+              "clock": "28:04",
+              "period": null,
+              "added": null,
+              "stoppage_clock": null
+            },
+            {
+              "soccer": true,
+              "screen": false,
+              "clock": "29:39",
+              "period": null,
+              "added": null,
+              "stoppage_clock": null
+            },
+            {
+              "soccer": true,
+              "screen": false,
+              "clock": "29:42",
+              "period": null,
+              "added": null,
+              "stoppage_clock": null
+            }
+          ]
+        }
+      },
+      {
+        "ScheduleID": "2084",
+        "Input": {
+          "EventID": "d0a46df7-e3fc-4892-b748-ee584124f5de",
+          "FixtureID": 1550126,
+          "StagingKey": "staging/1550126/d0a46df7-e3fc-4892-b748-ee584124f5de/2098493684417233271.mp4",
+          "APIElapsed": 29,
+          "APIExtra": 0
+        },
+        "Output": {
+          "Outcome": "verified",
+          "Reason": "clock matches minute+period",
+          "MatchedMinute": 28,
+          "Frames": [
+            {
+              "soccer": true,
+              "screen": false,
+              "clock": "28:04",
+              "period": null,
+              "added": null,
+              "stoppage_clock": null
+            },
+            {
+              "soccer": true,
+              "screen": false,
+              "clock": "29:39",
+              "period": null,
+              "added": null,
+              "stoppage_clock": null
+            },
+            {
+              "soccer": true,
+              "screen": false,
+              "clock": "29:42",
+              "period": null,
+              "added": null,
+              "stoppage_clock": null
+            }
+          ]
+        }
+      }
+    ]
+  },
+  {
+    "Source": "scratch-audit-2026-09-11/mastantuono/second-history.json",
+    "SHA256": "ea7e814e1df4098f0e036ebf6fe3a5254aebee0d3e4332df26b49a84a0c7aa5f",
+    "RunID": "5028b90a-7fa2-4e1b-a082-3f199a1e1a99",
+    "Context": {
+      "event_id": "d7db1660-1055-4651-b3ef-75d4e6dc3ad3",
+      "fixture_id": 1550126,
+      "player_name": "F. Mastantuono",
+      "team_name": "Fiorentina"
+    },
+    "Scheduled": 9,
+    "Observations": [
+      {
+        "ScheduleID": "205",
+        "Input": {
+          "EventID": "d7db1660-1055-4651-b3ef-75d4e6dc3ad3",
+          "FixtureID": 1550126,
+          "StagingKey": "staging/1550126/d7db1660-1055-4651-b3ef-75d4e6dc3ad3/2098490937458450528.mp4",
+          "APIElapsed": 30,
+          "APIExtra": 0
+        },
+        "Output": {
+          "Outcome": "verified",
+          "Reason": "clock matches minute+period",
+          "MatchedMinute": 28,
+          "Frames": [
+            {
+              "soccer": true,
+              "screen": false,
+              "clock": "28:01",
+              "period": null,
+              "added": null,
+              "stoppage_clock": null
+            },
+            {
+              "soccer": true,
+              "screen": false,
+              "clock": "28:02",
+              "period": null,
+              "added": null,
+              "stoppage_clock": null
+            },
+            {
+              "soccer": true,
+              "screen": false,
+              "clock": "28:04",
+              "period": null,
+              "added": null,
+              "stoppage_clock": null
+            }
+          ]
+        }
+      },
+      {
+        "ScheduleID": "247",
+        "Input": {
+          "EventID": "d7db1660-1055-4651-b3ef-75d4e6dc3ad3",
+          "FixtureID": 1550126,
+          "StagingKey": "staging/1550126/d7db1660-1055-4651-b3ef-75d4e6dc3ad3/2098491102789767598.mp4",
+          "APIElapsed": 30,
+          "APIExtra": 0
+        },
+        "Output": {
+          "Outcome": "verified",
+          "Reason": "clock matches minute+period",
+          "MatchedMinute": 28,
+          "Frames": [
+            {
+              "soccer": true,
+              "screen": false,
+              "clock": "27:59",
+              "period": null,
+              "added": null,
+              "stoppage_clock": null
+            },
+            {
+              "soccer": true,
+              "screen": false,
+              "clock": "28:03",
+              "period": null,
+              "added": null,
+              "stoppage_clock": null
+            },
+            {
+              "soccer": true,
+              "screen": false,
+              "clock": "28:08",
+              "period": null,
+              "added": null,
+              "stoppage_clock": null
+            }
+          ]
+        }
+      },
+      {
+        "ScheduleID": "217",
+        "Input": {
+          "EventID": "d7db1660-1055-4651-b3ef-75d4e6dc3ad3",
+          "FixtureID": 1550126,
+          "StagingKey": "staging/1550126/d7db1660-1055-4651-b3ef-75d4e6dc3ad3/2098491069528785033.mp4",
+          "APIElapsed": 30,
+          "APIExtra": 0
+        },
+        "Output": {
+          "Outcome": "verified",
+          "Reason": "clock matches minute+period",
+          "MatchedMinute": 29,
+          "Frames": [
+            {
+              "soccer": true,
+              "screen": false,
+              "clock": "29:36",
+              "period": null,
+              "added": null,
+              "stoppage_clock": null
+            },
+            {
+              "soccer": true,
+              "screen": false,
+              "clock": "29:39",
+              "period": null,
+              "added": null,
+              "stoppage_clock": null
+            },
+            {
+              "soccer": true,
+              "screen": false,
+              "clock": "29:42",
+              "period": null,
+              "added": null,
+              "stoppage_clock": null
+            }
+          ]
+        }
+      },
+      {
+        "ScheduleID": "259",
+        "Input": {
+          "EventID": "d7db1660-1055-4651-b3ef-75d4e6dc3ad3",
+          "FixtureID": 1550126,
+          "StagingKey": "staging/1550126/d7db1660-1055-4651-b3ef-75d4e6dc3ad3/2098491021763964969.mp4",
+          "APIElapsed": 30,
+          "APIExtra": 0
+        },
+        "Output": {
+          "Outcome": "rejected",
+          "Reason": "clock present but does not match expected (wrong minute or wrong half)",
+          "MatchedMinute": null,
+          "Frames": [
+            {
+              "soccer": true,
+              "screen": false,
+              "clock": "21:24",
+              "period": null,
+              "added": null,
+              "stoppage_clock": null
+            },
+            {
+              "soccer": true,
+              "screen": false,
+              "clock": null,
+              "period": null,
+              "added": null,
+              "stoppage_clock": null
+            },
+            {
+              "soccer": true,
+              "screen": false,
+              "clock": null,
+              "period": null,
+              "added": null,
+              "stoppage_clock": null
+            }
+          ]
+        }
+      },
+      {
+        "ScheduleID": "578",
+        "Input": {
+          "EventID": "d7db1660-1055-4651-b3ef-75d4e6dc3ad3",
+          "FixtureID": 1550126,
+          "StagingKey": "staging/1550126/d7db1660-1055-4651-b3ef-75d4e6dc3ad3/2098491721390629348.mp4",
+          "APIElapsed": 30,
+          "APIExtra": 0
+        },
+        "Output": {
+          "Outcome": "verified",
+          "Reason": "clock matches minute+period",
+          "MatchedMinute": 29,
+          "Frames": [
+            {
+              "soccer": true,
+              "screen": false,
+              "clock": "29:39",
+              "period": null,
+              "added": null,
+              "stoppage_clock": null
+            },
+            {
+              "soccer": true,
+              "screen": false,
+              "clock": "29:41",
+              "period": null,
+              "added": null,
+              "stoppage_clock": null
+            },
+            {
+              "soccer": true,
+              "screen": false,
+              "clock": "29:43",
+              "period": null,
+              "added": null,
+              "stoppage_clock": null
+            }
+          ]
+        }
+      },
+      {
+        "ScheduleID": "792",
+        "Input": {
+          "EventID": "d7db1660-1055-4651-b3ef-75d4e6dc3ad3",
+          "FixtureID": 1550126,
+          "StagingKey": "staging/1550126/d7db1660-1055-4651-b3ef-75d4e6dc3ad3/2098492383193120829.mp4",
+          "APIElapsed": 30,
+          "APIExtra": 0
+        },
+        "Output": {
+          "Outcome": "verified",
+          "Reason": "clock matches minute+period",
+          "MatchedMinute": 28,
+          "Frames": [
+            {
+              "soccer": true,
+              "screen": false,
+              "clock": "28:04",
+              "period": null,
+              "added": null,
+              "stoppage_clock": null
+            },
+            {
+              "soccer": true,
+              "screen": false,
+              "clock": "29:39",
+              "period": null,
+              "added": null,
+              "stoppage_clock": null
+            },
+            {
+              "soccer": true,
+              "screen": false,
+              "clock": "29:42",
+              "period": null,
+              "added": null,
+              "stoppage_clock": null
+            }
+          ]
+        }
+      },
+      {
+        "ScheduleID": "1038",
+        "Input": {
+          "EventID": "d7db1660-1055-4651-b3ef-75d4e6dc3ad3",
+          "FixtureID": 1550126,
+          "StagingKey": "staging/1550126/d7db1660-1055-4651-b3ef-75d4e6dc3ad3/2098493056031010914.mp4",
+          "APIElapsed": 30,
+          "APIExtra": 0
+        },
+        "Output": {
+          "Outcome": "verified",
+          "Reason": "clock matches minute+period",
+          "MatchedMinute": 28,
+          "Frames": [
+            {
+              "soccer": true,
+              "screen": false,
+              "clock": "28:04",
+              "period": null,
+              "added": null,
+              "stoppage_clock": null
+            },
+            {
+              "soccer": true,
+              "screen": false,
+              "clock": "29:39",
+              "period": null,
+              "added": null,
+              "stoppage_clock": null
+            },
+            {
+              "soccer": true,
+              "screen": false,
+              "clock": "29:42",
+              "period": null,
+              "added": null,
+              "stoppage_clock": null
+            }
+          ]
+        }
+      },
+      {
+        "ScheduleID": "1101",
+        "Input": {
+          "EventID": "d7db1660-1055-4651-b3ef-75d4e6dc3ad3",
+          "FixtureID": 1550126,
+          "StagingKey": "staging/1550126/d7db1660-1055-4651-b3ef-75d4e6dc3ad3/2098493042252460353.mp4",
+          "APIElapsed": 30,
+          "APIExtra": 0
+        },
+        "Output": {
+          "Outcome": "unverified",
+          "Reason": "no clock visible",
+          "MatchedMinute": null,
+          "Frames": [
+            {
+              "soccer": true,
+              "screen": false,
+              "clock": null,
+              "period": null,
+              "added": null,
+              "stoppage_clock": null
+            },
+            {
+              "soccer": true,
+              "screen": false,
+              "clock": null,
+              "period": null,
+              "added": null,
+              "stoppage_clock": null
+            },
+            {
+              "soccer": true,
+              "screen": false,
+              "clock": null,
+              "period": null,
+              "added": null,
+              "stoppage_clock": null
+            }
+          ]
+        }
+      },
+      {
+        "ScheduleID": "1403",
+        "Input": {
+          "EventID": "d7db1660-1055-4651-b3ef-75d4e6dc3ad3",
+          "FixtureID": 1550126,
+          "StagingKey": "staging/1550126/d7db1660-1055-4651-b3ef-75d4e6dc3ad3/2098493684417233271.mp4",
+          "APIElapsed": 30,
+          "APIExtra": 0
+        },
+        "Output": {
+          "Outcome": "verified",
+          "Reason": "clock matches minute+period",
+          "MatchedMinute": 28,
+          "Frames": [
+            {
+              "soccer": true,
+              "screen": false,
+              "clock": "28:04",
+              "period": null,
+              "added": null,
+              "stoppage_clock": null
+            },
+            {
+              "soccer": true,
+              "screen": false,
+              "clock": "29:39",
+              "period": null,
+              "added": null,
+              "stoppage_clock": null
+            },
+            {
+              "soccer": true,
+              "screen": false,
+              "clock": "29:42",
+              "period": null,
+              "added": null,
+              "stoppage_clock": null
+            }
+          ]
+        }
+      }
+    ]
+  },
+  {
+    "Source": "scratch-audit-2026-09-11/lens-winner/history.json",
+    "SHA256": "c0e21ba7693be383ae0789ed9d00b0b2cd06e28864252b85d42cade3049ebe86",
+    "RunID": "ac577688-9391-4599-bbc6-805c9e7c60cc",
+    "Context": {
+      "event_id": "431df453-6087-4c43-9283-37c0faa4a951",
+      "fixture_id": 1635729,
+      "player_name": "Ruben Aguilar",
+      "team_name": "Lens"
+    },
+    "Scheduled": 7,
+    "Observations": [
+      {
+        "ScheduleID": "260",
+        "Input": {
+          "EventID": "431df453-6087-4c43-9283-37c0faa4a951",
+          "FixtureID": 1635729,
+          "StagingKey": "staging/1635729/431df453-6087-4c43-9283-37c0faa4a951/2098153588925112595.mp4",
+          "APIElapsed": 90,
+          "APIExtra": 3
+        },
+        "Output": {
+          "Outcome": "verified",
+          "Reason": "clock matches minute+period",
+          "MatchedMinute": 92,
+          "Frames": [
+            {
+              "soccer": true,
+              "screen": false,
+              "clock": "90:00",
+              "period": null,
+              "added": "+5",
+              "stoppage_clock": "2:23"
+            },
+            {
+              "soccer": true,
+              "screen": false,
+              "clock": "90:00",
+              "period": null,
+              "added": "+5",
+              "stoppage_clock": "2:26"
+            },
+            {
+              "soccer": true,
+              "screen": false,
+              "clock": "90:00",
+              "period": null,
+              "added": "+5",
+              "stoppage_clock": "2:29"
+            }
+          ]
+        }
+      },
+      {
+        "ScheduleID": "314",
+        "Input": {
+          "EventID": "431df453-6087-4c43-9283-37c0faa4a951",
+          "FixtureID": 1635729,
+          "StagingKey": "staging/1635729/431df453-6087-4c43-9283-37c0faa4a951/2098153765652049945.mp4",
+          "APIElapsed": 90,
+          "APIExtra": 3
+        },
+        "Output": {
+          "Outcome": "verified",
+          "Reason": "clock matches minute+period",
+          "MatchedMinute": 92,
+          "Frames": [
+            {
+              "soccer": true,
+              "screen": false,
+              "clock": "90:00",
+              "period": null,
+              "added": "+5",
+              "stoppage_clock": "2:14"
+            },
+            {
+              "soccer": true,
+              "screen": false,
+              "clock": "90:00",
+              "period": null,
+              "added": "+5",
+              "stoppage_clock": "2:23"
+            },
+            {
+              "soccer": true,
+              "screen": false,
+              "clock": "90:00",
+              "period": null,
+              "added": "+5",
+              "stoppage_clock": "2:31"
+            }
+          ]
+        }
+      },
+      {
+        "ScheduleID": "612",
+        "Input": {
+          "EventID": "431df453-6087-4c43-9283-37c0faa4a951",
+          "FixtureID": 1635729,
+          "StagingKey": "staging/1635729/431df453-6087-4c43-9283-37c0faa4a951/2098154147526717715.mp4",
+          "APIElapsed": 90,
+          "APIExtra": 3
+        },
+        "Output": {
+          "Outcome": "rejected",
+          "Reason": "not soccer (minority soccer vote)",
+          "MatchedMinute": null,
+          "Frames": [
+            {
+              "soccer": false,
+              "screen": false,
+              "clock": null,
+              "period": null,
+              "added": null,
+              "stoppage_clock": null
+            },
+            {
+              "soccer": false,
+              "screen": false,
+              "clock": null,
+              "period": null,
+              "added": null,
+              "stoppage_clock": null
+            },
+            {
+              "soccer": false,
+              "screen": false,
+              "clock": null,
+              "period": null,
+              "added": null,
+              "stoppage_clock": null
+            }
+          ]
+        }
+      },
+      {
+        "ScheduleID": "831",
+        "Input": {
+          "EventID": "431df453-6087-4c43-9283-37c0faa4a951",
+          "FixtureID": 1635729,
+          "StagingKey": "staging/1635729/431df453-6087-4c43-9283-37c0faa4a951/2098154555749921163.mp4",
+          "APIElapsed": 90,
+          "APIExtra": 3
+        },
+        "Output": {
+          "Outcome": "rejected",
+          "Reason": "not soccer (minority soccer vote)",
+          "MatchedMinute": null,
+          "Frames": [
+            {
+              "soccer": false,
+              "screen": false,
+              "clock": null,
+              "period": null,
+              "added": null,
+              "stoppage_clock": null
+            },
+            {
+              "soccer": false,
+              "screen": false,
+              "clock": null,
+              "period": null,
+              "added": null,
+              "stoppage_clock": null
+            },
+            {
+              "soccer": false,
+              "screen": false,
+              "clock": null,
+              "period": null,
+              "added": null,
+              "stoppage_clock": null
+            }
+          ]
+        }
+      },
+      {
+        "ScheduleID": "1332",
+        "Input": {
+          "EventID": "431df453-6087-4c43-9283-37c0faa4a951",
+          "FixtureID": 1635729,
+          "StagingKey": "staging/1635729/431df453-6087-4c43-9283-37c0faa4a951/2098156514708000772.mp4",
+          "APIElapsed": 90,
+          "APIExtra": 3
+        },
+        "Output": {
+          "Outcome": "verified",
+          "Reason": "clock matches minute+period",
+          "MatchedMinute": 92,
+          "Frames": [
+            {
+              "soccer": true,
+              "screen": false,
+              "clock": "90:00",
+              "period": null,
+              "added": "+5",
+              "stoppage_clock": "02:23"
+            },
+            {
+              "soccer": true,
+              "screen": false,
+              "clock": "90:00",
+              "period": null,
+              "added": "+5",
+              "stoppage_clock": "02:26"
+            },
+            {
+              "soccer": true,
+              "screen": false,
+              "clock": "90:00",
+              "period": null,
+              "added": "+5",
+              "stoppage_clock": "02:29"
+            }
+          ]
+        }
+      },
+      {
+        "ScheduleID": "1338",
+        "Input": {
+          "EventID": "431df453-6087-4c43-9283-37c0faa4a951",
+          "FixtureID": 1635729,
+          "StagingKey": "staging/1635729/431df453-6087-4c43-9283-37c0faa4a951/2098156592134869116.mp4",
+          "APIElapsed": 90,
+          "APIExtra": 3
+        },
+        "Output": {
+          "Outcome": "verified",
+          "Reason": "clock matches minute+period",
+          "MatchedMinute": 92,
+          "Frames": [
+            {
+              "soccer": true,
+              "screen": false,
+              "clock": null,
+              "period": null,
+              "added": null,
+              "stoppage_clock": null
+            },
+            {
+              "soccer": true,
+              "screen": false,
+              "clock": "90:00",
+              "period": null,
+              "added": "+5",
+              "stoppage_clock": "02:44"
+            },
+            {
+              "soccer": true,
+              "screen": false,
+              "clock": null,
+              "period": null,
+              "added": null,
+              "stoppage_clock": null
+            }
+          ]
+        }
+      },
+      {
+        "ScheduleID": "1560",
+        "Input": {
+          "EventID": "431df453-6087-4c43-9283-37c0faa4a951",
+          "FixtureID": 1635729,
+          "StagingKey": "staging/1635729/431df453-6087-4c43-9283-37c0faa4a951/2098157676936990734.mp4",
+          "APIElapsed": 90,
+          "APIExtra": 3
+        },
+        "Output": {
+          "Outcome": "rejected",
+          "Reason": "not soccer (minority soccer vote)",
+          "MatchedMinute": null,
+          "Frames": [
+            {
+              "soccer": false,
+              "screen": false,
+              "clock": null,
+              "period": null,
+              "added": null,
+              "stoppage_clock": null
+            },
+            {
+              "soccer": false,
+              "screen": false,
+              "clock": null,
+              "period": null,
+              "added": null,
+              "stoppage_clock": null
+            },
+            {
+              "soccer": false,
+              "screen": false,
+              "clock": null,
+              "period": null,
+              "added": null,
+              "stoppage_clock": null
+            }
+          ]
+        }
+      }
+    ]
+  }
+]

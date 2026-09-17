@@ -1,0 +1,158 @@
+[
+  {
+    "Expected": {
+      "Elapsed": 6,
+      "Extra": 0
+    },
+    "Gold": [
+      {
+        "soccer": false,
+        "screen": false,
+        "clock": "05:25",
+        "period": "1H",
+        "added": null,
+        "stoppage_clock": null
+      },
+      {
+        "soccer": false,
+        "screen": false,
+        "clock": "05:28",
+        "period": "1H",
+        "added": null,
+        "stoppage_clock": null
+      },
+      {
+        "soccer": false,
+        "screen": false,
+        "clock": "05:31",
+        "period": "1H",
+        "added": null,
+        "stoppage_clock": null
+      }
+    ],
+    "Images": [
+      "/fixtures/first_1P-1.png",
+      "/fixtures/first_1P-2.png",
+      "/fixtures/first_1P-3.png"
+    ],
+    "Name": "first_1P",
+    "Provenance": "synthetic SVG role control, not a broadcast; isolated bare numbers deliberately labeled unknown"
+  },
+  {
+    "Expected": {
+      "Elapsed": 51,
+      "Extra": 0
+    },
+    "Gold": [
+      {
+        "soccer": false,
+        "screen": false,
+        "clock": "05:25",
+        "period": "2H",
+        "added": null,
+        "stoppage_clock": null
+      },
+      {
+        "soccer": false,
+        "screen": false,
+        "clock": "05:28",
+        "period": "2H",
+        "added": null,
+        "stoppage_clock": null
+      },
+      {
+        "soccer": false,
+        "screen": false,
+        "clock": "05:31",
+        "period": "2H",
+        "added": null,
+        "stoppage_clock": null
+      }
+    ],
+    "Images": [
+      "/fixtures/second_2P-1.png",
+      "/fixtures/second_2P-2.png",
+      "/fixtures/second_2P-3.png"
+    ],
+    "Name": "second_2P",
+    "Provenance": "synthetic SVG role control, not a broadcast; isolated bare numbers deliberately labeled unknown"
+  },
+  {
+    "Expected": {
+      "Elapsed": 6,
+      "Extra": 0
+    },
+    "Gold": [
+      {
+        "soccer": false,
+        "screen": false,
+        "clock": "05:25",
+        "period": "1H",
+        "added": null,
+        "stoppage_clock": null
+      },
+      {
+        "soccer": false,
+        "screen": false,
+        "clock": "05:28",
+        "period": "1H",
+        "added": null,
+        "stoppage_clock": null
+      },
+      {
+        "soccer": false,
+        "screen": false,
+        "clock": "05:31",
+        "period": "1H",
+        "added": null,
+        "stoppage_clock": null
+      }
+    ],
+    "Images": [
+      "/fixtures/first_1p-1.png",
+      "/fixtures/first_1p-2.png",
+      "/fixtures/first_1p-3.png"
+    ],
+    "Name": "first_1p",
+    "Provenance": "synthetic SVG role control, not a broadcast; isolated bare numbers deliberately labeled unknown"
+  },
+  {
+    "Expected": {
+      "Elapsed": 51,
+      "Extra": 0
+    },
+    "Gold": [
+      {
+        "soccer": false,
+        "screen": false,
+        "clock": "05:25",
+        "period": "2H",
+        "added": null,
+        "stoppage_clock": null
+      },
+      {
+        "soccer": false,
+        "screen": false,
+        "clock": "05:28",
+        "period": "2H",
+        "added": null,
+        "stoppage_clock": null
+      },
+      {
+        "soccer": false,
+        "screen": false,
+        "clock": "05:31",
+        "period": "2H",
+        "added": null,
+        "stoppage_clock": null
+      }
+    ],
+    "Images": [
+      "/fixtures/second_2p-1.png",
+      "/fixtures/second_2p-2.png",
+      "/fixtures/second_2p-3.png"
+    ],
+    "Name": "second_2p",
+    "Provenance": "synthetic SVG role control, not a broadcast; isolated bare numbers deliberately labeled unknown"
+  }
+]

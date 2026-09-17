@@ -1,5 +1,13 @@
 # Vision — soccer/screen validation + clock verification
 
+**Historical rationale:** FF-094's
+[September 15 decision](../../decisions/2026-09-15-clock-fields-preserve-visible-evidence.md)
+supersedes the frozen-clock period-only fallback and permissive auxiliary
+arithmetic below. Current behavior lives in the
+[vision ledger](../../architecture.md#vision-domain-d5--shipped-2026-07-28).
+The [September 17 decision](../../decisions/2026-09-17-relative-clocks-require-visible-period.md)
+also supersedes FF-057's unlabelled relative soft-keep described below.
+
 **Status:** SHIPPED 2026-07-28 (rungs 1–3: structured-output and reasoning
 controls in `llm`, `internal/domain/vision`, `internal/activity/vision`; see
 [`../../decisions.md`](../../decisions.md) "V/4 clip validation"). The

@@ -21,6 +21,23 @@ func testEvidence() *Evidence {
 		Frames: frames, Evaluation: Evaluate(frames, expected, 1)}
 }
 
+// TestOldAcceptedEvidenceIsNotReinterpreted keeps historical v1 acceptance immutable.
+func TestOldAcceptedEvidenceIsNotReinterpreted(t *testing.T) {
+	e := testEvidence()
+	e.Evaluator = "vision-evaluate-v1"
+	e.Expected = Expected{Elapsed: 90, Extra: 4}
+	e.Frames = rep(frame(true, false, "90:37", "+4", ""), 3)
+	minute := 90
+	e.Evaluation = Evaluation{Outcome: OutcomeVerified, MatchedMinute: &minute, FrameCount: 3,
+		Reason: "frozen-boundary stoppage, period match (minute unpinned)"}
+	if current := Evaluate(e.Frames, e.Expected, 1); current.Outcome != OutcomeRejected {
+		t.Fatalf("control=%+v", current)
+	}
+	if err := e.Validate(); err != nil {
+		t.Fatalf("historical proof reinterpreted: %v", err)
+	}
+}
+
 // TestEvidenceValidation guards required evidence while allowing an honestly unknown model ID.
 func TestEvidenceValidation(t *testing.T) {
 	if err := testEvidence().Validate(); err != nil {
@@ -49,5 +66,22 @@ func TestEvidenceValidation(t *testing.T) {
 	var missing *Evidence
 	if err := missing.Validate(); err == nil {
 		t.Fatal("missing evidence accepted")
+	}
+}
+
+// TestV2RelativeAcceptanceRemainsHistorical prevents new policy from rewriting
+// an older accepted proof when an exact-byte follower loads it.
+func TestV2RelativeAcceptanceRemainsHistorical(t *testing.T) {
+	e := testEvidence()
+	e.Evaluator = "vision-evaluate-v2"
+	e.Expected = Expected{Elapsed: 89}
+	e.Frames = rep(frame(true, false, "44:51", "", ""), 3)
+	e.Evaluation = Evaluation{Outcome: OutcomeUnverified, FrameCount: 3,
+		Reason: "clock interpretation ambiguous — kept, not clock-verified"}
+	if current := Evaluate(e.Frames, e.Expected, 1); current.Outcome != OutcomeRejected {
+		t.Fatalf("control=%+v", current)
+	}
+	if err := e.Validate(); err != nil {
+		t.Fatalf("historical proof reinterpreted: %v", err)
 	}
 }

@@ -14,7 +14,7 @@ import (
 )
 
 // acceptanceEvidence records the actual model, sampling and evaluator inputs.
-// The optional capture flag keeps old activity outputs/payloads unchanged.
+// The capture flag leaves acceptance evidence absent when a history did not request it.
 func (a *Activities) acceptanceEvidence(ctx context.Context, in ValidateClipInput, duration float64,
 	model string, frames []dvision.FrameObservation, evaluation dvision.Evaluation,
 ) *dvision.Evidence {

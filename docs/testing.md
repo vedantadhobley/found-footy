@@ -793,8 +793,13 @@ matched minute, while non-soccer and screen-recording gates still reject.
 FF-057 covers both live scorebug families: the Abdelkarim API-30′ event with a
 `28:56 1H` sampled clock, and the Zizo API-51′ event with a reset `05:25 2H`
 clock. Domain tests require the latter to normalize to absolute minute 50,
-retain continuous `50:25 2H`, reject an explicit `05:25 1H` conflict, and
-soft-keep rather than verify the same low clock when period evidence is absent.
+retain continuous `50:25 2H` and reject an explicit `05:25 1H` conflict.
+The September 17 regression now rejects the same low clock when period
+evidence is absent, superseding the original soft-keep expectation. It covers
+H2, ET1 and both ET2 reset conventions, including allowance fields that must
+not act as period evidence. The actual Yamal 44:xx observations reject for
+89′ while preserving raw readings; one independent continuous 88:xx sample
+still verifies under the unchanged any-match rule.
 Parser tests retain compact-stoppage period provenance. Activity tests pin the
 nullable period schema and normalized readings; WorkflowTestSuite requires all
 three raw observations and readings in a clock reject's `outcome_detail`.
@@ -805,6 +810,61 @@ Postgres integration test proves exact selection, transactional checklist
 registration, prior-verdict preservation, terminal-detail merging, retry
 idempotency, workflow-identity drift rejection, JSON-null outcome handling,
 exact malformed-envelope normalization, and post-run verification.
+
+The offline [clock-tolerance audit](../scripts/audit_clock_tolerance/README.md)
+replays saved vision inputs/frames through the actual evaluator at ±1 and
+zero. Strict mode refuses recorded-baseline drift; `--replay-current` retains
+original verdicts and reports evaluator changes separately. Its unchanged v1
+corpus now pins the single Wöber policy change under v2, deduplicated run counts
+and tolerance changes. Separate constructed controls
+preserve the Abdelkarim lower-edge counterexample, Mastantuono cross-admission,
+Lens compilation, frozen stoppage, reset-period and no-clock boundaries.
+Malformed inputs, conflicting exports and baseline drift fail; missing frames
+are excluded, never synthesized. This changes no production validation rule.
+
+The [broader review controls](../scripts/audit_clock_tolerance/review_test.go)
+keep eight agent-read original-media clock cases separate from historical
+model observations. They demonstrate both useful replay losses and non-goal
+rejections at zero tolerance. The original FF-094 characterization is now a
+target regression: the allowance must preserve the running clock, verifying
+the Fernández ordinary-time control at ±1 and rejecting the wrong stoppage
+target at both tolerances.
+
+The [isolated frozen-clock audit](../scripts/audit_frozen_clock/README.md)
+compares naive soft acceptance with preservation of the period-ending lower
+bound. A retained Nico model-output regression prevents softening a clearly
+wrong-time rejection. Constructed tests cover allowances, all period/reset
+boundaries, mixed/reversed/missing readings, content gates and unchanged
+non-targeted parser paths. Input drift and explicit exclusions are tested;
+the public projection pins current filtering/ranking at fixed scores and roots,
+not graph reselection. Its `--replay-current` mode compares the full implemented
+current evaluator with immutable recorded verdicts and lists affected selected assets
+without claiming a graph/support projection. The original strict experiment
+refuses v1 baselines that no longer reproduce; its results remain historical.
+
+FF-094 domain regressions cover literal seconds, invalid complete syntax,
+compact stoppage, redundant/misassigned auxiliaries, all continuous/reset
+period-end boundaries, unpinned lower bounds, and unchanged single-match,
+reversed-frame and repeated-frame admission. Activity tests require current
+provenance on every new outcome; workflow tests preserve absent provenance on
+old rejection payloads. Accepted v1/v2 evidence is validated structurally, never
+reinterpreted. The [fixed-image benchmark](../scripts/benchmark_clock_prompt/README.md)
+uses an explicit model-call opt-in and records literal/context prompt results;
+its [September 15 report](./design/audits/clock-normalization-implementation-2026-09-15.md)
+includes the remaining OCR/content errors and natural-footage coverage gaps.
+
+The benchmark's `period-labels` comparison changes only the experimental
+period instruction, with tests protecting the unchanged allowance/secondary
+instructions. Code-native SVG controls distinguish ordinal/superscript half
+labels, ambiguous digits, announced time and elapsed secondary timers. Four
+original-media controls remain separate from diagrams. Optional gold timing
+fields never enter model requests; differences include literal annotation loss.
+Barcelona's two September 17 admissions have distinct regressions: Yamal's
+unsupported offset now rejects; Jesus's matching-clock/wrong-match result
+remains a documented limitation, not a desired semantic outcome. An offline
+test replays all 52 archived v2 responses without images or model calls. Only
+the two Yamal and two unlabelled-reset control verdicts change; all other
+evaluations, including labelled clocks and added time, remain identical.
 
 FF-032 makes the LLM mock's captured-request buffer concurrency-safe. The
 adapter's concurrency-cap test now exercises parallel handlers without racing

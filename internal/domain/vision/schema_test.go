@@ -3,12 +3,23 @@ package vision
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 )
 
 func TestResponseSchemaIsValidJSON(t *testing.T) {
 	if !json.Valid(ResponseSchema) {
 		t.Fatal("ResponseSchema is not valid JSON")
+	}
+}
+
+// TestPromptRequiresLiteralIndependentEvidence protects the no-invented-seconds contract.
+// This is a wording guard, not a substitute for the fixed-image model benchmark.
+func TestPromptRequiresLiteralIndependentEvidence(t *testing.T) {
+	for _, instruction := range []string{"Never invent seconds", "Do NOT turn an allowance", "Never copy missing digits", "Do NOT infer the period", "Unchanging text alone"} {
+		if !strings.Contains(DefaultPrompt, instruction) {
+			t.Errorf("missing prompt constraint: %s", instruction)
+		}
 	}
 }
 

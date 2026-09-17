@@ -14,6 +14,12 @@ its historical heading anchors valid.
 
 New decisions after the frozen archive:
 
+- [Relative clocks require visible period evidence](./2026-09-17-relative-clocks-require-visible-period.md)
+  — removes API-driven half/extra-time offset guesses while retaining explicit
+  reset clocks, added-time normalization and immutable historical evidence.
+- [Clock fields preserve visible evidence](./2026-09-15-clock-fields-preserve-visible-evidence.md)
+  — FF-094 preserves running timers, bounds secondary arithmetic and removes
+  period-only frozen-clock verification without changing tolerance or sampling.
 - [Provider policy starts in shadow without disabling atomic writes](./2026-09-17-provider-policy-starts-in-shadow.md)
   — FF-075 defaults all guarded writers to advisory policy, records restricted
   plans separately from actual effects, and requires match-window review before enforcement.

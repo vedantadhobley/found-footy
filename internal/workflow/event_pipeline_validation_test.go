@@ -16,7 +16,16 @@ import (
 	"github.com/vedantadhobley/found-footy/internal/workflow"
 )
 
+// TestEventWorkflow_ClockRejectPersistsAllFrameEvidence pins old and new activity payloads.
 func TestEventWorkflow_ClockRejectPersistsAllFrameEvidence(t *testing.T) {
+	for _, evaluator := range []string{"", dvision.EvaluatorVersion} {
+		t.Run("evaluator="+evaluator, func(t *testing.T) { checkClockRejectEvidence(t, evaluator) })
+	}
+}
+
+// checkClockRejectEvidence verifies provenance is carried, never synthesized during replay.
+func checkClockRejectEvidence(t *testing.T, evaluator string) {
+	t.Helper()
 	var s testsuite.WorkflowTestSuite
 	env := baseEventEnv(&s)
 	const tweetURL = "https://x.com/u/status/1111111111111111111"
@@ -51,7 +60,8 @@ func TestEventWorkflow_ClockRejectPersistsAllFrameEvidence(t *testing.T) {
 	detected := 5
 	env.OnActivity("ValidateClip", mock.Anything, mock.Anything).
 		Return(visionactivity.ValidateClipOutput{
-			Outcome: "rejected", Reason: "clock present but does not match expected (wrong minute or wrong half)",
+			Evaluator: evaluator,
+			Outcome:   "rejected", Reason: "clock present but does not match expected (wrong minute or wrong half)",
 			SoccerVotes: 3, Frames: frames, ClockReadings: readings,
 			DetectedMinute: &detected, DetectedPeriod: "1H", ExpectedMinute: 50, ExpectedPeriod: "2H",
 		}, nil)
@@ -68,6 +78,20 @@ func TestEventWorkflow_ClockRejectPersistsAllFrameEvidence(t *testing.T) {
 			}
 			if err := json.Unmarshal(in.Detail, &detail); err != nil {
 				return false
+			}
+			var fields map[string]json.RawMessage
+			if err := json.Unmarshal(in.Detail, &fields); err != nil {
+				return false
+			}
+			if evaluator == "" {
+				if _, exists := fields["evaluator"]; exists {
+					return false
+				}
+			} else {
+				var actual string
+				if json.Unmarshal(fields["evaluator"], &actual) != nil || actual != evaluator {
+					return false
+				}
 			}
 			return len(detail.FrameObservations) == 3 && len(detail.ClockReadings) == 3 &&
 				detail.FrameObservations[0].Period != nil &&

@@ -250,9 +250,9 @@ func TestEvaluate_ResetPerHalfScorebug(t *testing.T) {
 			exp:   Expected{Elapsed: 51}, want: OutcomeRejected, wantMatch: -1,
 		},
 		{
-			name:  "missing period cannot manufacture verification",
+			name:  "missing period cannot rescue a contradictory clock",
 			frame: frame(true, false, "05:25", "", ""),
-			exp:   Expected{Elapsed: 51}, want: OutcomeUnverified, wantMatch: -1,
+			exp:   Expected{Elapsed: 51}, want: OutcomeRejected, wantMatch: -1,
 		},
 	}
 	for _, c := range cases {
@@ -383,10 +383,10 @@ func TestEvaluate_ClockCorrections(t *testing.T) {
 		},
 		{
 			// Frozen 90:00 + added +5 but NO sub-timer: exact minute unpinned,
-			// right period's stoppage → verify on period (candidate 2).
-			name:   "frozen-boundary-no-subtimer-verified",
+			// the right period alone no longer verifies a minute (FF-094).
+			name:   "frozen-boundary-no-subtimer-unverified",
 			frames: rep(frame(true, false, "90:00", "+5", ""), 3),
-			exp:    Expected{Elapsed: 90, Extra: 5}, want: OutcomeVerified, wantMin: 90,
+			exp:    Expected{Elapsed: 90, Extra: 5}, want: OutcomeUnverified, wantMin: -1,
 		},
 		{
 			// Clock clearly wrong minute (30:00 for a 90' goal) → reject.
