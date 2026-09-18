@@ -46,5 +46,7 @@ August container start times and zero restart counts. VNC remained stopped.
 One advisory provider-integrity warning on the future October MLS fixture was
 handled in shadow mode with no write; it is unrelated to V5.
 
-Natural candidate validation remains open. No FF-097 historical recovery is
-authorized by this rollout.
+Natural candidate validation remains open. This rollout itself authorized no
+FF-097 historical recovery. A later separately approved, exact four-candidate
+recovery ran under release `280fddc`; see the
+[running-stoppage release record](./running-stoppage-rollout-2026-09-18.md#recovery-result).

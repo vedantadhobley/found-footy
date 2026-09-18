@@ -9,8 +9,8 @@ Use the [`docs` routing index](../README.md) for current ledgers and
   — `e2aa4a9` literal-period/exact-zero deployment, complete release gates,
   healthy startup and the remaining natural-candidate validation boundary.
 - [Running-stoppage rollout — September 18 UTC](./running-stoppage-rollout-2026-09-18.md)
-  — 06524ff/v4 deployment, release gates, retired-model blocker and the
-  exact four-candidate Gueye recovery approval boundary.
+  — 06524ff/v4 deployment, release gates, the resolved model blocker and the
+  exact four-candidate Gueye recovery result under `280fddc`.
 - [Clock validation rollout — 2026-09-17 UTC](./clock-validation-rollout-2026-09-17.md)
   — a2a6830 deployment, literal clock parsing, unsupported-offset rejection,
   release gates and remaining natural-event validation.

@@ -51,7 +51,8 @@ the current branch.
 
 ### FF-097 — running stoppage clocks inherit the next period
 
-- **Status:** `validating` — V4 deployed as `06524ff`; V5 as `e2aa4a9`
+- **Status:** `validating` — V4 deployed as `06524ff`; V5 as `e2aa4a9`;
+  bounded recovery support and the first scoped repair as `280fddc`
 - **Severity:** P1
 - **Evidence:** [Gueye's 45+2′ rejection and historical screen](./design/audits/running-stoppage-period-2026-09-17.md)
   establish accurate `46:35` plus `+4` observations rejected as second half.
@@ -80,11 +81,14 @@ the current branch.
   Nineteen of the original 82 signatures have changed event expectations and
   remain excluded, not silently repaired. These are evidence rows, not unique
   footage or semantic correctness labels.
-- **Next:** Match-day validate the V5 literal-period contract, then separately
-  approve scoped historical candidate recovery. No FF-097 recovery has run.
+- **Next:** Match-day validate the V5 literal-period contract. The first scoped
+  historical recovery is complete; any additional repair remains a separate,
+  evidence-bounded operation and approval.
 - **Release/model checkpoint (September 18 UTC):** The
   [application rollout](./history/running-stoppage-rollout-2026-09-18.md)
-  passed exact-release gates. Recovery is not yet approved or applied. The
+  passed exact-release gates. The later exact Gueye recovery promoted one
+  V5-verified asset from four retained sources and preserved its selector in
+  the completed downstream checklist. The
   [E4B trial](./design/audits/gemma-e4b-vision-trial-2026-09-18.md) completes ten
   calls but invents timing evidence. Control subsequently restored the pinned
   `gemma-4-12b` service and completed its admission-fairness rollout without
