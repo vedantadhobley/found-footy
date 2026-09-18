@@ -24,9 +24,10 @@ type RefreshTrackedTeamsIfStaleOutput struct {
 	Errors           []string    // per-league fetch failures — non-fatal
 }
 
-// RefreshTrackedTeamsIfStale checks whether tracked_teams_cache is
-// older than TopFlightCacheHours and, if so, re-populates it from the
-// API. Cache-hit path exits early with Refreshed=false.
+// RefreshTrackedTeamsIfStale checks whether tracked_teams_cache contains the
+// configured league set and is younger than TopFlightCacheHours. A league-set
+// change or stale cache re-populates it from the API. The cache-hit path exits
+// early with Refreshed=false.
 //
 // Refresh path (per-league, sequential — small N):
 //  1. GetCurrentSeason(leagueID) via /leagues?id=X
@@ -52,18 +53,17 @@ func (a *Activities) RefreshTrackedTeamsIfStale(
 		PreservedLeagues: map[int]int{},
 	}
 
-	// Cache-freshness check.
-	oldest, hasCache, err := a.TeamRepo.OldestRefreshedAt(ctx)
+	// Load the small cache once. Its rows provide both age and configured-set
+	// evidence, and are reused below when a partial refresh must preserve a
+	// league. A league-set change must not wait for the age TTL.
+	existing, err := a.TeamRepo.List(ctx)
 	if err != nil {
 		return out, fmt.Errorf("ingest.RefreshTrackedTeamsIfStale: check cache: %w", err)
 	}
 	now := a.now()
-	if hasCache {
-		age := now.Sub(oldest)
-		if age < time.Duration(a.TopFlightCacheHours)*time.Hour {
-			// Cache is fresh — skip.
-			return out, nil
-		}
+	if trackedTeamCacheFresh(existing, a.TrackedLeagueIDs, now,
+		time.Duration(a.TopFlightCacheHours)*time.Hour) {
+		return out, nil
 	}
 
 	// Refresh path — walk every tracked league.
@@ -134,10 +134,6 @@ func (a *Activities) RefreshTrackedTeamsIfStale(
 		for _, lg := range a.TrackedLeagueIDs {
 			configured[lg] = true
 		}
-		existing, err := a.TeamRepo.List(ctx)
-		if err != nil {
-			return out, fmt.Errorf("ingest.RefreshTrackedTeamsIfStale: load prior cache for preserve: %w", err)
-		}
 		for _, t := range existing {
 			if configured[t.LeagueID] && !refreshed[t.LeagueID] {
 				accumulated = append(accumulated, t) // keeps t.RefreshedAt
@@ -152,4 +148,41 @@ func (a *Activities) RefreshTrackedTeamsIfStale(
 	out.Refreshed = true
 	out.TotalTeams = len(accumulated)
 	return out, nil
+}
+
+// trackedTeamCacheFresh returns true only when the cache is within its age
+// bound and represents exactly the configured league set. Exact equality also
+// removes deconfigured leagues promptly instead of retaining their teams until
+// the next time-based refresh.
+func trackedTeamCacheFresh(
+	cached []team.TrackedTeam,
+	configured []int,
+	now time.Time,
+	maxAge time.Duration,
+) bool {
+	if len(cached) == 0 {
+		return false
+	}
+
+	configuredSet := make(map[int]struct{}, len(configured))
+	for _, leagueID := range configured {
+		configuredSet[leagueID] = struct{}{}
+	}
+	cachedSet := make(map[int]struct{}, len(configuredSet))
+	oldest := cached[0].RefreshedAt
+	for _, tracked := range cached {
+		cachedSet[tracked.LeagueID] = struct{}{}
+		if tracked.RefreshedAt.Before(oldest) {
+			oldest = tracked.RefreshedAt
+		}
+	}
+	if len(cachedSet) != len(configuredSet) {
+		return false
+	}
+	for leagueID := range configuredSet {
+		if _, ok := cachedSet[leagueID]; !ok {
+			return false
+		}
+	}
+	return now.Sub(oldest) < maxAge
 }

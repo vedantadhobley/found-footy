@@ -6,6 +6,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sort"
 	"time"
 
 	"github.com/google/uuid"
@@ -135,6 +136,9 @@ type PrepareCandidateReplayInput struct {
 	ReplayKind   string
 	RejectReason string
 	MaxAttempts  int
+	// CandidateIDs optionally narrows the terminal predicate to an exact,
+	// auditable allowlist. Empty preserves the historical all-matching behavior.
+	CandidateIDs []uuid.UUID
 }
 
 // PrepareCandidateReplayOutput reports the durable selection. AlreadyPrepared
@@ -160,6 +164,10 @@ func (s *CandidateReplayStore) PrepareCandidateReplay(
 		in.RejectReason == "" || in.MaxAttempts <= 0 {
 		return out, fmt.Errorf("pg.CandidateReplayStore.Prepare: incomplete replay identity")
 	}
+	candidateIDs, err := canonicalReplayCandidateIDs(in.CandidateIDs)
+	if err != nil {
+		return out, fmt.Errorf("pg.CandidateReplayStore.Prepare: %w", err)
+	}
 
 	tx, err := s.db.Begin(ctx)
 	if err != nil {
@@ -181,10 +189,10 @@ func (s *CandidateReplayStore) PrepareCandidateReplay(
 		WHERE event_id = $1
 		  AND outcome_class = 'rejected'
 		  AND reject_reason = $2
-	`, in.EventID, in.RejectReason).Scan(&out.SelectedCandidates); err != nil {
+		  AND (COALESCE(cardinality($3::uuid[]), 0) = 0 OR id = ANY($3::uuid[]))
+	`, in.EventID, in.RejectReason, candidateIDs).Scan(&out.SelectedCandidates); err != nil {
 		return out, fmt.Errorf("pg.CandidateReplayStore.Prepare: count event=%s: %w", in.EventID, err)
 	}
-
 	inserted := false
 	err = tx.QueryRow(ctx, `
 		INSERT INTO event_downstream_workflows (
@@ -196,7 +204,8 @@ func (s *CandidateReplayStore) PrepareCandidateReplay(
 				'replay_kind', $4::text,
 				'replay_selector', jsonb_build_object(
 					'outcome_class', 'rejected',
-					'reject_reason', $5::text
+					'reject_reason', $5::text,
+					'candidate_ids', to_jsonb($7::uuid[])
 				),
 				'selected_candidates', $6::int
 			)
@@ -204,7 +213,7 @@ func (s *CandidateReplayStore) PrepareCandidateReplay(
 		ON CONFLICT (event_id, workflow_type, workflow_id) DO NOTHING
 		RETURNING true
 	`, in.EventID, in.WorkflowID, in.MaxAttempts, in.ReplayKind,
-		in.RejectReason, out.SelectedCandidates).Scan(&inserted)
+		in.RejectReason, out.SelectedCandidates, candidateIDs).Scan(&inserted)
 	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
 		return out, fmt.Errorf("pg.CandidateReplayStore.Prepare: register event=%s: %w", in.EventID, err)
 	}
@@ -214,28 +223,33 @@ func (s *CandidateReplayStore) PrepareCandidateReplay(
 		var (
 			storedKind, storedReason string
 			storedAttempts           int
+			storedCandidatesMatch    bool
 		)
 		if err := tx.QueryRow(ctx, `
 			SELECT completed_at IS NOT NULL,
 			       COALESCE(metadata->>'replay_kind', ''),
 			       COALESCE(metadata#>>'{replay_selector,reject_reason}', ''),
 			       COALESCE((metadata->>'attempts_completed')::int, 0),
-			       COALESCE((metadata->>'selected_candidates')::int, 0)
+			       COALESCE((metadata->>'selected_candidates')::int, 0),
+			       COALESCE(metadata#>'{replay_selector,candidate_ids}', '[]'::jsonb)
+			           = to_jsonb($3::uuid[])
 			FROM event_downstream_workflows
 			WHERE event_id = $1 AND workflow_type = 'discovery' AND workflow_id = $2
-		`, in.EventID, in.WorkflowID).Scan(
+		`, in.EventID, in.WorkflowID, candidateIDs).Scan(
 			&out.Completed,
 			&storedKind,
 			&storedReason,
 			&storedAttempts,
 			&out.SelectedCandidates,
+			&storedCandidatesMatch,
 		); err != nil {
 			return out, fmt.Errorf("pg.CandidateReplayStore.Prepare: load identity event=%s: %w", in.EventID, err)
 		}
-		if storedKind != in.ReplayKind || storedReason != in.RejectReason || storedAttempts != in.MaxAttempts {
+		if storedKind != in.ReplayKind || storedReason != in.RejectReason ||
+			storedAttempts != in.MaxAttempts || !storedCandidatesMatch {
 			return out, fmt.Errorf(
-				"pg.CandidateReplayStore.Prepare: workflow identity %q belongs to kind=%q reason=%q attempts=%d",
-				in.WorkflowID, storedKind, storedReason, storedAttempts,
+				"pg.CandidateReplayStore.Prepare: workflow identity %q belongs to kind=%q reason=%q attempts=%d candidate_ids_match=%t",
+				in.WorkflowID, storedKind, storedReason, storedAttempts, storedCandidatesMatch,
 			)
 		}
 		// The first FF-057 production run exposed pgx's JSON-null encoding on
@@ -261,6 +275,12 @@ func (s *CandidateReplayStore) PrepareCandidateReplay(
 		return out, nil
 	}
 
+	if len(candidateIDs) > 0 && out.SelectedCandidates != len(candidateIDs) {
+		return out, fmt.Errorf(
+			"pg.CandidateReplayStore.Prepare: allowlist drift event=%s: matched=%d expected=%d",
+			in.EventID, out.SelectedCandidates, len(candidateIDs),
+		)
+	}
 	if out.SelectedCandidates == 0 {
 		return out, fmt.Errorf("pg.CandidateReplayStore.Prepare: event=%s has no candidates matching replay selector", in.EventID)
 	}
@@ -283,7 +303,8 @@ func (s *CandidateReplayStore) PrepareCandidateReplay(
 		WHERE event_id = $1
 		  AND outcome_class = 'rejected'
 		  AND reject_reason = $2
-	`, in.EventID, in.RejectReason, in.WorkflowID, in.ReplayKind, time.Now().UTC())
+		  AND (COALESCE(cardinality($6::uuid[]), 0) = 0 OR id = ANY($6::uuid[]))
+	`, in.EventID, in.RejectReason, in.WorkflowID, in.ReplayKind, time.Now().UTC(), candidateIDs)
 	if err != nil {
 		return out, fmt.Errorf("pg.CandidateReplayStore.Prepare: queue event=%s: %w", in.EventID, err)
 	}
@@ -298,6 +319,27 @@ func (s *CandidateReplayStore) PrepareCandidateReplay(
 		return out, fmt.Errorf("pg.CandidateReplayStore.Prepare: commit event=%s: %w", in.EventID, err)
 	}
 	return out, nil
+}
+
+// canonicalReplayCandidateIDs validates and sorts an optional allowlist so one
+// workflow identity has stable metadata regardless of caller ordering.
+func canonicalReplayCandidateIDs(ids []uuid.UUID) ([]uuid.UUID, error) {
+	canonical := make([]uuid.UUID, len(ids))
+	copy(canonical, ids)
+	seen := make(map[uuid.UUID]struct{}, len(canonical))
+	for _, id := range canonical {
+		if id == uuid.Nil {
+			return nil, fmt.Errorf("candidate allowlist contains nil UUID")
+		}
+		if _, duplicate := seen[id]; duplicate {
+			return nil, fmt.Errorf("candidate allowlist contains duplicate %s", id)
+		}
+		seen[id] = struct{}{}
+	}
+	sort.Slice(canonical, func(i, j int) bool {
+		return canonical[i].String() < canonical[j].String()
+	})
+	return canonical, nil
 }
 
 // CandidateReplayResult is the persisted completion state for one replay

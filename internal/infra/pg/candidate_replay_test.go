@@ -308,3 +308,94 @@ func TestCandidateReplayStore_PrepareRejectsRemovedEvent(t *testing.T) {
 		t.Fatalf("removed replay mutated candidate/checklist: %s/%q/%d", outcome, reason, checklists)
 	}
 }
+
+// TestCandidateReplayStore_PrepareCandidateAllowlist proves an exact repair
+// can reopen one reviewed candidate without touching another row that shares
+// its terminal reason.
+func TestCandidateReplayStore_PrepareCandidateAllowlist(t *testing.T) {
+	ctx, pool, fixtureRepo := setupRepo(t)
+	fixture := makeStaging(8133, time.Date(2026, 9, 17, 19, 30, 0, 0, time.UTC))
+	if err := fixture.Activate(time.Date(2026, 9, 17, 19, 25, 0, 0, time.UTC)); err != nil {
+		t.Fatalf("activate: %v", err)
+	}
+	if err := fixtureRepo.Insert(ctx, fixture); err != nil {
+		t.Fatalf("insert fixture: %v", err)
+	}
+
+	eventID := uuid.New()
+	if _, err := pool.Exec(ctx, `
+		INSERT INTO events (
+			id, fixture_id, natural_key, event_type, detail,
+			team_id, team_name, player_name, minute, extra, downstream_triggered
+		) VALUES ($1, $2, '533_20696_goal_1', 'goal', 'normal goal',
+		          533, 'Villarreal', 'Pape Gueye', 45, 2, true)
+	`, eventID, fixture.ID); err != nil {
+		t.Fatalf("seed event: %v", err)
+	}
+
+	candidateIDs := []uuid.UUID{uuid.New(), uuid.New()}
+	for i, candidateID := range candidateIDs {
+		if _, err := pool.Exec(ctx, `
+			INSERT INTO event_search_candidates (
+				id, event_id, fixture_id, search_attempt, query, tweet_url,
+				video_page_url, outcome_class, reject_reason, outcome_at
+			) VALUES ($1, $2, $3, $4, 'query', $5, 'video',
+			          'rejected', $6, NOW())
+		`, candidateID, eventID, fixture.ID, i+1,
+			"https://x.com/replay/status/"+candidateID.String(),
+			pginfra.ClockMismatchRejectReason); err != nil {
+			t.Fatalf("seed candidate %d: %v", i, err)
+		}
+	}
+
+	workflowID := "event-replay-ff097-running-stoppage-" + eventID.String()
+	store := pginfra.NewCandidateReplayStore(pool)
+	prepared, err := store.PrepareCandidateReplay(ctx, pginfra.PrepareCandidateReplayInput{
+		EventID: eventID, WorkflowID: workflowID,
+		ReplayKind:   "ff-097-running-stoppage",
+		RejectReason: pginfra.ClockMismatchRejectReason,
+		MaxAttempts:  15,
+		CandidateIDs: []uuid.UUID{candidateIDs[0]},
+	})
+	if err != nil {
+		t.Fatalf("PrepareCandidateReplay: %v", err)
+	}
+	if prepared.SelectedCandidates != 1 || prepared.AlreadyPrepared {
+		t.Fatalf("prepared = %+v", prepared)
+	}
+
+	var selectedOutcome, retainedOutcome string
+	if err := pool.QueryRow(ctx, `SELECT outcome_class FROM event_search_candidates WHERE id=$1`,
+		candidateIDs[0]).Scan(&selectedOutcome); err != nil {
+		t.Fatalf("read selected candidate: %v", err)
+	}
+	if err := pool.QueryRow(ctx, `SELECT outcome_class FROM event_search_candidates WHERE id=$1`,
+		candidateIDs[1]).Scan(&retainedOutcome); err != nil {
+		t.Fatalf("read retained candidate: %v", err)
+	}
+	if selectedOutcome != "pending" || retainedOutcome != "rejected" {
+		t.Fatalf("outcomes selected=%q retained=%q", selectedOutcome, retainedOutcome)
+	}
+
+	retried, err := store.PrepareCandidateReplay(ctx, pginfra.PrepareCandidateReplayInput{
+		EventID: eventID, WorkflowID: workflowID,
+		ReplayKind:   "ff-097-running-stoppage",
+		RejectReason: pginfra.ClockMismatchRejectReason,
+		MaxAttempts:  15,
+		CandidateIDs: []uuid.UUID{candidateIDs[0]},
+	})
+	if err != nil || !retried.AlreadyPrepared || retried.SelectedCandidates != 1 {
+		t.Fatalf("idempotent retry = %+v, err=%v", retried, err)
+	}
+
+	_, err = store.PrepareCandidateReplay(ctx, pginfra.PrepareCandidateReplayInput{
+		EventID: eventID, WorkflowID: workflowID,
+		ReplayKind:   "ff-097-running-stoppage",
+		RejectReason: pginfra.ClockMismatchRejectReason,
+		MaxAttempts:  15,
+		CandidateIDs: []uuid.UUID{candidateIDs[1]},
+	})
+	if err == nil {
+		t.Fatal("workflow identity accepted a different candidate allowlist")
+	}
+}

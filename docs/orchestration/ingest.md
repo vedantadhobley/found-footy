@@ -57,8 +57,10 @@ simple).
       RefreshTrackedTeamsIfStale()                         [120s timeout]
         → {Refreshed, TotalTeams, PerLeagueCounts, PreservedLeagues}
       Re-fetches each tracked league's current-season roster into
-      tracked_teams_cache when stale. Non-fatal: on failure fetch proceeds
-      with the preserved cache; an empty cache makes date fetches fail closed.
+      tracked_teams_cache when stale or when the configured league set changes.
+      This makes league additions and removals effective on the next ingest
+      without a manual cache backdate. Non-fatal: on failure fetch proceeds with
+      the preserved cache; an empty cache makes date fetches fail closed.
       Partial-refresh-safe (audit P1-1): a league that errors OR returns an
       empty roster (season rollover) keeps its PRIOR rows + original
       refreshed_at (so it's retried next run) instead of being wiped; only an
@@ -178,7 +180,7 @@ Default activity options:
 - Retry: exponential backoff 2s → cap 30s (coefficient 2), max 3 attempts
 
 Per-activity timeout overrides (same retry policy):
-- `RefreshTrackedTeamsIfStale`: 120s (~6 leagues × 2 API calls each)
+- `RefreshTrackedTeamsIfStale`: 120s (one season + roster pair per configured league)
 - `CategorizeAndUpsertFixtures`: 120s (DB-bound over 100s of fixtures)
 
 No workflow-level retry policy — an ingest failure surfaces to the

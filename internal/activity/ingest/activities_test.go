@@ -238,24 +238,6 @@ func (r *fakeTeamRepo) List(_ context.Context) ([]team.TrackedTeam, error) {
 	return dup, nil
 }
 
-// OldestRefreshedAt mirrors the real pg repo: MIN(refreshed_at) across the
-// rows, so a preserved league's old timestamp keeps the cache "stale" and
-// drives a retry.
-func (r *fakeTeamRepo) OldestRefreshedAt(_ context.Context) (time.Time, bool, error) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	if len(r.teams) == 0 {
-		return time.Time{}, false, nil
-	}
-	oldest := r.teams[0].RefreshedAt
-	for _, t := range r.teams[1:] {
-		if t.RefreshedAt.Before(oldest) {
-			oldest = t.RefreshedAt
-		}
-	}
-	return oldest, true, nil
-}
-
 func (r *fakeTeamRepo) Replace(_ context.Context, teams []team.TrackedTeam) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()

@@ -65,10 +65,75 @@ func TestRefreshTrackedTeamsIfStale_PartialFailurePreservesLeague(t *testing.T) 
 	if byLeague[78].ID != 78001 || !byLeague[78].RefreshedAt.Equal(old) {
 		t.Errorf("league 78 = %+v, want preserved id 78001 @ old", byLeague[78])
 	}
-	// Oldest reflects the stale preserved league → cache is not masked fresh.
-	oldest, ok, _ := tr.OldestRefreshedAt(ctx)
-	if !ok || !oldest.Equal(old) {
-		t.Errorf("OldestRefreshedAt = %v (ok=%v), want %v", oldest, ok, old)
+	// The preserved timestamp remains stale so the next assessment retries it.
+	if trackedTeamCacheFresh(got, []int{39, 140, 78}, now, 24*time.Hour) {
+		t.Error("cache unexpectedly fresh after preserving a stale league")
+	}
+}
+
+// TestRefreshTrackedTeamsIfStale_LeagueSetChangeRefreshesFreshCache proves a
+// newly configured league becomes active immediately instead of waiting for
+// the cache-age TTL.
+func TestRefreshTrackedTeamsIfStale_LeagueSetChangeRefreshesFreshCache(t *testing.T) {
+	ctx := context.Background()
+	now := time.Date(2026, 9, 18, 0, 0, 0, 0, time.UTC)
+
+	tr := newFakeTeamRepo()
+	tr.teams = []team.TrackedTeam{
+		{ID: 39001, Name: "Arsenal", LeagueID: 39, Season: 2026, RefreshedAt: now},
+	}
+	fetcher := &fakeFetcher{teamsByLeague: map[int][]apifootball.APITeam{
+		39:  {{ID: 39001, Name: "Arsenal"}},
+		203: {{ID: 203001, Name: "Galatasaray"}},
+	}}
+	a := &Activities{
+		APIFootball:         fetcher,
+		TeamRepo:            tr,
+		TrackedLeagueIDs:    []int{39, 203},
+		TopFlightCacheHours: 24,
+		Now:                 func() time.Time { return now },
+	}
+
+	out, err := a.RefreshTrackedTeamsIfStale(ctx, RefreshTrackedTeamsIfStaleInput{})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !out.Refreshed {
+		t.Fatal("expected league-set change to refresh a fresh cache")
+	}
+	if out.PerLeagueCounts[203] != 1 {
+		t.Fatalf("Turkish league count = %d, want 1", out.PerLeagueCounts[203])
+	}
+	got, _ := tr.List(ctx)
+	if !trackedTeamCacheFresh(got, []int{39, 203}, now, 24*time.Hour) {
+		t.Fatalf("refreshed cache does not represent configured leagues: %+v", got)
+	}
+}
+
+// TestRefreshTrackedTeamsIfStale_MatchingFreshCacheSkips ensures the set-aware
+// check retains the normal no-request cache-hit path.
+func TestRefreshTrackedTeamsIfStale_MatchingFreshCacheSkips(t *testing.T) {
+	ctx := context.Background()
+	now := time.Date(2026, 9, 18, 0, 0, 0, 0, time.UTC)
+	tr := newFakeTeamRepo()
+	tr.teams = []team.TrackedTeam{
+		{ID: 39001, Name: "Arsenal", LeagueID: 39, RefreshedAt: now.Add(-time.Hour)},
+		{ID: 203001, Name: "Galatasaray", LeagueID: 203, RefreshedAt: now.Add(-time.Hour)},
+	}
+	a := &Activities{
+		APIFootball:         &fakeFetcher{},
+		TeamRepo:            tr,
+		TrackedLeagueIDs:    []int{39, 203},
+		TopFlightCacheHours: 24,
+		Now:                 func() time.Time { return now },
+	}
+
+	out, err := a.RefreshTrackedTeamsIfStale(ctx, RefreshTrackedTeamsIfStaleInput{})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if out.Refreshed {
+		t.Fatal("matching fresh cache should not refresh")
 	}
 }
 

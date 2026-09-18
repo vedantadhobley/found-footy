@@ -316,8 +316,13 @@ ranking, publication, and cleanup path.
 
 The runner requires `FIXTURE_ID` and `EXPECTED_EVENT_COUNT`, limits each event
 to 50 selected candidates by default, and is dry-run unless
-`REPLAY_APPLY=true`. Its Postgres transaction commits before the Temporal
-start. If the process stops in that gap, rerunning the same command finds the
+`REPLAY_APPLY=true`. `TARGET_EVENT_ID` and comma-separated
+`REPLAY_CANDIDATE_IDS` are an optional coupled selector: set both or neither.
+When set, the dry run proves every ID still belongs to that event and exact
+terminal reason; apply mode stores the sorted allowlist in checklist metadata
+and cannot broaden it on retry. `REPLAY_KIND` and `REPLAY_WORKFLOW_ID_PREFIX`
+give each repair class a distinct durable identity. Its Postgres transaction
+commits before the Temporal start. If the process stops in that gap, rerunning the same command finds the
 existing checklist and resumes the same failed-only identity without resetting
 candidate rows again. It also normalizes the exact two-element JSON array shape
 produced by the initial FF-057 replay when a duplicate terminal outcome carried
@@ -346,6 +351,10 @@ reviewed values:
 ```bash
 docker run --rm --network found-footy-prod --env-file .env \
   -e FIXTURE_ID=<fixture-id> -e EXPECTED_EVENT_COUNT=<count> \
+  -e TARGET_EVENT_ID=<event-id> \
+  -e REPLAY_CANDIDATE_IDS=<candidate-id>,<candidate-id> \
+  -e REPLAY_KIND=<repair-kind> \
+  -e REPLAY_WORKFLOW_ID_PREFIX=<workflow-prefix> \
   -v /tmp/found-footy-replay/replay-clock-rejects:/replay:ro \
   golang:1.25.11-bookworm /replay
 ```
@@ -359,6 +368,10 @@ requires separate explicit production approval:
 ```bash
 docker run --rm --network found-footy-prod --env-file .env \
   -e FIXTURE_ID=<fixture-id> -e EXPECTED_EVENT_COUNT=<count> \
+  -e TARGET_EVENT_ID=<event-id> \
+  -e REPLAY_CANDIDATE_IDS=<candidate-id>,<candidate-id> \
+  -e REPLAY_KIND=<repair-kind> \
+  -e REPLAY_WORKFLOW_ID_PREFIX=<workflow-prefix> \
   -e REPLAY_APPLY=true \
   -v /tmp/found-footy-replay/replay-clock-rejects:/replay:ro \
   golang:1.25.11-bookworm /replay

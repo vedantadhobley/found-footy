@@ -10,7 +10,6 @@ package pg
 import (
 	"context"
 	"fmt"
-	"time"
 
 	"github.com/jackc/pgx/v5"
 
@@ -52,28 +51,12 @@ func (r *TeamRepo) List(ctx context.Context) ([]team.TrackedTeam, error) {
 	return out, nil
 }
 
-// OldestRefreshedAt returns the earliest refreshed_at across the cache,
-// or (zero time, false, nil) if the cache is empty.
-func (r *TeamRepo) OldestRefreshedAt(ctx context.Context) (time.Time, bool, error) {
-	var oldest *time.Time
-	err := r.pool.QueryRow(ctx, `
-		SELECT MIN(refreshed_at) FROM tracked_teams_cache
-	`).Scan(&oldest)
-	if err != nil {
-		return time.Time{}, false, fmt.Errorf("pg.TeamRepo.OldestRefreshedAt: %w", err)
-	}
-	if oldest == nil {
-		return time.Time{}, false, nil
-	}
-	return *oldest, true, nil
-}
-
 // Replace atomically wipes the cache and writes the given rows in a
 // single transaction, so concurrent Ingest cycles never see a
 // partially-refreshed cache. Each row is stamped with its own
 // t.RefreshedAt — freshly-fetched leagues carry `now`, while leagues
 // preserved across a partial refresh keep their prior timestamp (audit
-// P1-1), so OldestRefreshedAt reflects the stalest preserved league.
+// P1-1), so the next cache assessment sees the preserved league as stale.
 //
 // Empty teams slice is legal — clears the cache. Callers that don't
 // want that should guard on len(teams) == 0.

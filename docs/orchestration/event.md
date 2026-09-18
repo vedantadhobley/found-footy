@@ -229,7 +229,9 @@ UPSERT so retained histories keep their original activity commands.
 reset and its Temporal history is not asked to repeat business work. The
 guarded `scripts/replay_clock_rejects` operation registers a new deterministic
 workflow/checklist identity, checkpoints discovery at the configured maximum,
-and moves only its exact terminal selector back to pending. EventWorkflow then
+and moves only its exact terminal selector back to pending. A narrow repair can
+intersect the outcome/reason selector with one event and an exact candidate-ID
+allowlist; that list becomes part of the durable replay identity. EventWorkflow then
 restores the full candidate and asset state, re-drives those pending rows, and
 performs no fresh search. Candidate terminal UPSERT keeps the previous verdict
 under `outcome_detail.replay`. The runner processes events sequentially and

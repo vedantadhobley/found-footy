@@ -45,6 +45,13 @@ Workflow ID reuse, and is idempotent across a process crash between the
 Postgres transaction and workflow start. Running it against production is a
 separate explicit production mutation from deploying corrected worker code.
 
+For a reviewed subset, the terminal outcome/reason selector may be intersected
+with an exact candidate-ID allowlist for one event. The runner proves the IDs
+against current state before apply; the store sorts and persists them inside
+the replay selector. Missing, duplicate, broadened, or reordered retry input
+fails closed or resolves to the same identity. Empty allowlists retain the
+original all-matching behavior for completed FF-057 operations.
+
 ## Consequences
 
 - Repair benefits from the same validation, deduplication, persistence,

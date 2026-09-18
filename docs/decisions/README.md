@@ -14,6 +14,9 @@ its historical heading anchors valid.
 
 New decisions after the frozen archive:
 
+- [Track Turkish Süper Lig clubs across competitions](./2026-09-18-track-turkish-super-lig.md)
+  — adds league 203 as a team-roster seed and makes tracked-team cache refresh
+  immediately when the configured league set changes.
 - [Vision retains literal period labels](./2026-09-18-vision-retains-literal-period-labels.md)
   — 12B transcribes raw period text at exact temperature zero; Go owns the
   conservative mapping while old normalized observations remain readable.

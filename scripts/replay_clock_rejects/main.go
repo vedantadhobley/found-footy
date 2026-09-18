@@ -27,7 +27,8 @@ const (
 	defaultMaxCandidates      = 50
 	defaultWorkflowTimeout    = 2 * time.Hour
 	defaultOperationTimeout   = 4 * time.Hour
-	replayWorkflowIDPrefix    = "event-replay-ff057-boundary-"
+	defaultWorkflowIDPrefix   = "event-replay-ff057-boundary-"
+	defaultReplayKind         = pginfra.ClockBoundaryReplayKind
 	replayApplyEnvironment    = "REPLAY_APPLY"
 	expectedEventsEnvironment = "EXPECTED_EVENT_COUNT"
 )
@@ -39,6 +40,10 @@ type replayConfig struct {
 	MaxAttempts           int
 	MaxCandidatesPerEvent int
 	Apply                 bool
+	TargetEventID         uuid.UUID
+	CandidateIDs          []uuid.UUID
+	WorkflowIDPrefix      string
+	ReplayKind            string
 	PGDSN                 string
 	TemporalHostPort      string
 	TemporalNamespace     string
@@ -70,10 +75,28 @@ func run() error {
 
 	store := pginfra.NewCandidateReplayStore(conn)
 	events, err := store.ListCandidateReplayEvents(
-		ctx, cfg.FixtureID, pginfra.ClockMismatchRejectReason, replayWorkflowIDPrefix,
+		ctx, cfg.FixtureID, pginfra.ClockMismatchRejectReason, cfg.WorkflowIDPrefix,
 	)
 	if err != nil {
 		return err
+	}
+	if cfg.TargetEventID != uuid.Nil {
+		var target []pginfra.CandidateReplayEvent
+		for _, event := range events {
+			if event.Input.EventID == cfg.TargetEventID {
+				target = append(target, event)
+			}
+		}
+		events = target
+		if len(events) == 1 {
+			workflowID := cfg.WorkflowIDPrefix + events[0].Input.EventID.String()
+			if err := verifyCandidateAllowlist(
+				ctx, conn, events[0], cfg.CandidateIDs, workflowID,
+			); err != nil {
+				return err
+			}
+			events[0].EligibleCandidates = len(cfg.CandidateIDs)
+		}
 	}
 	if len(events) != cfg.ExpectedEventCount {
 		return fmt.Errorf("fixture %d has %d processed events; expected exactly %d",
@@ -116,13 +139,14 @@ func run() error {
 	defer temporalClient.Close()
 
 	for index, event := range events {
-		workflowID := replayWorkflowIDPrefix + event.Input.EventID.String()
+		workflowID := cfg.WorkflowIDPrefix + event.Input.EventID.String()
 		prepared, err := store.PrepareCandidateReplay(ctx, pginfra.PrepareCandidateReplayInput{
 			EventID:      event.Input.EventID,
 			WorkflowID:   workflowID,
-			ReplayKind:   pginfra.ClockBoundaryReplayKind,
+			ReplayKind:   cfg.ReplayKind,
 			RejectReason: pginfra.ClockMismatchRejectReason,
 			MaxAttempts:  cfg.MaxAttempts,
+			CandidateIDs: cfg.CandidateIDs,
 		})
 		if err != nil {
 			return err
@@ -175,6 +199,72 @@ func run() error {
 	return nil
 }
 
+// verifyCandidateAllowlist proves every requested row still belongs to the
+// target event and exact terminal predicate before apply mode can mutate it.
+func verifyCandidateAllowlist(
+	ctx context.Context,
+	conn *pgx.Conn,
+	event pginfra.CandidateReplayEvent,
+	candidateIDs []uuid.UUID,
+	workflowID string,
+) error {
+	rows, err := conn.Query(ctx, `
+		SELECT id, event_id, tweet_url, outcome_class, COALESCE(reject_reason, ''),
+		       COALESCE(
+		           outcome_detail#>>'{replay,run_id}',
+		           outcome_detail#>>'{1,replay,run_id}',
+		           ''
+		       )
+		FROM event_search_candidates
+		WHERE id = ANY($1::uuid[])
+		ORDER BY array_position($1::uuid[], id)
+	`, candidateIDs)
+	if err != nil {
+		return fmt.Errorf("inspect candidate allowlist: %w", err)
+	}
+	defer rows.Close()
+
+	seen := 0
+	for rows.Next() {
+		var candidateID, eventID uuid.UUID
+		var tweetURL, outcome, reason, replayRunID string
+		if err := rows.Scan(
+			&candidateID, &eventID, &tweetURL, &outcome, &reason, &replayRunID,
+		); err != nil {
+			return fmt.Errorf("inspect candidate allowlist: scan: %w", err)
+		}
+		if eventID != event.Input.EventID {
+			return fmt.Errorf(
+				"candidate %s drifted: event=%s expected_event=%s",
+				candidateID, eventID, event.Input.EventID,
+			)
+		}
+		if event.AlreadyPrepared {
+			if replayRunID != workflowID {
+				return fmt.Errorf(
+					"candidate %s is not owned by prepared replay %s",
+					candidateID, workflowID,
+				)
+			}
+		} else if outcome != "rejected" || reason != pginfra.ClockMismatchRejectReason {
+			return fmt.Errorf(
+				"candidate %s drifted: outcome=%q reason=%q",
+				candidateID, outcome, reason,
+			)
+		}
+		fmt.Printf("candidate=%s tweet=%s outcome=%s reason=%q\n",
+			candidateID, tweetURL, outcome, reason)
+		seen++
+	}
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("inspect candidate allowlist: rows: %w", err)
+	}
+	if seen != len(candidateIDs) {
+		return fmt.Errorf("candidate allowlist matched %d rows; expected %d", seen, len(candidateIDs))
+	}
+	return nil
+}
+
 // checkedReplayResult requires the durable checklist and every selected row to
 // agree with the Temporal completion before the runner advances.
 func checkedReplayResult(
@@ -216,6 +306,11 @@ func loadReplayConfig() (replayConfig, error) {
 	if cfg.MaxCandidatesPerEvent, err = positiveIntWithDefault("REPLAY_MAX_CANDIDATES_PER_EVENT", defaultMaxCandidates); err != nil {
 		return cfg, err
 	}
+	cfg.WorkflowIDPrefix = envWithDefault("REPLAY_WORKFLOW_ID_PREFIX", defaultWorkflowIDPrefix)
+	cfg.ReplayKind = envWithDefault("REPLAY_KIND", defaultReplayKind)
+	if cfg.TargetEventID, cfg.CandidateIDs, err = exactReplaySelector(); err != nil {
+		return cfg, err
+	}
 	cfg.Apply = strings.EqualFold(strings.TrimSpace(os.Getenv(replayApplyEnvironment)), "true")
 	cfg.PGDSN = strings.TrimSpace(os.Getenv("PG_DSN"))
 	if cfg.PGDSN == "" {
@@ -225,6 +320,43 @@ func loadReplayConfig() (replayConfig, error) {
 	cfg.TemporalNamespace = envWithDefault("TEMPORAL_NAMESPACE", "default")
 	cfg.TemporalTaskQueue = envWithDefault("TEMPORAL_TASK_QUEUE", "found-footy")
 	return cfg, nil
+}
+
+// exactReplaySelector parses an optional event plus candidate allowlist. They
+// are coupled: accepting only one would make the operator's intended boundary
+// ambiguous.
+func exactReplaySelector() (uuid.UUID, []uuid.UUID, error) {
+	eventRaw := strings.TrimSpace(os.Getenv("TARGET_EVENT_ID"))
+	candidatesRaw := strings.TrimSpace(os.Getenv("REPLAY_CANDIDATE_IDS"))
+	if eventRaw == "" && candidatesRaw == "" {
+		return uuid.Nil, nil, nil
+	}
+	if eventRaw == "" || candidatesRaw == "" {
+		return uuid.Nil, nil, fmt.Errorf(
+			"TARGET_EVENT_ID and REPLAY_CANDIDATE_IDS must be set together",
+		)
+	}
+	eventID, err := uuid.Parse(eventRaw)
+	if err != nil {
+		return uuid.Nil, nil, fmt.Errorf("TARGET_EVENT_ID must be a UUID: %w", err)
+	}
+	seen := map[uuid.UUID]struct{}{}
+	var candidateIDs []uuid.UUID
+	for _, raw := range strings.Split(candidatesRaw, ",") {
+		id, err := uuid.Parse(strings.TrimSpace(raw))
+		if err != nil {
+			return uuid.Nil, nil, fmt.Errorf("REPLAY_CANDIDATE_IDS contains invalid UUID %q: %w", raw, err)
+		}
+		if _, duplicate := seen[id]; duplicate {
+			return uuid.Nil, nil, fmt.Errorf("REPLAY_CANDIDATE_IDS contains duplicate %s", id)
+		}
+		seen[id] = struct{}{}
+		candidateIDs = append(candidateIDs, id)
+	}
+	if len(candidateIDs) == 0 {
+		return uuid.Nil, nil, fmt.Errorf("REPLAY_CANDIDATE_IDS must not be empty")
+	}
+	return eventID, candidateIDs, nil
 }
 
 // requiredInt64 parses a required positive int64 environment value.

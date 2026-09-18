@@ -110,7 +110,7 @@ found-footy/
 │   ├── smoke_repos/main.go              ✓ live pg + repo smoke test (dev only)
 │   ├── trigger_ingest/main.go           ✓ live IngestWorkflow trigger (O1d verification)
 │   ├── smoke_fleet/main.go              ✓ #160: live per-event fleet smoke — provision→healthy→release one instance (dev only; needs docker.sock + dev network)
-│   ├── replay_clock_rejects/main.go      ✓ FF-057: dry-run-first exact clock-reject repair through normal EventWorkflow, sequential and idempotent
+│   ├── replay_clock_rejects/main.go      ✓ dry-run-first clock-reject repair through normal EventWorkflow; supports exact event/candidate allowlists
 │   └── smoke_prod_perms.sh              ✓ non-root prod image perm smoke (fleet + video scratch write paths)
 ├── test/                                ✓ YAML-driven scenario harness
 │   ├── harness/                         ✓ testcontainer pg + mock apifootball + assertion engine
@@ -545,9 +545,11 @@ Core type `team.TrackedTeam` (id, name, league, season, refreshed_at) + a
 `team.Set` for O(1) membership. Backs the tracked-teams fixture filter:
 `RefreshTrackedTeamsIfStale` builds the cache from league rosters, `Replace`
 does an atomic truncate+COPY, and `FetchFixturesForDay` filters against it.
+The refresh gate compares both cache age and the exact configured league set,
+so charter changes apply on the next ingest rather than waiting for the TTL.
 Per-team provenance (one row/team with league+season) enables the
 promotion/relegation reasoning the Python single-doc `top_flight_cache`
-couldn't. Repo (`team_repo.go`): `List`, `Replace`, `OldestRefreshedAt`.
+couldn't. Repo (`team_repo.go`): `List`, `Replace`.
 
 ## Adapters — as-shipped template
 
