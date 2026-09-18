@@ -375,7 +375,9 @@ followers share the asset association without copying proof onto every source;
 later exact recurrence adds no invented evaluation. The composite foreign key
 and bounded JSON check enforce scope and accepted-record shape. Media
 reclamation preserves the records; historical evidence is not backfilled.
-This is locally implemented, not deployed, and does not add graph reselection.
+This evidence store shipped with FF-081 in the
+[September 13 release](./history/direct-support-rollout-2026-09-13.md); selection
+is the separate consumer described below.
 See the [accepted-validation decision](./decisions/2026-09-12-accepted-validation-follows-exact-assets.md).
 
 FF-081 now adds `SelectionSnapshot`, `PlanSelection` and the internal
@@ -401,7 +403,7 @@ prevent an old placement from replaying its merge after ownership changes.
 Incomplete historical attribution skips reselection/direct scoring with a durable reason;
 new variants still require their own proof and bytes. Share revocation takes the
 event lock, and the workflow updates its caches before `event.update`. This is
-implemented locally, not deployed; see the
+deployed as `8c836e0` on September 13; see the
 [integration decision](./decisions/2026-09-12-selection-commits-with-incoming-placement.md).
 The direct-support change adds no storage fields. Its migration extends the
 receipt-version CHECK and updates two column descriptions; no historical scores
@@ -500,7 +502,8 @@ the unverified pool instead of being compared against minute zero (FF-031).
   checks identity/shape without reinterpreting historical observations through
   today's evaluator. `EvaluatorVersion` must change with evaluator semantics.
   `vision-evaluate-v5` adds literal-label interpretation without reinterpreting
-  old observations and retains FF-097's v4 behavior. V4 was deployed in the
+  old observations and retains FF-097's v4 behavior. V5 shipped in the
+  [September 18 V5 release](./history/vision-v5-rollout-2026-09-18.md); V4 was deployed in the
   [September 18 running-stoppage release](./history/running-stoppage-rollout-2026-09-18.md).
   Previously, production combined FF-094 and the unsupported-offset removal as
   `vision-evaluate-v3`, deployed in the

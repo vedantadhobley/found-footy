@@ -8,6 +8,12 @@ code before work begins.
 - [Gemma 12B literal-period qualification — September 18 UTC](./gemma-12b-period-prompt-2026-09-18.md)
   — failed normalized-label and near-zero trials, then a complete 39-call
   exact-runtime screen for literal labels at temperature zero.
+- [Control OCR admission handoff — September 18 UTC](./control-ocr-admission-handoff-2026-09-18.md)
+  — source diagnosis, bounded-overtaking handoff and completed public Joi
+  fairness acceptance without application deadline or concurrency changes.
+- [Restored Gemma 12B validation — September 18 UTC](./gemma-12b-restored-validation-2026-09-18.md)
+  — restored model availability, natural/synthetic field checks, prompt gaps
+  and the original four-client admission timeout.
 - [Gemma E4B vision trial — September 18 UTC](./gemma-e4b-vision-trial-2026-09-18.md)
   — ten completed calls, invented period/clock evidence, and the unresolved
   replacement for production's retired 12B model pin.

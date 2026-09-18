@@ -50,5 +50,6 @@ judging the soccer-content gate.
 This supersedes the model-owned-sampling choice for Found Footy's vision call
 in [Found Footy uses Control's model request contract](./2026-08-25-control-model-request-contract.md).
 Other callers still omit sampling unless they establish their own measured
-requirement. Production rollout and historical candidate recovery remain
-separate approvals.
+requirement. The [V5 rollout](../history/vision-v5-rollout-2026-09-18.md)
+completed without a migration; historical candidate recovery remains a
+separate approval.

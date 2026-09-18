@@ -5,6 +5,9 @@ preserve sequence and rationale but do not define current behavior or work.
 Use the [`docs` routing index](../README.md) for current ledgers and
 [`todo.md`](../todo.md) for active issues.
 
+- [Vision V5 rollout — September 18 UTC](./vision-v5-rollout-2026-09-18.md)
+  — `e2aa4a9` literal-period/exact-zero deployment, complete release gates,
+  healthy startup and the remaining natural-candidate validation boundary.
 - [Running-stoppage rollout — September 18 UTC](./running-stoppage-rollout-2026-09-18.md)
   — 06524ff/v4 deployment, release gates, retired-model blocker and the
   exact four-candidate Gueye recovery approval boundary.

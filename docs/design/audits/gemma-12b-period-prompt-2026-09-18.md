@@ -4,8 +4,8 @@
 
 The [follow-up experiments](#follow-up-experiments) retain the failed
 normalized-period attempts and qualify a replacement literal-label contract.
-That contract is now implemented locally with `vision-evaluate-v5`; it is not
-deployed.
+That contract shipped to production as `vision-evaluate-v5` in
+[`e2aa4a9`](../../history/vision-v5-rollout-2026-09-18.md).
 
 The original focused prompt remains historical evidence. All 37 preselected
 requests completed without transport or JSON errors. Gueye's three repeats
@@ -130,7 +130,7 @@ The same real model was rechecked in the live catalog: temperature defaults
 to 1, explicit values from 0 to 2 are supported, and the gateway was idle
 before this sequential workload. No Control setting or production state was
 changed. Sampling omission was the application default when these follow-up
-experiments began; the qualified local contract now sends exact zero.
+experiments began; the qualified runtime contract now sends exact zero.
 
 All follow-up runs use original full frames, three images, no reasoning,
 model-owned output budget, the 60-second HTTP deadline and no retries. Every
@@ -146,7 +146,7 @@ three times and the saved field controls; failures are not replaced by retries.
 | Existing local prompt/schema, explicit temperature zero | Nine calls; Gueye/Fernández exact, but all three bare-two controls still infer 2H. Sampling alone does not enforce label evidence. |
 | Literal label plus deterministic normalization, explicit temperature zero | The interrupted run resumed without repeating completed calls: all 39 finish without transport/schema errors and preserve timing semantics. |
 | Literal label, smallest positive `float32` temperature | Nine targeted calls finish, but all three Gueye repeats lose +4 and all three Fernández repeats lose +1 while misplacing `4'` in `period_label`. This SDK workaround is not equivalent to zero. |
-| Final runtime prompt/schema/adapter at exact zero | Nine targets and a separate complete 39-call screen pass. This is the locally implemented contract. |
+| Final runtime prompt/schema/adapter at exact zero | Nine targets and a separate complete 39-call screen pass. This is the deployed V5 contract. |
 
 The literal model schema replaces the inferred `period` enum with raw nullable
 `period_label` text. Benchmark-only code maps explicit half/extra-time aliases
@@ -167,7 +167,7 @@ footage passing a matching clock; this work cannot fix FF-003's identity gap.
 
 ## Runtime implementation
 
-Literal transcription is now the local application's wire contract:
+Literal transcription is now the application's wire contract:
 
 - The model returns literal label text; new evidence retains it unchanged and Go normalizes
   it in Go. Do not save an inferred enum as though it were printed text.
@@ -214,8 +214,8 @@ schema SHA-256 is
 | `runtime-p-controls.ndjson` | `8edc37fa38c6069fdcf989a711424b4438817146ae58708be1ff9128d5156731` |
 | `runtime-extra-time.ndjson` | `0601f465855ee8275081ace21df47d0d63227fcd434c31d3ed4f8784fabe0b2f` |
 
-Production rollout, natural-event validation and scoped historical recovery
-remain separate steps.
+Production rollout completed under the linked release record. Natural-event
+validation and scoped historical recovery remain separate steps.
 
 Follow-up artifacts are under `scratch-audit-2026-09-18/12b-explicit-period/`.
 Each report binds the prompt/schema/images and records temperature when an

@@ -117,4 +117,5 @@ required for this policy regression. The frozen comparison remains an
 experiment snapshot; runtime promotion and its limits are recorded separately.
 The [September 18 qualification](../../docs/design/audits/gemma-12b-period-prompt-2026-09-18.md)
 records the failed normalized-period prompts, sampling experiments and the
-complete 39-call literal-label runtime screen. The code remains undeployed.
+complete 39-call literal-label runtime screen. The qualified contract shipped
+in the [V5 release](../../docs/history/vision-v5-rollout-2026-09-18.md).

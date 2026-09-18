@@ -51,7 +51,7 @@ the current branch.
 
 ### FF-097 — running stoppage clocks inherit the next period
 
-- **Status:** `validating` — deployed September 18 as 06524ff
+- **Status:** `validating` — V4 deployed as `06524ff`; V5 as `e2aa4a9`
 - **Severity:** P1
 - **Evidence:** [Gueye's 45+2′ rejection and historical screen](./design/audits/running-stoppage-period-2026-09-17.md)
   establish accurate `46:35` plus `+4` observations rejected as second half.
@@ -80,9 +80,8 @@ the current branch.
   Nineteen of the original 82 signatures have changed event expectations and
   remain excluded, not silently repaired. These are evidence rows, not unique
   footage or semantic correctness labels.
-- **Next:** Roll out and match-day validate the v5 literal-period contract,
-  then separately approve scoped historical candidate recovery. No FF-097
-  recovery has run.
+- **Next:** Match-day validate the V5 literal-period contract, then separately
+  approve scoped historical candidate recovery. No FF-097 recovery has run.
 - **Release/model checkpoint (September 18 UTC):** The
   [application rollout](./history/running-stoppage-rollout-2026-09-18.md)
   passed exact-release gates. Recovery is not yet approved or applied. The
@@ -97,6 +96,10 @@ the current branch.
   normalized observations remain readable. Evidence now retains temperature
   and reasoning controls. See the [qualification](./design/audits/gemma-12b-period-prompt-2026-09-18.md)
   and [decision](./decisions/2026-09-18-vision-retains-literal-period-labels.md).
+- **V5 rollout:** Release `e2aa4a9` passed full gates, storage/permission
+  smokes, exact-identity verification and clean startup on both workers, API
+  and Twitter. Both workers selected `gemma-4-12b`; infrastructure was not
+  recreated. See the [release record](./history/vision-v5-rollout-2026-09-18.md).
 
 ### FF-094 — added-time announcement incorrectly unpins a running clock
 
