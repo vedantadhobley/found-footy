@@ -51,3 +51,12 @@ selector changes recovery semantics and must land with evidence and tests.
 Dry-run planning is read-only. Applying a production replay performs Postgres,
 Docker and Temporal mutations and still requires explicit per-operation user
 approval.
+
+## Production validation
+
+Release `d256c7e` ran operation `kane-54-20260918` against the completed Kane
+54′ event. Preparation selected 19 typed transient failures. The normal
+EventWorkflow completed 15 usable searches with no unavailable observations,
+closed with zero pending candidates, and released its scoped Firefox instance.
+The fresh searches added 48 candidate URLs, but no candidate produced a public
+asset; every candidate ended in a deterministic rejection or download failure.

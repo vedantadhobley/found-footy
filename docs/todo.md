@@ -51,8 +51,8 @@ the current branch.
 
 ### FF-101 — completed event discovery has no safe general replay entry point
 
-- **Status:** `implemented` — command, guarded persistence and tests are local;
-  production rollout and the first approved recovery remain
+- **Status:** `closed` — deployed in `d256c7e`; the first approved recovery
+  completed cleanly
 - **Severity:** P2
 - **Evidence:** A completed EventWorkflow restores its exact checklist metadata.
   Starting `event-<event-id>` again therefore restores fifteen completed search
@@ -71,21 +71,26 @@ the current branch.
   fixed v1 allowlist of typed model-admission/request, Temporal validation-
   activity timeout and CDN failures while pinning the attempt checkpoint at the
   schema ceiling so config drift cannot reopen search. `recover` combines both.
-  Prior terminal evidence is
-  retained under `outcome_detail.replay`; deterministic content/clock rejects,
+  Prior terminal evidence is retained under `outcome_detail.replay`;
+  deterministic content/clock rejects,
   untyped failures and candidates already attached to assets cannot be reset.
 - **Operational boundary:** The binary ships inert beside worker and migrate.
   Operators run it in a one-shot worker-image container; there is no admin HTTP
   surface or permanent service. Planning is read-only. `--apply` performs
   production Postgres, Docker and Temporal mutations and requires one explicit
   approval for that named replay operation.
-- **Next:** Land and deploy the binary, run a read-only plan for Kane 54′, then
-  request explicit approval for that exact `recover` operation.
+- **Production evidence:** Operation `kane-54-20260918` selected 19 typed
+  transient failures, then completed all 15 usable searches with zero
+  unavailable observations and zero pending candidates. It evaluated 48 new
+  candidate URLs but produced no public asset: all candidates ended in a
+  deterministic reject or download failure. The exact checklist closed and its
+  scoped Firefox instance was released.
 
 ### FF-100 — public event presentation still passes through the legacy adapter
 
-- **Status:** `implemented` — additive Found Footy producer contract is local;
-  the coordinated Vedanta Systems consumer cleanup and rollout remain
+- **Status:** `implemented` — additive Found Footy producer contract is
+  deployed in `d256c7e`; the coordinated Vedanta Systems consumer cleanup and
+  rollout remain
 - **Severity:** P2
 - **Evidence:** Found Footy already exposes canonical `phase` and explicit
   video `share_id`, but the BFF converts phase into Python-era
@@ -111,9 +116,8 @@ the current branch.
   recovers an authoritative parent when an `event.update` target or parent is
   missing, and rewrites public media URLs while preserving `share_id`. React
   owns explicit-field sorting, Local/UTC bucketing, and visual composition.
-- **Next:** Commit the producer, hand the exact DTO to Vedanta Systems, then
-  land and test its removal of the underscore adapter before an additive
-  backend-first coordinated rollout.
+- **Next:** Land and test the Vedanta Systems removal of the underscore adapter,
+  then deploy that consumer against the already-live additive contract.
 
 ### FF-099 — search highlighting reconstructs backend matching incorrectly
 
