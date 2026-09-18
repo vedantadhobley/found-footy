@@ -49,10 +49,40 @@ the current branch.
 
 ## Confirmed issues
 
+### FF-100 — public event presentation still passes through the legacy adapter
+
+- **Status:** `implemented` — additive Found Footy producer contract is local;
+  the coordinated Vedanta Systems consumer cleanup and rollout remain
+- **Severity:** P2
+- **Evidence:** Found Footy already exposes canonical `phase` and explicit
+  video `share_id`, but the BFF converts phase into Python-era
+  `_monitor_complete`, `_download_complete`, and `_removed` flags and discards
+  `share_id` before React reparses it from a URL. It also parses event/round
+  strings, sorts competitions by API-Football league ID, fabricates
+  `_first_seen`, and reconstructs event scorelines from the visible event list.
+- **Risk:** A partial provider event inventory can make that reconstructed
+  scoreline wrong. Compatibility fields also leave two semantic authorities
+  and keep API-Football vocabulary embedded in the browser.
+- **Producer implementation:** The additive API exposes provider-independent
+  event `kind`, normalized `presentation` label/team side, parity-guarded score
+  context, normalized round label/kind, and producer-owned competition
+  priority. Existing `phase` and `share_id` remain authoritative. Fixture event
+  arrays have a documented match-clock order; no opaque sort key is added.
+  `GET /events?ids=` loads parent/sibling context so an event-only refetch has
+  the same projection as a fixture snapshot, including a directly requested
+  removed event. No schema or NATS change is required.
+- **Consumer boundary:** The BFF validates/proxies, resolves dirty signals,
+  recovers an authoritative parent when an `event.update` target or parent is
+  missing, and rewrites public media URLs while preserving `share_id`. React
+  owns explicit-field sorting, Local/UTC bucketing, and visual composition.
+- **Next:** Commit the producer, hand the exact DTO to Vedanta Systems, then
+  land and test its removal of the underscore adapter before an additive
+  backend-first coordinated rollout.
+
 ### FF-099 — search highlighting reconstructs backend matching incorrectly
 
-- **Status:** `implemented` — Found Footy and Vedanta Systems changes are local,
-  not deployed
+- **Status:** `closed` — Found Footy `b7cdb0d` and Vedanta Systems `10c73a1`
+  are deployed
 - **Severity:** P1
 - **Evidence:** Production Found Footy correctly matches `mbappe` to `Mbappé`
   after the September 18 accent-folding rollout. Its response discarded match
@@ -74,9 +104,10 @@ the current branch.
   changed-file lint, production build, and both production image builds. Its
   repository-wide lint retains unrelated pre-existing failures outside the
   changed files.
-- **Next:** Review the isolated commits, then authorize and coordinate the
-  additive backend-first rollout. Verify a plain-keyboard `mbappe` search
-  returns the full fixture and highlights the accented player event.
+- **Verification:** Production `GET /api/v1/search?q=mbappe` returns complete
+  fixtures and field-level provenance for accented `Kylian Mbappé` scorer and
+  assist matches; the deployed BFF consumes that provenance without repeating
+  text matching.
 
 ### FF-097 — running stoppage clocks inherit the next period
 

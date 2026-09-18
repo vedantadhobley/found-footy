@@ -14,6 +14,9 @@ its historical heading anchors valid.
 
 New decisions after the frozen archive:
 
+- [Public event presentation is producer-owned](./2026-09-18-public-event-presentation-is-producer-owned.md)
+  — adds provider-independent event/round semantics and parity-guarded score
+  context without opaque sort keys, timezone leakage, schema, or NATS changes.
 - [Public search folds accents in PostgreSQL](./2026-09-18-public-search-folds-accents.md)
   — keeps stored display text unchanged while the official `unaccent`
   extension matches plain-keyboard queries and backend-owned provenance drives

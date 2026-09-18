@@ -8,6 +8,7 @@ package api
 import (
 	"time"
 
+	"github.com/vedantadhobley/found-footy/internal/contract/eventpresentation"
 	"github.com/vedantadhobley/found-footy/internal/contract/fixturepresentation"
 	"github.com/vedantadhobley/found-footy/internal/domain/event"
 	"github.com/vedantadhobley/found-footy/internal/domain/fixture"
@@ -26,11 +27,16 @@ type sideDTO struct {
 }
 
 type leagueDTO struct {
-	ID      int    `json:"id"`
-	Name    string `json:"name"`
-	Season  int    `json:"season"`
-	Country string `json:"country"` // "World", "USA", "England" — the competition line
-	Round   string `json:"round"`   // "Regular Season - 12", "Group Stage - 1"
+	ID       int    `json:"id"`
+	Name     string `json:"name"`
+	Season   int    `json:"season"`
+	Country  string `json:"country"`  // "World", "USA", "England" — the competition line
+	Priority int    `json:"priority"` // producer-owned competition order; lower renders first
+	Round    string `json:"round"`    // raw provider value retained for diagnostics
+	// RoundLabel + RoundKind are the normalized public presentation. Consumers
+	// do not parse API-Football strings such as "Regular Season - 12".
+	RoundLabel string                        `json:"round_label"`
+	RoundKind  fixturepresentation.RoundKind `json:"round_kind"`
 }
 
 // penaltyDTO is the shootout result (home (4) — (3) away). Present on the
@@ -75,6 +81,10 @@ type eventDTO struct {
 	Team      teamRefDTO `json:"team"`
 	Player    *playerDTO `json:"player"` // null for an unknown scorer
 	Assist    *playerDTO `json:"assist"` // the assisting player; null when none
+	// Kind and Presentation are provider-independent semantic display inputs.
+	// Type/detail remain during the additive cutover for older consumers.
+	Kind         eventpresentation.Kind         `json:"kind"`
+	Presentation eventpresentation.Presentation `json:"presentation"`
 	// Phase — the derived semantic lifecycle: detected / searching / complete /
 	// removed (see internal/domain/event/phase.go). The layer-2 contract: the
 	// frontend renders this + Videos (orthogonal) without re-deriving pipeline
@@ -150,12 +160,19 @@ func toVideoDTO(c video.LiveClip) videoDTO {
 // finished) — the third input, alongside Removed + DownstreamTriggered, that
 // event.DerivePhase needs. videos may be nil (no clips yet) → serialized as an
 // empty array by ensureVideos.
-func toEventDTO(e *event.Event, videos []videoDTO, discoveryComplete bool) eventDTO {
+func toEventDTO(
+	e *event.Event,
+	videos []videoDTO,
+	discoveryComplete bool,
+	projection eventpresentation.Projection,
+) eventDTO {
 	d := eventDTO{
 		ID: e.ID.String(), FixtureID: e.FixtureID,
 		Type: string(e.Type), Detail: string(e.Detail),
 		Minute: e.Minute, Extra: e.Extra,
 		Team:          teamRefDTO{ID: e.Team.ID, Name: e.Team.Name},
+		Kind:          projection.Kind,
+		Presentation:  projection.Presentation,
 		Phase:         string(event.DerivePhase(e.Removed, e.DownstreamTriggered, discoveryComplete)),
 		DebounceCount: e.DebounceCount,
 		Videos:        ensureVideos(videos),
@@ -173,6 +190,7 @@ func toEventDTO(e *event.Event, videos []videoDTO, discoveryComplete bool) event
 // the derived recency key (see deriveLastActivity) — the caller computes it from
 // the domain events, since eventDTO doesn't carry first_seen_at.
 func toFixtureDTO(f *fixture.Fixture, events []eventDTO, lastActivityAt *time.Time) fixtureDTO {
+	round := fixturepresentation.PresentRound(f.League.Round)
 	return fixtureDTO{
 		ID:         f.ID,
 		State:      string(f.State),
@@ -180,7 +198,9 @@ func toFixtureDTO(f *fixture.Fixture, events []eventDTO, lastActivityAt *time.Ti
 		Projection: fixturepresentation.From(f.APIStatus, f.APIElapsed, f.APIExtra),
 		League: leagueDTO{
 			ID: f.League.ID, Name: f.League.Name, Season: f.League.Season,
-			Country: f.League.Country, Round: f.League.Round,
+			Country:  f.League.Country,
+			Priority: fixturepresentation.CompetitionPriority(f.League.ID),
+			Round:    f.League.Round, RoundLabel: round.Label, RoundKind: round.Kind,
 		},
 		Home:           sideDTO{ID: f.Home.ID, Name: f.Home.Name, Score: f.HomeScore, Winner: f.HomeWinner},
 		Away:           sideDTO{ID: f.Away.ID, Name: f.Away.Name, Score: f.AwayScore, Winner: f.AwayWinner},

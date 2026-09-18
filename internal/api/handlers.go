@@ -18,6 +18,7 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
 
+	"github.com/vedantadhobley/found-footy/internal/contract/eventpresentation"
 	"github.com/vedantadhobley/found-footy/internal/domain/event"
 	"github.com/vedantadhobley/found-footy/internal/domain/fixture"
 	"github.com/vedantadhobley/found-footy/internal/domain/video"
@@ -94,8 +95,13 @@ func (h *Handlers) discoveryComplete(ctx context.Context, events []*event.Event)
 }
 
 // assembleEvents enriches an already-batched event set with one discovery
-// query and one ranked-video query. The returned map is keyed by event ID.
-func (h *Handlers) assembleEvents(ctx context.Context, events []*event.Event) (map[uuid.UUID]eventDTO, error) {
+// query, one ranked-video query, and producer-owned presentation. The returned
+// map is keyed by event ID.
+func (h *Handlers) assembleEvents(
+	ctx context.Context,
+	events []*event.Event,
+	presentations map[uuid.UUID]eventpresentation.Projection,
+) (map[uuid.UUID]eventDTO, error) {
 	done, err := h.discoveryComplete(ctx, events)
 	if err != nil {
 		return nil, err
@@ -114,7 +120,11 @@ func (h *Handlers) assembleEvents(ctx context.Context, events []*event.Event) (m
 		for _, clip := range clips[e.ID] {
 			videos = append(videos, toVideoDTO(clip))
 		}
-		out[e.ID] = toEventDTO(e, videos, done[e.ID])
+		projection, ok := presentations[e.ID]
+		if !ok {
+			projection = eventpresentation.Basic(e)
+		}
+		out[e.ID] = toEventDTO(e, videos, done[e.ID], projection)
 	}
 	return out, nil
 }
@@ -130,13 +140,19 @@ func (h *Handlers) assembleFixtures(ctx context.Context, fixtures []*fixture.Fix
 	if err != nil {
 		return nil, err
 	}
-	assembledEvents, err := h.assembleEvents(ctx, events)
-	if err != nil {
-		return nil, err
-	}
 	eventsByFixture := make(map[int64][]*event.Event, len(fixtures))
 	for _, e := range events {
 		eventsByFixture[e.FixtureID] = append(eventsByFixture[e.FixtureID], e)
+	}
+	presentations := make(map[uuid.UUID]eventpresentation.Projection, len(events))
+	for _, f := range fixtures {
+		for id, projection := range eventpresentation.Build(f, eventsByFixture[f.ID]) {
+			presentations[id] = projection
+		}
+	}
+	assembledEvents, err := h.assembleEvents(ctx, events, presentations)
+	if err != nil {
+		return nil, err
 	}
 	out := make([]fixtureDTO, 0, len(fixtures))
 	for _, f := range fixtures {
@@ -148,6 +164,58 @@ func (h *Handlers) assembleFixtures(ctx context.Context, fixtures []*fixture.Fix
 		out = append(out, toFixtureDTO(f, eventDTOs, deriveLastActivity(f, domainEvents)))
 	}
 	return out, nil
+}
+
+// presentationsForEvents loads each requested event's authoritative parent
+// and surviving siblings so the event-only endpoint returns the same score
+// context as a fixture snapshot. A directly requested removed event is added
+// only for its own tentative presentation; it never advances later scores.
+func (h *Handlers) presentationsForEvents(
+	ctx context.Context,
+	events []*event.Event,
+) (map[uuid.UUID]eventpresentation.Projection, error) {
+	fixtureIDs := make([]int64, 0, len(events))
+	seenFixtures := make(map[int64]struct{}, len(events))
+	for _, e := range events {
+		if _, seen := seenFixtures[e.FixtureID]; seen {
+			continue
+		}
+		seenFixtures[e.FixtureID] = struct{}{}
+		fixtureIDs = append(fixtureIDs, e.FixtureID)
+	}
+	fixtures, err := h.Fixtures.GetByIDs(ctx, fixtureIDs)
+	if err != nil {
+		return nil, err
+	}
+	siblings, err := h.Events.ListByFixtures(ctx, fixtureIDs)
+	if err != nil {
+		return nil, err
+	}
+	byFixture := make(map[int64][]*event.Event, len(fixtures))
+	present := make(map[uuid.UUID]struct{}, len(siblings))
+	for _, sibling := range siblings {
+		byFixture[sibling.FixtureID] = append(byFixture[sibling.FixtureID], sibling)
+		present[sibling.ID] = struct{}{}
+	}
+	for _, requested := range events {
+		if _, exists := present[requested.ID]; exists {
+			continue
+		}
+		byFixture[requested.FixtureID] = append(byFixture[requested.FixtureID], requested)
+	}
+
+	projections := make(map[uuid.UUID]eventpresentation.Projection, len(events))
+	for _, f := range fixtures {
+		for id, projection := range eventpresentation.Build(f, byFixture[f.ID]) {
+			projections[id] = projection
+		}
+	}
+	for _, requested := range events {
+		if _, exists := projections[requested.ID]; !exists {
+			projections[requested.ID] = eventpresentation.Basic(requested)
+		}
+	}
+	return projections, nil
 }
 
 // ─── handlers ───────────────────────────────────────────────────────────────
@@ -269,7 +337,12 @@ func (h *Handlers) GetEvents(w http.ResponseWriter, r *http.Request) {
 		h.serverError(ctx, w, "batch get events", err)
 		return
 	}
-	assembled, err := h.assembleEvents(ctx, evs)
+	presentations, err := h.presentationsForEvents(ctx, evs)
+	if err != nil {
+		h.serverError(ctx, w, "derive event presentation", err)
+		return
+	}
+	assembled, err := h.assembleEvents(ctx, evs, presentations)
 	if err != nil {
 		h.serverError(ctx, w, "assemble events", err)
 		return

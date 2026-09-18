@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/vedantadhobley/found-footy/internal/contract/eventpresentation"
 	"github.com/vedantadhobley/found-footy/internal/domain/event"
 	"github.com/vedantadhobley/found-footy/internal/domain/fixture"
 )
@@ -89,7 +90,7 @@ func TestToFixtureDTOEmbedsPresentationProjection(t *testing.T) {
 		time.Date(2026, 8, 30, 18, 0, 0, 0, time.UTC),
 		fixture.Team{ID: 1, Name: "Home"},
 		fixture.Team{ID: 2, Name: "Away"},
-		fixture.League{ID: 3, Name: "League", Season: 2026},
+		fixture.League{ID: 3, Name: "League", Season: 2026, Round: "Regular Season - 5"},
 	)
 	f.APIElapsed = &minute
 
@@ -115,6 +116,10 @@ func TestToFixtureDTOEmbedsPresentationProjection(t *testing.T) {
 	if _, exists := status["elapsed"]; exists {
 		t.Fatal("status retained legacy elapsed field; clock must be the only clock projection")
 	}
+	league, ok := got["league"].(map[string]any)
+	if !ok || league["priority"] != float64(3) || league["round_label"] != "Matchweek 5" || league["round_kind"] != "regular_season" {
+		t.Fatalf("league presentation = %#v, want priority 3 / Matchweek 5 / regular_season", got["league"])
+	}
 }
 
 // TestToEventDTO_Assist — the assister surfaces on the event DTO when present,
@@ -129,12 +134,14 @@ func TestToEventDTO_Assist(t *testing.T) {
 		}
 	}
 	// with an assister → populated
-	d := toEventDTO(base(event.Player{ID: &aid, Name: &aname}), nil, false)
+	withAssist := base(event.Player{ID: &aid, Name: &aname})
+	d := toEventDTO(withAssist, nil, false, eventpresentation.Basic(withAssist))
 	if d.Assist == nil || d.Assist.ID != 8 || d.Assist.Name != "Assister" {
 		t.Errorf("with assist: got %+v, want {8, Assister}", d.Assist)
 	}
 	// no assister → nil
-	if d := toEventDTO(base(event.Player{}), nil, false); d.Assist != nil {
+	withoutAssist := base(event.Player{})
+	if d := toEventDTO(withoutAssist, nil, false, eventpresentation.Basic(withoutAssist)); d.Assist != nil {
 		t.Errorf("no assist: got %+v, want nil", d.Assist)
 	}
 }

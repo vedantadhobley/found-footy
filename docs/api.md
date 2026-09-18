@@ -115,7 +115,10 @@ between `null` and zero.
     "name": "Serie A",
     "season": 2026,
     "country": "Italy",
-    "round": "Regular Season - 1"
+    "priority": 135,
+    "round": "Regular Season - 1",
+    "round_label": "Matchweek 1",
+    "round_kind": "regular_season"
   },
   "home": { "id": 505, "name": "Inter", "score": 2, "winner": true },
   "away": { "id": 489, "name": "Milan", "score": 1, "winner": false },
@@ -150,17 +153,31 @@ placeholders do not advance it; removing an event can move it backward. The
 later active-to-completed transition therefore does not reorder a fixture that
 already rendered as finished during terminal grace.
 
+`league.priority` is the producer-owned competition order; lower values render
+first. The initial policy preserves the former ascending league-ID order, but
+consumers no longer depend on API-Football identity to sort competitions.
+`round` retains the raw provider value for diagnostics. `round_label` is the
+display value, and `round_kind` is `regular_season`, `final`, `other`, or
+`unknown`. Consumers never parse provider round strings.
+
 ```jsonc
 {
   "id": "<uuid>",
   "fixture_id": 1530158,
   "type": "goal",
   "detail": "normal goal",
+  "kind": "goal",
   "minute": 62,
   "extra": null,
   "team": { "id": 505, "name": "Inter" },
   "player": { "id": 1234, "name": "Lautaro" },
   "assist": { "id": 5678, "name": "Barella" },
+  "presentation": {
+    "label": "Goal",
+    "team_side": "home",
+    "score_before": { "home": 1, "away": 1 },
+    "score_after": { "home": 2, "away": 1 }
+  },
   "phase": "searching",
   "debounce_count": 3,
   "videos": []
@@ -170,6 +187,22 @@ already rendered as finished during terminal grace.
 `player` and `assist` can be `null`. `phase` is one of `detected`, `searching`,
 `complete`, or `removed`. Phase and clip presence are independent: clips may
 arrive while search is still running, and a complete search may have no clips.
+
+`kind` is the provider-independent event class: `goal`, `red_card`, or
+`missed_penalty` for the public tracked set. `presentation.label` supplies the
+normalized English event label; `team_side` is `home`, `away`, or `null` when
+stored identity is inconsistent with the parent fixture. Score context is
+present only for goals and only when surviving stored goals reconcile exactly
+with the provider's current home/away score. During a partial or degraded feed,
+both score fields are `null` rather than an invented historical scoreline. A
+directly requested removed goal can carry its tentative before/after score, but
+it never advances the score of later surviving events.
+
+Fixture event arrays are in ascending match-clock order, then first-observed
+and UUID order for deterministic ties. Consumers may reverse that array for
+recent-first display. They must not fabricate observation timestamps. The
+event-only endpoint derives the same presentation from the authoritative
+parent and surviving siblings, including for directly requested removed rows.
 
 ```jsonc
 {
@@ -248,6 +281,11 @@ REST. Applying the same refetch more than once must be harmless.
   is invalid because Core NATS does not replay an earlier fixture hint.
 - `phase` and `videos` render independently. Do not derive workflow state from
   clip count.
+- Preserve `phase` and each video's explicit `share_id`; do not translate them
+  into legacy monitor/download flags or recover media identity from `url`.
+- Use `kind`, `presentation`, `round_label`, `round_kind`, and league
+  `priority` directly. Do not parse provider event/round strings or sort
+  competitions by provider identity.
 - `player: null` is a valid unknown-player event. It is not searched until the
   provider supplies a player identity.
 - Search consumers trust `search_match` for competition, team, player, and

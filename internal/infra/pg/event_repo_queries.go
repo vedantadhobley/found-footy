@@ -27,7 +27,8 @@ func (r *EventRepo) GetByIDs(ctx context.Context, ids []uuid.UUID) ([]*event.Eve
 }
 
 // ListByFixtures returns every non-removed event for the requested fixtures in
-// stable fixture/minute order. The API groups this one batch in memory.
+// authoritative match-clock order. The API preserves this order; consumers do
+// not invent observation timestamps to reconstruct event chronology.
 func (r *EventRepo) ListByFixtures(ctx context.Context, fixtureIDs []int64) ([]*event.Event, error) {
 	if len(fixtureIDs) == 0 {
 		return []*event.Event{}, nil
@@ -35,7 +36,8 @@ func (r *EventRepo) ListByFixtures(ctx context.Context, fixtureIDs []int64) ([]*
 	rows, err := r.pool.Query(ctx,
 		"SELECT "+eventColumns+` FROM events
 		 WHERE fixture_id = ANY($1::bigint[]) AND NOT removed
-		 ORDER BY array_position($1::bigint[], fixture_id), minute, first_seen_at, id`, fixtureIDs)
+		 ORDER BY array_position($1::bigint[], fixture_id), minute,
+		          extra NULLS FIRST, first_seen_at, id`, fixtureIDs)
 	if err != nil {
 		return nil, fmt.Errorf("pg.EventRepo.ListByFixtures: %w", err)
 	}
@@ -72,16 +74,16 @@ func (r *EventRepo) ListPending(ctx context.Context, fixtureID int64) ([]*event.
 	return events, nil
 }
 
-// ListByFixture returns all NON-removed events for a fixture, ordered by
-// minute then first-seen — the display read backing the read API's fixture +
-// event endpoints (#167). Distinct from ListPending, which filters to
+// ListByFixture returns all NON-removed events for a fixture, ordered by match
+// minute, stoppage minute, first observation, and identity — the display read
+// backing the read API's fixture + event endpoints (#167). Distinct from ListPending, which filters to
 // pipeline-work-remaining; this returns every event the frontend should show
 // (removed/VAR events are excluded). Served by the events_fixture index.
 func (r *EventRepo) ListByFixture(ctx context.Context, fixtureID int64) ([]*event.Event, error) {
 	rows, err := r.pool.Query(ctx,
 		"SELECT "+eventColumns+` FROM events
 		 WHERE fixture_id = $1 AND NOT removed
-		 ORDER BY minute, first_seen_at`,
+		 ORDER BY minute, extra NULLS FIRST, first_seen_at, id`,
 		fixtureID)
 	if err != nil {
 		return nil, fmt.Errorf("pg.EventRepo.ListByFixture: %w", err)

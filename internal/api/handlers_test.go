@@ -17,6 +17,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/vedantadhobley/found-footy/internal/contract/eventpresentation"
 	"github.com/vedantadhobley/found-footy/internal/domain/event"
 	"github.com/vedantadhobley/found-footy/internal/domain/fixture"
 	"github.com/vedantadhobley/found-footy/internal/domain/video"
@@ -144,7 +145,7 @@ func scaffold() (*Handlers, int64, uuid.UUID) {
 		Away:       fixture.Team{ID: 2, Name: "Beta"},
 		League:     fixture.League{ID: 140, Name: "La Liga", Season: 2026},
 		APIStatus:  fixture.APIStatus{Short: "2H", Long: "Second Half"},
-		APIElapsed: ip(67), HomeScore: ip(2), AwayScore: ip(1),
+		APIElapsed: ip(67), HomeScore: ip(1), AwayScore: ip(0),
 	}
 	ev := &event.Event{
 		ID: evID, FixtureID: fxID, Type: event.Type("goal"), Minute: 23,
@@ -311,8 +312,41 @@ func TestGetEvents_Batch(t *testing.T) {
 	if len(list) != 1 || list[0].ID != evID.String() || len(list[0].Videos) != 1 {
 		t.Fatalf("batch events = %+v, want just event %s with its clip", list, evID)
 	}
+	if list[0].Kind != "goal" || list[0].Presentation.Label != "Goal" ||
+		list[0].Presentation.TeamSide == nil || *list[0].Presentation.TeamSide != "home" ||
+		list[0].Presentation.ScoreAfter == nil || list[0].Presentation.ScoreAfter.Home != 1 {
+		t.Fatalf("event presentation = kind %q %+v, want home goal at 1-0", list[0].Kind, list[0].Presentation)
+	}
 	if rec := get(h, "/api/v1/events"); rec.Code != http.StatusBadRequest {
 		t.Errorf("events without ids = %d, want 400", rec.Code)
+	}
+}
+
+func TestGetEvents_RemovedEventUsesParentContextWithoutChangingSurvivingScore(t *testing.T) {
+	h, fxID, _ := scaffold()
+	removedID := uuid.New()
+	removed := &event.Event{
+		ID: removedID, FixtureID: fxID, Type: event.TypeGoal, Minute: 40,
+		Team: event.Team{ID: 2, Name: "Beta"}, Removed: true,
+	}
+	h.Events.(*fakeEvents).byID[removedID] = removed
+
+	rec := get(h, "/api/v1/events?ids="+removedID.String())
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	var list []eventDTO
+	if err := json.Unmarshal(rec.Body.Bytes(), &list); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(list) != 1 || list[0].Phase != "removed" {
+		t.Fatalf("removed event = %+v, want one removed projection", list)
+	}
+	presentation := list[0].Presentation
+	if presentation.TeamSide == nil || *presentation.TeamSide != "away" ||
+		presentation.ScoreBefore == nil || *presentation.ScoreBefore != (eventpresentation.Score{Home: 1, Away: 0}) ||
+		presentation.ScoreAfter == nil || *presentation.ScoreAfter != (eventpresentation.Score{Home: 1, Away: 1}) {
+		t.Fatalf("removed presentation = %+v, want tentative away equalizer after surviving 1-0", presentation)
 	}
 }
 

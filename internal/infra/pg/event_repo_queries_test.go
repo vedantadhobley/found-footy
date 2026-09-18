@@ -111,6 +111,41 @@ func TestEventRepo_BatchReadsPreserveRequestedGroupingAndHideRemoved(t *testing.
 	}
 }
 
+func TestEventRepo_DisplayReadsUseMatchClockOrder(t *testing.T) {
+	ctx, _, repo, fRepo := setupEventRepo(t)
+	seedFixture(t, ctx, fRepo, 7012)
+
+	late := makeGoalEvent(7012, 1)
+	early := makeGoalEvent(7012, 2)
+	extraOne, extraTwo := 1, 2
+	late.Minute, early.Minute = 45, 45
+	late.Extra, early.Extra = &extraTwo, &extraOne
+	// Make detection order disagree with stoppage-time order. Presentation must
+	// still follow the match clock.
+	late.FirstSeenAt = time.Date(2026, 7, 8, 15, 45, 0, 0, time.UTC)
+	early.FirstSeenAt = late.FirstSeenAt.Add(time.Minute)
+	for _, e := range []*event.Event{late, early} {
+		if err := repo.Insert(ctx, e, "clock-order-"+e.ID.String()); err != nil {
+			t.Fatalf("Insert %s: %v", e.ID, err)
+		}
+	}
+
+	for name, load := range map[string]func() ([]*event.Event, error){
+		"single": func() ([]*event.Event, error) { return repo.ListByFixture(ctx, 7012) },
+		"batch":  func() ([]*event.Event, error) { return repo.ListByFixtures(ctx, []int64{7012}) },
+	} {
+		t.Run(name, func(t *testing.T) {
+			got, err := load()
+			if err != nil {
+				t.Fatalf("load: %v", err)
+			}
+			if len(got) != 2 || got[0].ID != early.ID || got[1].ID != late.ID {
+				t.Fatalf("events = %+v, want 45+1 then 45+2", got)
+			}
+		})
+	}
+}
+
 func TestEventRepo_ListAllByFixture_IncludesRemovedIdentityHistory(t *testing.T) {
 	ctx, _, repo, fRepo := setupEventRepo(t)
 	seedFixture(t, ctx, fRepo, 7009)
