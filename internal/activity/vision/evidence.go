@@ -11,12 +11,13 @@ import (
 	"go.temporal.io/sdk/activity"
 
 	dvision "github.com/vedantadhobley/found-footy/internal/domain/vision"
+	"github.com/vedantadhobley/found-footy/internal/infra/llm"
 )
 
 // acceptanceEvidence records the actual model, sampling and evaluator inputs.
 // The capture flag leaves acceptance evidence absent when a history did not request it.
 func (a *Activities) acceptanceEvidence(ctx context.Context, in ValidateClipInput, duration float64,
-	model string, frames []dvision.FrameObservation, evaluation dvision.Evaluation,
+	model string, request llm.ChatRequest, frames []dvision.FrameObservation, evaluation dvision.Evaluation,
 ) *dvision.Evidence {
 	if !in.CaptureEvidence || evaluation.Outcome == dvision.OutcomeRejected {
 		return nil
@@ -35,6 +36,7 @@ func (a *Activities) acceptanceEvidence(ctx context.Context, in ValidateClipInpu
 		ID: uuid.New(), Version: 1, EvaluatedAt: time.Now().UTC(), Evaluator: dvision.EvaluatorVersion,
 		EventID: in.EventID, FixtureID: in.FixtureID, MD5: in.MD5,
 		Model: model, PromptSHA256: contractDigest(a.prompt()), SchemaSHA256: contractDigest(string(dvision.ResponseSchema)),
+		Temperature: request.Temperature, ReasoningEffort: string(request.ReasoningEffort),
 		Origin: origin, Expected: dvision.Expected{Elapsed: in.APIElapsed, Extra: in.APIExtra},
 		ToleranceMinutes: a.Cfg.ToleranceMinutes, FramePositions: positions, FrameQuality: a.Cfg.FrameQuality,
 		Frames: frames, Evaluation: evaluation,

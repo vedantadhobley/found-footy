@@ -483,17 +483,24 @@ the unverified pool instead of being compared against minute zero (FF-031).
   A boundary plus allowance without an elapsed timer is unverified, not
   verified on period alone. Its lower bound and other usable contradictory
   clocks remain effective; one independently matching reading still suffices.
-- `schema.go` — `FrameObservation` (per-frame JSON, including nullable visible
-  `period`) + `VisionResponse` (`{Frames}`, the `response_format` json-schema,
-  exactly-3 positional frames) + `DefaultPrompt`. The model must return period
-  only from visible scorebug evidence, never from the clock value alone.
+- `schema.go`, `response.go`, `period_label.go` — `FrameObservation` retains
+  literal nullable `period_label` text for new calls and reads normalized
+  `period` only for historical Temporal/evidence compatibility. The strict
+  model decoder rejects the retired field. `VisionResponse`, its exactly-three
+  frame JSON Schema, and `DefaultPrompt` ask the model to copy visible text;
+  Go alone maps an allowlist to `1H`/`2H`/`ET1`/`ET2`. Bare digits, allowances,
+  clocks, incomplete suffixes and unknown labels supply no period evidence.
   FF-094 forbids invented seconds and permits cross-frame field identification,
   not copied/interpolated readings or a new clock-progression gate.
+  The [September 18 qualification](./design/audits/gemma-12b-period-prompt-2026-09-18.md)
+  preserves failed normalized-label prompts, literal-label experiments and the
+  final exact-runtime screen.
 - `evidence.go` — bounded accepted `Evidence`, with original observations,
   expected time, complete evaluation, sampling and provenance. Validation
   checks identity/shape without reinterpreting historical observations through
   today's evaluator. `EvaluatorVersion` must change with evaluator semantics.
-  FF-097 uses `vision-evaluate-v4`, deployed in the
+  `vision-evaluate-v5` adds literal-label interpretation without reinterpreting
+  old observations and retains FF-097's v4 behavior. V4 was deployed in the
   [September 18 running-stoppage release](./history/running-stoppage-rollout-2026-09-18.md).
   Previously, production combined FF-094 and the unsupported-offset removal as
   `vision-evaluate-v3`, deployed in the
@@ -507,8 +514,11 @@ Consumed by `internal/activity/vision.ValidateClip`: fetch staged clip →
 → `Evaluate`. **Wired into EventWorkflow's consumer** (`event_pipeline*.go`, fired
 async per unique clip); the LLM adapter sends `ResponseFormat` plus the public
 `reasoning_effort: none` control required by Control's Gemma structured-output
-contract. Sampling values remain omitted so the selected model profile owns
-their defaults. Clock rejections persist all three raw
+contract. V5 also sends explicit public `temperature: 0`; the adapter's typed
+optional value distinguishes zero from an omitted model-owned default, and a
+client-scoped request repair works around the pinned SDK's scalar `omitempty`
+defect. It never mutates the global transport or Control defaults. Clock
+rejections persist all three raw
 frame observations and normalized readings in candidate `outcome_detail`.
 New FF-094 activity results additionally carry `Evaluator`;
 rejected detail stores it as `evaluator`. Old results keep that field absent. At
@@ -521,7 +531,8 @@ workflow histories persist it for the exact-byte representative and followers;
 Temporal timeouts retain their subtype without guessing the expired stage.
 FF-093's activity-owned `evidence.go` captures the accepted result and actual
 returned model ID, effective prompt/schema fingerprints, sample positions,
-configuration and Temporal origin. The record travels in the acknowledged
+configuration, explicit sampling/reasoning controls and Temporal origin. The
+record travels in the acknowledged
 activity output to atomic placement; it adds neither a model call nor a new
 activity. A server-omitted model ID stays empty, not inferred from configuration.
 

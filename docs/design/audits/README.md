@@ -5,6 +5,9 @@ Every surviving finding must have a stable disposition in
 [`todo.md`](../../todo.md), and any old claim must be verified against current
 code before work begins.
 
+- [Gemma 12B literal-period qualification — September 18 UTC](./gemma-12b-period-prompt-2026-09-18.md)
+  — failed normalized-label and near-zero trials, then a complete 39-call
+  exact-runtime screen for literal labels at temperature zero.
 - [Gemma E4B vision trial — September 18 UTC](./gemma-e4b-vision-trial-2026-09-18.md)
   — ten completed calls, invented period/clock evidence, and the unresolved
   replacement for production's retired 12B model pin.

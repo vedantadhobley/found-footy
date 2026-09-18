@@ -1,9 +1,10 @@
-// Benchmark two clock-transcription prompts on explicit local images, without production storage access.
+// Benchmark current or paired clock-transcription prompts on explicit local images, without production storage access.
 package main
 
 import (
 	"context"
 	"crypto/sha256"
+	_ "embed"
 	"encoding/hex"
 	"encoding/json"
 	"flag"
@@ -19,6 +20,11 @@ import (
 	"github.com/vedantadhobley/found-footy/internal/observability/logging"
 	"github.com/vedantadhobley/found-footy/internal/observability/metrics"
 )
+
+// beforePeriodRoles retains the exact old baseline so historical comparisons do not drift.
+//
+//go:embed testdata/prompt-before-period-roles-20260918.txt
+var beforePeriodRoles string
 
 // sample fixes three image paths and provenance before any inference request.
 type sample struct {
@@ -38,9 +44,14 @@ type result struct {
 	SchemaSHA256      string
 	ImageSHA256       []string
 	Model             string
+	ReasoningEffort   llm.ReasoningEffort
+	MaxTokens         *int
+	Temperature       *float32
+	Usage             llm.Usage
 	ElapsedMS         int64
 	Error             string `json:",omitempty"`
 	Response          vision.VisionResponse
+	RawResponse       json.RawMessage `json:",omitempty"` // literal experiment's unmodified wire observation
 	Evaluation        vision.Evaluation
 	TimingDifferences []string `json:",omitempty"`
 }
@@ -58,8 +69,23 @@ func prompts() ([]string, error) {
 	return []string{literal, vision.DefaultPrompt}, nil
 }
 
-// comparisonPrompts keeps experimental period wording outside the runtime prompt.
+// comparisonPrompts keeps experimental timing wording outside the runtime prompt.
 func comparisonPrompts(comparison string) ([]string, []string, error) {
+	if comparison == "current" {
+		return []string{"current"}, []string{vision.DefaultPrompt}, nil
+	}
+	if comparison == "period-explicit" {
+		prompt, err := explicitPeriodPrompt()
+		return []string{"period_explicit"}, []string{prompt}, err
+	}
+	if comparison == "period-literal" {
+		prompt, err := literalPeriodPrompt()
+		return []string{"period_literal"}, []string{prompt}, err
+	}
+	if comparison == "transcription" {
+		prompt, err := transcriptionPrompt()
+		return []string{"default", "transcription_first"}, []string{vision.DefaultPrompt, prompt}, err
+	}
 	if comparison == "context" {
 		p, err := prompts()
 		return []string{"literal", "context"}, p, err
@@ -67,7 +93,8 @@ func comparisonPrompts(comparison string) ([]string, []string, error) {
 	if comparison != "period-labels" {
 		return nil, nil, fmt.Errorf("unknown comparison %q", comparison)
 	}
-	lines := strings.Split(vision.DefaultPrompt, "\n")
+	baseline := strings.TrimSuffix(beforePeriodRoles, "\n")
+	lines := strings.Split(baseline, "\n")
 	found := false
 	for i, line := range lines {
 		if strings.HasPrefix(line, "- period:") {
@@ -78,7 +105,7 @@ func comparisonPrompts(comparison string) ([]string, []string, error) {
 	if !found {
 		return nil, nil, fmt.Errorf("period instruction missing; review benchmark")
 	}
-	return []string{"default", "period_roles"}, []string{vision.DefaultPrompt, strings.Join(lines, "\n")}, nil
+	return []string{"default", "period_roles"}, []string{baseline, strings.Join(lines, "\n")}, nil
 }
 
 // timingDifferences compares literal timing fields, not football/content correctness.
@@ -93,11 +120,17 @@ func timingDifferences(gold, actual []vision.FrameObservation) []string {
 	var differences []string
 	for i, want := range gold {
 		got := actual[i]
+		gotPeriod := got.Period
+		if gotPeriod == nil && got.PeriodLabel != nil {
+			if period, ok := vision.PeriodFromLabel(*got.PeriodLabel); ok {
+				gotPeriod = &period
+			}
+		}
 		for _, field := range []struct {
 			name      string
 			want, got any
 		}{
-			{"clock", want.Clock, got.Clock}, {"period", want.Period, got.Period},
+			{"clock", want.Clock, got.Clock}, {"period", want.Period, gotPeriod},
 			{"added", want.Added, got.Added}, {"stoppage_clock", want.StoppageClock, got.StoppageClock},
 		} {
 			wantJSON, _ := json.Marshal(field.want)
@@ -117,10 +150,21 @@ func run() error {
 	endpoint := flag.String("endpoint", "", "explicit published model gateway")
 	model := flag.String("model", "", "real ID verified from /v1/models")
 	approved := flag.Bool("run-model", false, "make bounded sequential inference requests")
-	comparison := flag.String("comparison", "context", "context or period-labels (offline experimental wording)")
+	comparison := flag.String("comparison", "context", "current, context, period-labels (frozen September 18 pair), period-explicit, period-literal, or transcription")
+	reasoning := flag.String("reasoning", "none", "none or high; verify model support in its catalog")
+	maxTokens := flag.Int("max-tokens", 0, "output budget; zero preserves the model default")
+	temperature := flag.String("temperature", "", "optional [0,2] sampling override, including explicit zero")
 	flag.Parse()
 	if !*approved || *manifest == "" || *outPath == "" || *endpoint == "" || *model == "" {
 		return fmt.Errorf("require --run-model, --manifest, --output, --endpoint and --model")
+	}
+	effort, budget, err := requestControls(*reasoning, *maxTokens)
+	if err != nil {
+		return err
+	}
+	sampling, err := temperatureOverride(*temperature)
+	if err != nil {
+		return err
 	}
 	data, err := os.ReadFile(*manifest)
 	if err != nil {
@@ -139,6 +183,19 @@ func run() error {
 	variantNames, variants, err := comparisonPrompts(*comparison)
 	if err != nil {
 		return err
+	}
+	schema := vision.ResponseSchema
+	switch *comparison {
+	case "period-literal":
+		schema, err = literalPeriodSchema()
+		if err != nil {
+			return err
+		}
+	case "period-labels", "period-explicit":
+		schema, err = legacyPeriodSchema()
+		if err != nil {
+			return err
+		}
 	}
 	images := make([][]llm.ChatImage, len(samples))
 	hashes := make([][]string, len(samples))
@@ -174,22 +231,34 @@ func run() error {
 		return err
 	}
 	enc := json.NewEncoder(file)
-	if err := enc.Encode(map[string]any{"manifest_sha256": digest(data), "evaluator": vision.EvaluatorVersion, "comparison": *comparison, "planned_calls": len(samples) * len(variants)}); err != nil {
+	if err := enc.Encode(map[string]any{"manifest_sha256": digest(data), "evaluator": vision.EvaluatorVersion, "comparison": *comparison,
+		"reasoning_effort": effort, "max_tokens": budget, "temperature": sampling, "requested_model": *model, "planned_calls": len(samples) * len(variants)}); err != nil {
 		return err
 	}
 	for i, s := range samples {
 		for variant, prompt := range variants {
 			r := result{Name: s.Name, Variant: variantNames[variant], Provenance: s.Provenance,
-				PromptSHA256: digest([]byte(prompt)), SchemaSHA256: digest(vision.ResponseSchema), ImageSHA256: hashes[i]}
+				PromptSHA256: digest([]byte(prompt)), SchemaSHA256: digest(schema), ImageSHA256: hashes[i],
+				ReasoningEffort: effort, MaxTokens: budget, Temperature: sampling}
 			start := time.Now()
-			resp, err := client.Chat(context.Background(), llm.ChatRequest{Messages: []llm.ChatMessage{{Role: llm.RoleUser, Content: prompt, Images: images[i]}},
-				ReasoningEffort: llm.ReasoningEffortNone, ResponseFormat: &llm.ResponseFormat{JSONSchema: &llm.JSONSchema{Name: "frame_validation", Schema: vision.ResponseSchema, Strict: true}}})
+			req := benchmarkRequest(prompt, images[i], effort, budget)
+			req.Temperature = sampling
+			req.ResponseFormat.JSONSchema.Schema = schema
+			resp, err := client.Chat(context.Background(), req)
 			r.ElapsedMS = time.Since(start).Milliseconds()
 			if err != nil {
 				r.Error = err.Error()
 			} else {
 				r.Model = resp.Model
-				if err := json.Unmarshal([]byte(resp.Content), &r.Response); err != nil {
+				r.Usage = resp.Usage
+				parseErr := json.Unmarshal([]byte(resp.Content), &r.Response)
+				if *comparison == "period-literal" {
+					r.Response, parseErr = decodeLiteralPeriod(resp.Content)
+					if json.Valid([]byte(resp.Content)) {
+						r.RawResponse = json.RawMessage(resp.Content)
+					}
+				}
+				if parseErr != nil {
 					r.Error = "invalid JSON response"
 				} else if len(r.Response.Frames) != 3 {
 					r.Error = "response did not contain three frames"
@@ -204,7 +273,7 @@ func run() error {
 			if err := file.Sync(); err != nil {
 				return err
 			}
-			fmt.Fprintf(os.Stderr, "%s/%s completed; error=%t\n", s.Name, r.Variant, r.Error != "")
+			fmt.Fprintf(os.Stderr, "%s/%s reasoning=%s completed; error=%t\n", s.Name, r.Variant, effort, r.Error != "")
 		}
 	}
 	return enc.Encode(map[string]any{"complete": true, "calls": len(samples) * len(variants)})

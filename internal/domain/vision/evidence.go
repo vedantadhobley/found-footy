@@ -13,7 +13,7 @@ import (
 
 // EvaluatorVersion identifies the clock/content interpretation applied to raw
 // observations. Bump it when Evaluate or its clock interpretation changes.
-const EvaluatorVersion = "vision-evaluate-v4"
+const EvaluatorVersion = "vision-evaluate-v5"
 
 // MaxEvidenceBytes bounds one stored evaluation independently of model output.
 const MaxEvidenceBytes = 16 * 1024
@@ -41,6 +41,8 @@ type Evidence struct {
 	Model            string             `json:"model"`
 	PromptSHA256     string             `json:"prompt_sha256"`
 	SchemaSHA256     string             `json:"schema_sha256"`
+	Temperature      *float32           `json:"temperature,omitempty"`
+	ReasoningEffort  string             `json:"reasoning_effort,omitempty"`
 	Origin           EvaluationOrigin   `json:"origin"`
 	Expected         Expected           `json:"expected"`
 	ToleranceMinutes int                `json:"tolerance_minutes"`
@@ -78,6 +80,17 @@ func (e *Evidence) Validate() error {
 		if err != nil || len(decoded) != 32 {
 			return fmt.Errorf("invalid validation contract digest")
 		}
+	}
+	if e.Temperature != nil {
+		value := float64(*e.Temperature)
+		if math.IsNaN(value) || math.IsInf(value, 0) || value < 0 || value > 2 {
+			return fmt.Errorf("invalid validation temperature")
+		}
+	}
+	switch e.ReasoningEffort {
+	case "", "none", "low", "medium", "high":
+	default:
+		return fmt.Errorf("invalid validation reasoning effort")
 	}
 	data, err := json.Marshal(e)
 	if err != nil || len(data) > MaxEvidenceBytes {

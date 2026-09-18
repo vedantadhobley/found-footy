@@ -349,9 +349,10 @@ dense hashing, then two dedup stages straddle vision (#171 shipped 2026-08-09):
   terminal verdict remains durable even when it has no asset credit. A
   placement that commits first remains owned by the monitor's subsequent
   `DestroyEvent` teardown.
-- **Accepted validation (FF-093, local, not deployed):** new histories request
+- **Accepted validation (FF-093, deployed September 13):** new histories request
   capture of the accepted evaluation's own observations, expected clock,
-  tolerance, sampling positions, actual model identity and provenance.
+  tolerance, sampling positions, actual model identity, explicit inference
+  controls and provenance.
   `ValidateClip` returns one bounded record with a new evaluation UUID;
   `CommitClipPlacement` retains it with the observed asset in the same
   transaction as its exact followers. A placement retry reuses that identity.

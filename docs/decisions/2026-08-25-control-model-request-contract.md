@@ -1,5 +1,10 @@
 # Found Footy uses Control's model request contract
 
+> **Partially superseded:** the September 18
+> [literal-period decision](./2026-09-18-vision-retains-literal-period-labels.md)
+> gives the vision call an evidence-backed public `temperature: 0` override.
+> Reasoning and the application/Control ownership boundary remain unchanged.
+
 ## Context
 
 Control now defines typed, model-owned request capabilities and defaults for

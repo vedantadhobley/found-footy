@@ -209,12 +209,12 @@ func parseFrameClock(frameIndex int, f FrameObservation) (ClockReading, bool) {
 	}
 	r.FrameIndex = frameIndex
 
-	if f.Period != nil {
-		hint := *f.Period
+	hint, hasHint, conflictingHint := framePeriodEvidence(f)
+	if conflictingHint {
+		r.Period = PeriodUnknown
+		r.Ambiguous = true
+	} else if hasHint {
 		switch {
-		case !hint.Valid():
-			r.Period = PeriodUnknown
-			r.Ambiguous = true
 		case r.PeriodPinned && r.Period != hint:
 			r.Period = PeriodUnknown
 			r.Ambiguous = true

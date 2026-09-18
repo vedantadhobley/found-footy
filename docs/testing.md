@@ -853,9 +853,17 @@ uses an explicit model-call opt-in and records literal/context prompt results;
 its [September 15 report](./design/audits/clock-normalization-implementation-2026-09-15.md)
 includes the remaining OCR/content errors and natural-footage coverage gaps.
 
-The benchmark's `period-labels` comparison changes only the experimental
-period instruction, with tests protecting the unchanged allowance/secondary
-instructions. Code-native SVG controls distinguish ordinal/superscript half
+The benchmark's `period-labels` comparison preserves its frozen pre-promotion
+baseline and original experimental period instruction. `current` uses the
+exact runtime prompt once per sample. The follow-up path preserves literal
+label replies and deterministic Go normalization. Runtime requests exact zero
+through the real LLM adapter; tests distinguish omission from zero at HTTP,
+reject invalid values before a request, preserve raw labels in activity and
+evidence output, read old normalized observations, and reject the retired
+field from new model responses. The exact prompt/schema/adapter completed 39
+bounded calls without transport or schema failure. The retained smallest-
+positive-float screen proves that workaround is not equivalent for Gemma 4
+12B. Code-native SVG controls distinguish ordinal/superscript half
 labels, ambiguous digits, announced time and elapsed secondary timers. Four
 original-media controls remain separate from diagrams. Optional gold timing
 fields never enter model requests; differences include literal annotation loss.

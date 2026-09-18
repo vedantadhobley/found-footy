@@ -2,7 +2,9 @@
 package main
 
 import (
+	"crypto/sha256"
 	"encoding/json"
+	"fmt"
 	"io"
 	"os"
 	"reflect"
@@ -37,7 +39,8 @@ func TestRecordedPeriodResponses(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer file.Close()
-	decoder := json.NewDecoder(file)
+	archiveHash := sha256.New()
+	decoder := json.NewDecoder(io.TeeReader(file, archiveHash))
 	seen := map[string]bool{}
 	changed, headers, completions := 0, 0, 0
 	for {
@@ -101,7 +104,11 @@ func TestRecordedPeriodResponses(t *testing.T) {
 			t.Fatalf("unexpected evaluation change in %s: expected=%+v current=%+v", key, want, current)
 		}
 	}
-	if len(seen) != len(expected)*2 || len(seen) != 52 || changed != 6 || headers != 4 || completions != 4 {
+	// New generated controls do not change the frozen September 17 corpus.
+	if fmt.Sprintf("%x", archiveHash.Sum(nil)) != "7ee5ed47a05b370dbc7b639e2914f2f43df5bda1b9db837284f619b11e6a3c21" {
+		t.Fatal("historical model-response archive changed")
+	}
+	if len(seen) != 52 || changed != 6 || headers != 4 || completions != 4 {
 		t.Fatalf("incomplete replay: results=%d changed=%d headers=%d completions=%d", len(seen), changed, headers, completions)
 	}
 }

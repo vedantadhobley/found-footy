@@ -71,6 +71,10 @@ func NewClient(ctx context.Context, cfg config.LLMConfig, ins *Instruments) (*Cl
 
 	oaiCfg := openai.DefaultConfig(cfg.APIKey)
 	oaiCfg.BaseURL = endpoint + versionPath
+	// The SDK drops temperature=0 because its request field is a scalar with
+	// json omitempty. Keep that compatibility repair inside this adapter's
+	// private HTTP client; it never mutates the process-global transport.
+	oaiCfg.HTTPClient = temperatureHTTPDoer{next: oaiCfg.HTTPClient}
 	oai := openai.NewClientWithConfig(oaiCfg)
 
 	// Probe /models. Bounded by cfg.ConnectTimeout so a dead endpoint
@@ -181,6 +185,9 @@ func (c *Client) Chat(ctx context.Context, req ChatRequest) (*ChatResponse, erro
 	// context the caller passed in.
 	reqCtx, cancel := context.WithTimeout(ctx, c.timeout)
 	defer cancel()
+	if req.Temperature != nil {
+		reqCtx = context.WithValue(reqCtx, temperatureContextKey{}, *req.Temperature)
+	}
 
 	start := time.Now()
 	oaiResp, err := c.oai.CreateChatCompletion(reqCtx, oaiReq)
@@ -237,6 +244,9 @@ func (c *Client) Close() {
 // when we swap sashabaranov out), only this + fromOpenAIResponse
 // change.
 func toOpenAIRequest(req ChatRequest) (openai.ChatCompletionRequest, error) {
+	if err := validateTemperature(req.Temperature); err != nil {
+		return openai.ChatCompletionRequest{}, err
+	}
 	out := openai.ChatCompletionRequest{
 		Model: req.Model,
 		Stop:  req.Stop,

@@ -88,9 +88,9 @@ func framesJSON(frames ...map[string]any) string {
 func TestValidateClip_VerifiedAndRequestShape(t *testing.T) {
 	// Lauberbach 90+2: frozen 90:00 + sub-timer → minute 91.
 	resp := framesJSON(
-		map[string]any{"soccer": true, "screen": false, "clock": "90:00", "period": "2H", "added": "+2", "stoppage_clock": "+1:48"},
-		map[string]any{"soccer": true, "screen": false, "clock": "90:00", "period": "2H", "added": "+2", "stoppage_clock": "+1:53"},
-		map[string]any{"soccer": true, "screen": false, "clock": "90:00", "period": "2H", "added": "+2", "stoppage_clock": "+1:58"},
+		map[string]any{"soccer": true, "screen": false, "clock": "90:00", "period_label": "2H", "added": "+2", "stoppage_clock": "+1:48"},
+		map[string]any{"soccer": true, "screen": false, "clock": "90:00", "period_label": "2H", "added": "+2", "stoppage_clock": "+1:53"},
+		map[string]any{"soccer": true, "screen": false, "clock": "90:00", "period_label": "2H", "added": "+2", "stoppage_clock": "+1:58"},
 	)
 	a, ff, fl := newActivities(t, resp, nil)
 
@@ -133,19 +133,22 @@ func TestValidateClip_VerifiedAndRequestShape(t *testing.T) {
 	if fl.lastReq.ReasoningEffort != llm.ReasoningEffortNone {
 		t.Errorf("request ReasoningEffort = %q, want none", fl.lastReq.ReasoningEffort)
 	}
+	if fl.lastReq.Temperature == nil || *fl.lastReq.Temperature != 0 {
+		t.Errorf("request Temperature = %v, want explicit zero", fl.lastReq.Temperature)
+	}
 	if fl.lastReq.ResponseFormat == nil || fl.lastReq.ResponseFormat.JSONSchema == nil {
 		t.Error("request should carry a JSONSchema response_format")
-	} else if !bytes.Contains(fl.lastReq.ResponseFormat.JSONSchema.Schema, []byte(`"period"`)) {
-		t.Error("response schema should require per-frame period evidence")
+	} else if !bytes.Contains(fl.lastReq.ResponseFormat.JSONSchema.Schema, []byte(`"period_label"`)) {
+		t.Error("response schema should require literal per-frame period labels")
 	}
 }
 
 func TestValidateClip_ScreenRejected(t *testing.T) {
 	// Phone-of-TV: majority screen=true → rejected regardless of clock.
 	resp := framesJSON(
-		map[string]any{"soccer": true, "screen": true, "clock": nil, "period": nil, "added": nil, "stoppage_clock": nil},
-		map[string]any{"soccer": true, "screen": true, "clock": nil, "period": nil, "added": nil, "stoppage_clock": nil},
-		map[string]any{"soccer": true, "screen": true, "clock": nil, "period": nil, "added": nil, "stoppage_clock": nil},
+		map[string]any{"soccer": true, "screen": true, "clock": nil, "period_label": nil, "added": nil, "stoppage_clock": nil},
+		map[string]any{"soccer": true, "screen": true, "clock": nil, "period_label": nil, "added": nil, "stoppage_clock": nil},
+		map[string]any{"soccer": true, "screen": true, "clock": nil, "period_label": nil, "added": nil, "stoppage_clock": nil},
 	)
 	a, _, _ := newActivities(t, resp, nil)
 	out, err := a.ValidateClip(context.Background(), ValidateClipInput{StagingKey: "k", APIElapsed: 90, APIExtra: 2})

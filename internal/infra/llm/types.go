@@ -59,6 +59,10 @@ type ChatRequest struct {
 	Model     string
 	MaxTokens *int     // nil = model default
 	Stop      []string // optional stop sequences
+	// Temperature is optional so callers can distinguish the model-owned
+	// default from an explicit zero. The adapter preserves zero on the wire;
+	// sashabaranov/go-openai's scalar field cannot do that by itself.
+	Temperature *float32
 
 	// ResponseFormat, when non-nil with a JSONSchema, opts this request
 	// into structured output: the server constrains token sampling so the

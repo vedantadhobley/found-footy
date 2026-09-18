@@ -44,6 +44,9 @@ func TestValidateClipCapturesOwnEvidence(t *testing.T) {
 		proof.Evaluation.Outcome != dvision.OutcomeVerified || proof.Evaluation.MatchedMinute == nil || *proof.Evaluation.MatchedMinute != 22 {
 		t.Fatalf("lost actual validation inputs: %+v", proof)
 	}
+	if proof.Temperature == nil || *proof.Temperature != 0 || proof.ReasoningEffort != "none" {
+		t.Fatalf("lost inference controls: %+v", proof)
+	}
 	in.CaptureEvidence, in.MD5 = false, ""
 	legacy, err := a.ValidateClip(context.Background(), in)
 	if err != nil || legacy.Evidence != nil || legacy.Outcome != out.Outcome {
@@ -118,7 +121,7 @@ func TestRunningStoppageActivityRetainsRawEvidence(t *testing.T) {
 	})
 	require.NoError(t, err)
 	require.Equal(t, "verified", out.Outcome)
-	require.Equal(t, "vision-evaluate-v4", out.Evaluator)
+	require.Equal(t, "vision-evaluate-v5", out.Evaluator)
 	require.NotNil(t, out.MatchedMinute)
 	require.Equal(t, 46, *out.MatchedMinute)
 	require.NoError(t, out.Evidence.Validate())

@@ -17,7 +17,6 @@ package vision
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -96,7 +95,8 @@ func (a *Activities) ValidateClip(ctx context.Context, in ValidateClipInput) (Va
 		images = append(images, llm.ChatImage{Data: jpeg, MimeType: "image/jpeg"})
 	}
 
-	resp, err := a.callModel(ctx, images)
+	request := a.modelRequest(images)
+	resp, err := a.LLM.Chat(ctx, request)
 	if err != nil {
 		stage := FailureRequest
 		if errors.Is(err, llm.ErrLocalAdmission) {
@@ -105,8 +105,8 @@ func (a *Activities) ValidateClip(ctx context.Context, in ValidateClipInput) (Va
 		return out, visionFailure(stage, err)
 	}
 
-	var vr dvision.VisionResponse
-	if err := json.Unmarshal([]byte(resp.Content), &vr); err != nil {
+	vr, err := dvision.DecodeResponse([]byte(resp.Content))
+	if err != nil {
 		// Constrained decoding should make this impossible. Repeating the same
 		// accepted response does not repair it, so fail this activity once.
 		parseErr := fmt.Errorf("%w: %v", llm.ErrInvalidJSON, err)
@@ -123,7 +123,7 @@ func (a *Activities) ValidateClip(ctx context.Context, in ValidateClipInput) (Va
 	out.ExpectedMinute, out.ExpectedPeriod = ev.ExpectedMinute, ev.ExpectedPeriod
 	out.Frames = vr.Frames
 	out.ClockReadings = ev.ClockReadings
-	out.Evidence = a.acceptanceEvidence(ctx, in, meta.DurationSecs, resp.Model, vr.Frames, ev)
+	out.Evidence = a.acceptanceEvidence(ctx, in, meta.DurationSecs, resp.Model, request, vr.Frames, ev)
 	if out.Evidence != nil {
 		if err := out.Evidence.Validate(); err != nil {
 			return ValidateClipOutput{}, visionFailure(FailureParse, fmt.Errorf("%w: %v", llm.ErrInvalidJSON, err))
@@ -132,15 +132,19 @@ func (a *Activities) ValidateClip(ctx context.Context, in ValidateClipInput) (Va
 	return out, nil
 }
 
-// callModel issues the single multi-image structured-output vision call.
-func (a *Activities) callModel(ctx context.Context, images []llm.ChatImage) (*llm.ChatResponse, error) {
-	return a.LLM.Chat(ctx, llm.ChatRequest{
+// modelRequest builds the single multi-image structured-output vision call.
+// Explicit zero is part of the qualified application contract; nil would
+// silently restore the model-owned sampling default.
+func (a *Activities) modelRequest(images []llm.ChatImage) llm.ChatRequest {
+	temperature := float32(0)
+	return llm.ChatRequest{
 		Messages: []llm.ChatMessage{{
 			Role:    llm.RoleUser,
 			Content: a.prompt(),
 			Images:  images,
 		}},
 		ReasoningEffort: llm.ReasoningEffortNone,
+		Temperature:     &temperature,
 		ResponseFormat: &llm.ResponseFormat{
 			JSONSchema: &llm.JSONSchema{
 				Name:   "frame_validation",
@@ -148,7 +152,7 @@ func (a *Activities) callModel(ctx context.Context, images []llm.ChatImage) (*ll
 				Strict: true,
 			},
 		},
-	})
+	}
 }
 
 // fetchStaged streams the staged clip from Garage into dstPath.

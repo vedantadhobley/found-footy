@@ -14,6 +14,9 @@ its historical heading anchors valid.
 
 New decisions after the frozen archive:
 
+- [Vision retains literal period labels](./2026-09-18-vision-retains-literal-period-labels.md)
+  — 12B transcribes raw period text at exact temperature zero; Go owns the
+  conservative mapping while old normalized observations remain readable.
 - [Running stoppage retains the ending period](./2026-09-18-running-stoppage-retains-ending-period.md)
   — FF-097 uses bounded running-clock/allowance evidence without minute arithmetic,
   period-offset guesses, new inference calls or historical evidence rewrites.

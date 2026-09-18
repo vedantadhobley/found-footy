@@ -45,6 +45,8 @@ func controls() []control {
 		{Name: "second_2P", Period: "2P", Minute: 5, Second: 25, GoldPeriod: vision.PeriodSecondHalf, Expected: vision.Expected{Elapsed: 51}},
 		{Name: "first_1p", Period: "1p", Minute: 5, Second: 25, GoldPeriod: vision.PeriodFirstHalf, Expected: vision.Expected{Elapsed: 6}},
 		{Name: "second_2p", Period: "2p", Minute: 5, Second: 25, GoldPeriod: vision.PeriodSecondHalf, Expected: vision.Expected{Elapsed: 51}},
+		{Name: "extra_first", Period: "ET1", Minute: 5, Second: 25, GoldPeriod: vision.PeriodExtraFirst, Expected: vision.Expected{Elapsed: 96}},
+		{Name: "extra_second", Period: "ET2", Minute: 5, Second: 25, GoldPeriod: vision.PeriodExtraSecond, Expected: vision.Expected{Elapsed: 111}},
 	}
 }
 

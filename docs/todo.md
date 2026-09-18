@@ -80,14 +80,23 @@ the current branch.
   Nineteen of the original 82 signatures have changed event expectations and
   remain excluded, not silently repaired. These are evidence rows, not unique
   footage or semantic correctness labels.
-- **Next:** Test and approve a replacement production vision model, then
-  approve scoped historical candidate recovery. No FF-097 recovery has run.
+- **Next:** Roll out and match-day validate the v5 literal-period contract,
+  then separately approve scoped historical candidate recovery. No FF-097
+  recovery has run.
 - **Release/model checkpoint (September 18 UTC):** The
   [application rollout](./history/running-stoppage-rollout-2026-09-18.md)
   passed exact-release gates. Recovery is not yet approved or applied. The
   [E4B trial](./design/audits/gemma-e4b-vision-trial-2026-09-18.md) completes ten
-  calls but invents timing evidence. Production still pins the retired 12B;
-  choose and approve a tested replacement before replaying the four Gueye posts.
+  calls but invents timing evidence. Control subsequently restored the pinned
+  `gemma-4-12b` service and completed its admission-fairness rollout without
+  changing Found Footy's model, deadline or concurrency contract.
+- **V5 qualification:** Stronger normalized-period wording and the SDK's
+  smallest-positive temperature workaround both fail retained allowance cases.
+  The literal `period_label` contract at exact temperature zero passes the
+  complete 39-call runtime screen. Go maps only explicit label aliases; old
+  normalized observations remain readable. Evidence now retains temperature
+  and reasoning controls. See the [qualification](./design/audits/gemma-12b-period-prompt-2026-09-18.md)
+  and [decision](./decisions/2026-09-18-vision-retains-literal-period-labels.md).
 
 ### FF-094 — added-time announcement incorrectly unpins a running clock
 
@@ -1490,7 +1499,7 @@ the current branch.
 | FF-024 | P2 | `confirmed` | The Garage `staging/` prefix has no bounded orphan sweep after abnormal termination. | Protect active keys and delete only proven age-bounded orphans. |
 | FF-035 | P2 | `implemented` | Each binary now parses only its owned typed sections and rejects semantic or cross-field violations before external work. A derived contract test keeps Go tags, `.env.example`, Compose overrides, environment scope, and cookie mounts aligned; dead config keys were removed. | Roll out the committed release and verify clean startup for worker, API, Twitter, and one VNC config parse. |
 | FF-036 | P2 | `implemented` | FF-079 bounds snapshots/search to configured completed UTC kickoff dates while keeping targeted SQL history. Fixture assembly uses request-wide event, discovery, and clip batches instead of N+1 reads. | Release worker/API with the FF-079 migration, then verify the public cutoff and query latency against retained production history. |
-| FF-037 | P2 | `mitigated` | LLM, Temporal, and ffmpeg admission are process-local and share work lanes. The September 4 burst also exhausted gateway admission and whole vision-activity budgets; FF-087 records its missing durable cause. | Measure local wait versus request time; coordinate gateway deadlines/admission with Control before changing work lanes or limits. |
+| FF-037 | P2 | `mitigated` | LLM, Temporal, and ffmpeg admission are process-local and share work lanes. FF-087 retains durable failure causes. Control's September 18 eligibility-aware fairness release passed the frozen 24-call OCR workload without timeout while preserving cancellation and mixed-model scheduling. | Validate natural V5 activity latency before changing Found Footy's four-slot cap or 60-second deadline; work-lane isolation remains separate. |
 | FF-038 | P2 | `mitigated` | Firefox capacity, leases, Docker access, and the shared X account/IP search budget are not one atomic controller boundary. Natural FF-061 validation measured an internal timeline bucket with limit 50 and a roughly 15-minute reset window. | HTTP fleet controller with atomic browser and measured search admission, scoped labels, reaping, and no worker socket. |
 | FF-039 | P2 | `confirmed` | API/worker/Twitter lifecycle, readiness, metrics identity, and error classification diverge. | Shared lifecycle contract, real readiness, correct error classes, standard identity labels. |
 | FF-040 | P2 | `implemented` | Generic fixture upserts let delayed ingestion or poll responses overwrite newer provider state, active/staging polling omitted mutable display metadata, and competing activators lacked one explicit write contract. Fixture storage now separates ingest, active refresh, staging refresh, and audited lifecycle transitions; every provider write is state-guarded and monotonic on a pre-request `last_polled_at` observation version. | Release the worker, then verify a natural team/league/kickoff correction emits `fixture.update` while a delayed response leaves the newer snapshot and lifecycle untouched. No schema migration is required. |

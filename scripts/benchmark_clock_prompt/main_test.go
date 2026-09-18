@@ -18,7 +18,7 @@ func TestPromptVariants(t *testing.T) {
 		t.Fatal("literal control permits cross-frame identification")
 	}
 	for _, prompt := range variants {
-		for _, required := range []string{"Never invent seconds", "Do NOT infer the period", "Never copy missing digits", "soccer:", "screen:", "Return exactly 3 frame objects"} {
+		for _, required := range []string{"Never invent seconds", "Do NOT infer a label", "Never copy missing digits", "soccer:", "screen:", "Return exactly 3 frame objects"} {
 			if !strings.Contains(prompt, required) {
 				t.Fatalf("missing shared constraint %q", required)
 			}
@@ -29,7 +29,7 @@ func TestPromptVariants(t *testing.T) {
 // TestPeriodComparisonChangesOnlyPeriodInstruction protects added-time transcription and runtime defaults.
 func TestPeriodComparisonChangesOnlyPeriodInstruction(t *testing.T) {
 	names, variants, err := comparisonPrompts("period-labels")
-	if err != nil || len(names) != 2 || variants[0] != vision.DefaultPrompt {
+	if err != nil || len(names) != 2 || digest([]byte(variants[0])) != "7b80787118e7ec3f8114a1a8bab2a431831b792bc228cb544fc3e5ee9f38b0e7" {
 		t.Fatalf("period comparison: names=%v err=%v", names, err)
 	}
 	baseline, proposed := strings.Split(variants[0], "\n"), strings.Split(variants[1], "\n")
@@ -56,6 +56,38 @@ func TestPeriodComparisonChangesOnlyPeriodInstruction(t *testing.T) {
 	}
 	if _, _, err := comparisonPrompts("unreviewed"); err == nil {
 		t.Fatal("unknown comparison accepted")
+	}
+}
+
+// TestCurrentPromptPreservesOtherContracts prevents promotion from silently changing the rubric or schema.
+func TestCurrentPromptPreservesOtherContracts(t *testing.T) {
+	names, variants, err := comparisonPrompts("current")
+	if err != nil || len(names) != 1 || names[0] != "current" || len(variants) != 1 || variants[0] != vision.DefaultPrompt {
+		t.Fatalf("bad current prompt comparison: names=%v variants=%v err=%v", names, variants, err)
+	}
+	baseline := strings.Split(strings.TrimSuffix(beforePeriodRoles, "\n"), "\n")
+	current := strings.Split(vision.DefaultPrompt, "\n")
+	if len(baseline) != len(current) {
+		t.Fatal("promotion changed prompt structure")
+	}
+	changes := 0
+	for i, line := range baseline {
+		if line == current[i] {
+			continue
+		}
+		changes++
+		if !strings.HasPrefix(line, "- period:") || !strings.HasPrefix(current[i], "- period_label:") {
+			t.Fatalf("promotion changed a non-period instruction: line %d", i)
+		}
+	}
+	if changes != 1 {
+		t.Fatalf("promotion changed %d lines, want one period instruction", changes)
+	}
+	if !strings.Contains(string(vision.ResponseSchema), `"period_label"`) || strings.Contains(string(vision.ResponseSchema), `"period"`) {
+		t.Fatal("runtime schema does not require literal period labels")
+	}
+	if vision.EvaluatorVersion != "vision-evaluate-v5" {
+		t.Fatal("literal period promotion did not bump the evaluator version")
 	}
 }
 

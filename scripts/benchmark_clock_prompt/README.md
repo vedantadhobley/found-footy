@@ -1,12 +1,43 @@
 # Fixed-image clock prompt benchmark
 
-Makes two sequential model requests per preselected sample. The default
+`--comparison current` makes one request per preselected sample with the exact
+current runtime prompt. Other modes make two sequential requests. The default
 `--comparison context` compares literal per-frame transcription with bounded
 cross-frame field identification. `--comparison period-labels` compares the
-local FF-094 default with experimental period-role wording only; the production
-prompt and evaluator are not edited by either experiment.
-Both use the actual Found Footy LLM adapter, schema and evaluator. Sampling
-defaults remain model-owned; `reasoning_effort` is `none`. No retry occurs.
+frozen pre-promotion default with the original experimental period-role wording
+only. Its result label `default` means the frozen September 18 baseline, not
+today's runtime prompt. The embedded baseline's fingerprint is unit-tested so
+later prompt changes cannot silently redefine historical comparisons.
+No mode edits runtime code or the evaluator.
+`--comparison transcription` compares the default with shorter timing wording
+that keeps the soccer/screen rubric, removes numerical clock examples and
+makes missing printed period labels explicitly null. It is benchmark-only.
+All comparisons use the actual Found Footy LLM adapter, schema and evaluator.
+Sampling defaults remain model-owned. No retry occurs.
+
+`--comparison period-explicit` retains the failed pre-promotion normalized
+period experiment. `--comparison period-literal` follows the current nullable
+literal `period_label` contract and retains complete wire JSON as `RawResponse`.
+Bare digits, allowances and unknown labels supply no period offset. Historical
+normalized-period modes use a private legacy schema; current/runtime calls do
+not accept that retired model field.
+
+`--temperature N` is an optional, recorded sampling override within the
+verified Gemma catalog range [0,2]. Omission preserves the gateway default.
+The benchmark uses the application LLM adapter's typed optional field, whose
+client-scoped HTTP repair preserves explicit zero despite the pinned SDK's
+scalar `omitempty`. It opens no listener and changes no shared setting or
+process-global transport. Zero temperature does not guarantee correct or
+bit-identical output across executions.
+
+`--reasoning none|high` defaults to `none`; `--max-tokens N` defaults to zero,
+which omits the override and preserves the model default. Verify support and
+limits in the catalog before each run. Both the report header and each result
+record the chosen reasoning and budget; successful responses retain token usage.
+Reasoning text is not captured. An invalid/truncated JSON response or timeout
+remains a failed result, never a reason to silently retry or raise the deadline.
+Use equal budgets when comparing reasoning modes so output caps are not an
+unrecorded second variable.
 
 The tool requires explicit `--run-model`, `--endpoint`, `--model`, `--manifest`
 and `--output` arguments. Verify the model ID from `/v1/models` first. It has
@@ -51,6 +82,8 @@ The initial run used eighteen controls; four `P`/`p` controls were added after
 the user asked about period notation. `fixtures/p-labels-20260917.json` records
 that follow-up selection without rerunning the first eighteen or altering either
 prompt. These are hypothetical visual variants, not recovered broadcast evidence.
+Two later `ET1`/`ET2` controls check extra-time label preservation. They are
+appended by the generator; the original manifests and reports remain unchanged.
 
 `fixtures/natural-20260917.json` separately identifies four retained original
 frame sets: the two wrong Barcelona admissions, the running +5′ allowance, and
@@ -59,9 +92,12 @@ must fail, never be substituted with synthetic imagery. Inspect images before
 using their gold annotations. There are no captured production credentials,
 signed URLs, or model network calls in the generator or unit suite.
 
-The period-role wording lives only in `comparisonPrompts`. Its test asserts
-that **only** the period instruction differs: main-clock, added-time,
-secondary-timer, content and cross-frame instructions stay identical. The
+The original period-role experiment remains frozen in `comparisonPrompts`.
+The runtime prompt now has a focused role instruction with explicit P/p forms;
+`current` tests that exact wording. Tests require **only** the period instruction
+to differ from the pre-promotion default: main-clock, added-time,
+secondary-timer, content and cross-frame instructions stay identical. Tests
+also pin the unchanged schema and v4 evaluator for this prompt-only change. The
 recorded September 17 comparison used local `vision-evaluate-v2`, not production
 v1. Future runs use the current evaluator and record its identifier. Accurate
 transcription alone does not prove event identity. Do not change acceptance from a diagram's
@@ -77,4 +113,8 @@ classifications are desirable or that future model versions must repeat them.
 original expected times through v4. V3's Yamal and no-period reset controls
 remain rejected under both prompt variants; v4 additionally verifies the two
 Maitland-Niles running-stoppage responses. No images or model calls are
-required for this policy regression. Period-role wording remains experimental.
+required for this policy regression. The frozen comparison remains an
+experiment snapshot; runtime promotion and its limits are recorded separately.
+The [September 18 qualification](../../docs/design/audits/gemma-12b-period-prompt-2026-09-18.md)
+records the failed normalized-period prompts, sampling experiments and the
+complete 39-call literal-label runtime screen. The code remains undeployed.

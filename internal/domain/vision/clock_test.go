@@ -105,6 +105,19 @@ func TestParseFrameClockUsesVisiblePeriod(t *testing.T) {
 	}
 }
 
+func TestParseFrameClockUsesLiteralPeriodLabel(t *testing.T) {
+	clock, label := "05:25", "2P"
+	r, ok := parseFrameClock(1, FrameObservation{Clock: &clock, PeriodLabel: &label})
+	if !ok || r.Minute != 50 || r.Period != PeriodSecondHalf || !r.PeriodPinned || r.Ambiguous {
+		t.Fatalf("literal period reading = %+v, %t", r, ok)
+	}
+	label = "2"
+	r, ok = parseFrameClock(1, FrameObservation{Clock: &clock, PeriodLabel: &label})
+	if !ok || r.Minute != 5 || r.PeriodPinned || r.Ambiguous {
+		t.Fatalf("bare label supplied period evidence: %+v, %t", r, ok)
+	}
+}
+
 // TestParseFrameClockRetainsBoundaryConventions covers the exact values where
 // reset-per-period and cumulative scorebugs render the same display.
 func TestParseFrameClockRetainsBoundaryConventions(t *testing.T) {

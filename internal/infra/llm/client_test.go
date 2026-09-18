@@ -234,6 +234,66 @@ func TestChat_HappyPath(t *testing.T) {
 	}
 }
 
+// TestChat_TemperaturePresence proves nil and explicit zero remain distinct on
+// the actual HTTP wire despite the upstream SDK's scalar omitempty field.
+func TestChat_TemperaturePresence(t *testing.T) {
+	for _, tc := range []struct {
+		name        string
+		temperature *float32
+		wantPresent bool
+		want        float64
+	}{
+		{name: "model default"},
+		{name: "explicit zero", temperature: func() *float32 { v := float32(0); return &v }(), wantPresent: true},
+		{name: "nonzero", temperature: func() *float32 { v := float32(0.75); return &v }(), wantPresent: true, want: 0.75},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			m := newMockLLMServer()
+			defer m.Close()
+			fx := newTestFixture()
+			c := newClientAgainst(t, context.Background(), m.URL(), fx, 1)
+			defer c.Close()
+
+			req := simpleChat("hi")
+			req.Temperature = tc.temperature
+			if _, err := c.Chat(context.Background(), req); err != nil {
+				t.Fatal(err)
+			}
+			var body map[string]any
+			if err := json.Unmarshal(m.LastChatBody(), &body); err != nil {
+				t.Fatal(err)
+			}
+			got, present := body["temperature"]
+			if present != tc.wantPresent {
+				t.Fatalf("temperature presence = %t, want %t; body=%s", present, tc.wantPresent, m.LastChatBody())
+			}
+			if present && got != tc.want {
+				t.Fatalf("temperature = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestChat_RejectsInvalidTemperatureBeforeHTTP(t *testing.T) {
+	m := newMockLLMServer()
+	defer m.Close()
+	fx := newTestFixture()
+	c := newClientAgainst(t, context.Background(), m.URL(), fx, 1)
+	defer c.Close()
+
+	for _, value := range []float32{-0.1, 2.1} {
+		req := simpleChat("hi")
+		req.Temperature = &value
+		if _, err := c.Chat(context.Background(), req); err == nil || !strings.Contains(err.Error(), "temperature") ||
+			!errors.Is(err, llm.ErrInvalidRequest) {
+			t.Fatalf("temperature %v error = %v", value, err)
+		}
+	}
+	if len(m.LastChatBody()) != 0 {
+		t.Fatal("invalid temperature reached chat endpoint")
+	}
+}
+
 // TestChat_ClassifiesErrors — the load-bearing bit: adapter maps HTTP
 // status codes to typed sentinels so Phase O retry policies can classify
 // via errors.Is.
