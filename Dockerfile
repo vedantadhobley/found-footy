@@ -1,4 +1,4 @@
-# Prod image for worker or api plus the explicit migration command.
+# Prod image for worker or API plus explicit migration and operator commands.
 #
 # Build with:
 #   docker build --build-arg BINARY=worker -t found-footy-worker .
@@ -43,6 +43,15 @@ RUN CGO_ENABLED=0 GOOS=linux go build \
     -o /out/migrate \
     ./cmd/migrate
 
+# The operator CLI is inert unless explicitly selected as the container
+# entrypoint. Shipping it beside the worker keeps one immutable code identity
+# for guarded replay operations without adding an always-running service.
+RUN CGO_ENABLED=0 GOOS=linux go build \
+    -buildvcs=false \
+    -ldflags="-s -w -X main.gitSHA=${GIT_SHA} -X main.builtAt=${BUILT_AT}" \
+    -o /out/found-footy-ops \
+    ./cmd/found-footy-ops
+
 # ────── runtime stage ──────
 FROM debian:bookworm-slim
 
@@ -72,5 +81,6 @@ USER app
 
 COPY --from=build /out/app /usr/local/bin/app
 COPY --from=build /out/migrate /usr/local/bin/migrate
+COPY --from=build /out/found-footy-ops /usr/local/bin/found-footy-ops
 
 ENTRYPOINT ["/usr/local/bin/app"]

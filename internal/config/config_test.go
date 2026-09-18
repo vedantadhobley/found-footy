@@ -54,6 +54,19 @@ func TestLoadForMigrateOwnsOnlyPostgresAndObservability(t *testing.T) {
 	}
 }
 
+// TestLoadForOpsOwnsOnlyReplayDependencies keeps the one-shot command narrow.
+func TestLoadForOpsOwnsOnlyReplayDependencies(t *testing.T) {
+	t.Setenv("PG_DSN", "postgres://ffuser:ffpass@postgres:5432/found_footy?sslmode=disable")
+	t.Setenv("TEMPORAL_HOSTPORT", "temporal:7233")
+	t.Setenv("API_FOOTBALL_KEY", "")
+	t.Setenv("NATS_URL", "not-a-url")
+	t.Setenv("DISCOVERY_MAX_ATTEMPTS", "not-an-integer")
+
+	if _, err := LoadFor(BinaryOps); err != nil {
+		t.Fatalf("LoadFor(found-footy-ops): %v", err)
+	}
+}
+
 func TestLoadForAPIDoesNotRequireOrParseNATS(t *testing.T) {
 	setValidAPIEnvironment(t)
 	t.Setenv("NATS_MAX_RECONNECTS", "not-an-integer")

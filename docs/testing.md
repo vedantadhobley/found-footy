@@ -119,6 +119,12 @@ The adapter and scenario Postgres test helpers cap each temporary database at
 512 MiB, with 64 MiB shared buffers, 4 MiB work memory, and 64 MiB maintenance
 work memory. These are disposable test limits, not deployed database settings.
 
+FF-101 unit tests pin operation-slug identities and the three replay modes.
+Real-Postgres tests require a completed original discovery, prove that combined
+recovery resets only allowlisted transient failures, retain deterministic
+failures, checkpoint retry-only search at the configured maximum, reject a
+competing pending owner and keep command retries from reopening finished work.
+
 FF-026 bootstrap tests reserve a real ephemeral TCP address and require an
 occupied metrics socket to reject startup before `Work` runs. A companion test
 executes the public `Run` boundary in a subprocess and requires exit status 1.

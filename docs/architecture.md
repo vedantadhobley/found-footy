@@ -20,6 +20,7 @@ the SAME commit. Not the next commit. Same commit.
 found-footy/
 ├── cmd/                                 deployable binaries; each imports from internal/
 │   ├── api/main.go                      ✓ Chi read surface (SSE is vedanta-systems')
+│   ├── found-footy-ops/main.go          ✓ FF-101 dry-run-first event replay launcher using the normal EventWorkflow
 │   ├── migrate/main.go                  ✓ FF-013 explicit ordered/checksummed Postgres migration command
 │   ├── twitter-auth/main.go             ✓ FF-059: raw-Firefox cookie-capture/status process
 │   ├── twitter/main.go                  ✓ T/a+T/b+T/c: real Playwright-Go service (ephemeral profile + idle-CPU prefs)
@@ -44,7 +45,7 @@ found-footy/
 │   │   │   └── query_builder_test.go    name, particle, dedup, fallback, and safeguard cases
 │   │   └── vision/                      ✓ D5 (2026-07-28): clock.go + evaluate.go + schema.go + tests — clip-clock validation, wired into EventWorkflow consumer
 │   ├── infra/                           live infrastructure adapters
-│   │   ├── pg/                          ✓ S2 + FF-013/FF-066/FF-070/FF-071/FF-075/FF-084: pool + instruments + ordered gates + provider health/atomic mutation repos + event-serialized candidate/removal and placement/audit + relational identity constraints
+│   │   ├── pg/                          ✓ S2 + FF-013/FF-066/FF-070/FF-071/FF-075/FF-084/FF-101: pool + instruments + ordered gates + guarded operator replay + provider health/atomic mutation repos + event-serialized candidate/removal and placement/audit + relational identity constraints
 │   │   ├── nats/                        ✓ S3: client + instruments
 │   │   ├── s3/                          ✓ S4: Garage client + instruments
 │   │   ├── llm/                         ✓ S6: OpenAI-compatible client + typed errors + Chat
@@ -124,7 +125,7 @@ found-footy/
 ├── caddy/found-footy.caddy              non-loaded reference; live routes are owned by the proxy repo
 ├── docker-compose.dev.yml               ✓ dev stack; air hot-reload on all 3 Go binaries
 ├── docker-compose.prod.yml              ✓ runs the GO codebase — LIVE prod as of the 2026-08-15 Python→Go cutover
-├── Dockerfile / Dockerfile.dev          ✓ multi-stage prod + air-based dev
+├── Dockerfile / Dockerfile.dev          ✓ multi-stage prod + air-based dev; prod image also carries inert migrate and found-footy-ops entrypoints
 ├── go.mod / go.sum                      ✓ Go 1.25 (bumped from 1.23 for air compat)
 ├── Makefile                             ✓ build/test/test-short via docker run
 └── docs/                                see docs/README.md for routing

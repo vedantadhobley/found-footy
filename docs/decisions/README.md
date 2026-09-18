@@ -14,6 +14,9 @@ its historical heading anchors valid.
 
 New decisions after the frozen archive:
 
+- [Event recovery reuses EventWorkflow under a new identity](./2026-09-18-event-recovery-reuses-event-workflow.md)
+  — FF-101 adds a dry-run-first operator command with idempotent registration,
+  bounded transient retry and fresh-search modes without a second pipeline.
 - [Public event presentation is producer-owned](./2026-09-18-public-event-presentation-is-producer-owned.md)
   — adds provider-independent event/round semantics and parity-guarded score
   context without opaque sort keys, timezone leakage, schema, or NATS changes.

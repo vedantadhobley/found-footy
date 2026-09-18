@@ -49,6 +49,38 @@ the current branch.
 
 ## Confirmed issues
 
+### FF-101 — completed event discovery has no safe general replay entry point
+
+- **Status:** `implemented` — command, guarded persistence and tests are local;
+  production rollout and the first approved recovery remain
+- **Severity:** P2
+- **Evidence:** A completed EventWorkflow restores its exact checklist metadata.
+  Starting `event-<event-id>` again therefore restores fifteen completed search
+  attempts and does no useful work. The dev-only `trigger_discovery` program
+  omits production safeguards, while `replay_clock_rejects` intentionally
+  reprocesses one exact deterministic reject class without a fresh search.
+- **Implementation:** `found-footy-ops replay-event` is dry-run-first and uses a
+  mandatory operation slug to derive one retry-stable Temporal/checklist ID.
+  It requires a completed fixture, a named non-removed event, completed original
+  discovery, zero pending candidates and no competing discovery owner. The
+  command commits registration before provisioning the normal scoped Firefox
+  instance and starting the existing `EventWorkflow`; normal download, vision,
+  dedup, ranking, publication and cleanup remain unchanged.
+- **Modes:** `fresh-search` resets only the new checklist's usable-search budget
+  and retains every old URL as an exclusion. `retry-transient` reopens only a
+  fixed v1 allowlist of typed model-admission/request and CDN failures while
+  pinning the attempt checkpoint at the schema ceiling so config drift cannot
+  reopen search. `recover` combines both. Prior terminal evidence is
+  retained under `outcome_detail.replay`; deterministic content/clock rejects,
+  untyped failures and candidates already attached to assets cannot be reset.
+- **Operational boundary:** The binary ships inert beside worker and migrate.
+  Operators run it in a one-shot worker-image container; there is no admin HTTP
+  surface or permanent service. Planning is read-only. `--apply` performs
+  production Postgres, Docker and Temporal mutations and requires one explicit
+  approval for that named replay operation.
+- **Next:** Land and deploy the binary, run a read-only plan for Kane 54′, then
+  request explicit approval for that exact `recover` operation.
+
 ### FF-100 — public event presentation still passes through the legacy adapter
 
 - **Status:** `implemented` — additive Found Footy producer contract is local;

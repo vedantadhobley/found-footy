@@ -28,6 +28,7 @@ const (
 	BinaryTwitter     Binary = "twitter"
 	BinaryTwitterAuth Binary = "twitter-auth"
 	BinaryMigrate     Binary = "migrate"
+	BinaryOps         Binary = "found-footy-ops"
 )
 
 var binarySections = map[Binary][]string{
@@ -40,6 +41,7 @@ var binarySections = map[Binary][]string{
 	BinaryTwitter:     {"TwitterService"},
 	BinaryTwitterAuth: {"TwitterAuth"},
 	BinaryMigrate:     {"Observability", "Postgres"},
+	BinaryOps:         {"Postgres", "Temporal", "FirefoxFleet"},
 }
 
 // Config is the top-level configuration composed from per-adapter

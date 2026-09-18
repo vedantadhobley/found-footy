@@ -67,6 +67,10 @@ func (c *Config) ValidateFor(binary Binary) error {
 	case BinaryMigrate:
 		validateObservability(v, c.Observability)
 		validatePostgres(v, c.Postgres)
+	case BinaryOps:
+		validatePostgres(v, c.Postgres)
+		validateTemporal(v, c.Temporal)
+		validateFirefoxFleet(v, c.FirefoxFleet)
 	default:
 		return fmt.Errorf("unknown binary %q", binary)
 	}

@@ -382,6 +382,59 @@ evidence remains in `event_search_candidates.outcome_detail.replay`. Existing
 active shares stay live during replay. See the
 [historical replay decision](./decisions/2026-08-19-historical-candidate-repair-reuses-event-workflow.md).
 
+## Completed event recovery
+
+`found-footy-ops replay-event` is the general FF-101 operator entry point for a
+completed event whose original discovery also completed. It does not reset the
+successful `event-<event-id>` history. A mandatory operation slug derives a new
+retry-stable `event-replay-<event-id>-<operation>` checklist and Temporal ID.
+The same command can therefore resume a registration→provision→start partial
+failure without creating another replay.
+
+Modes are explicit:
+
+- `fresh-search` gives the new checklist a fresh configured usable-search
+  budget. Every existing candidate URL remains excluded.
+- `retry-transient` reopens the fixed v1 set of typed transient vision-model and
+  CDN failures, but checkpoints search at the schema ceiling. This remains
+  search-complete if the configured attempt count later changes.
+- `recover` combines both and is the default recommendation after a resource
+  outage. It is not “retry everything”: deterministic rejects, untyped failures
+  and candidates attached to an asset stay terminal.
+
+The command fails closed unless the fixture is completed, the named event is
+not removed, original discovery is complete, there are no pending candidates,
+and no other discovery checklist is open. A dry run reads and prints the exact
+event, workflow identity and candidate allowlist without provisioning Firefox
+or starting Temporal.
+
+Run it from the exact deployed worker image so the command and worker share one
+immutable source identity. Planning is read-only:
+
+```bash
+docker compose -f docker-compose.prod.yml run --rm --no-deps \
+  --entrypoint /usr/local/bin/found-footy-ops worker \
+  replay-event --event-id <event-uuid> --operation <stable-slug> --mode recover
+```
+
+Applying the same plan inserts a production checklist row, can reset the shown
+transient candidates, provisions an event Firefox container and starts
+Temporal. It requires explicit approval for that exact operation:
+
+```bash
+docker compose -f docker-compose.prod.yml run --rm --no-deps \
+  --entrypoint /usr/local/bin/found-footy-ops worker \
+  replay-event --event-id <event-uuid> --operation <stable-slug> \
+  --mode recover --apply
+```
+
+The command waits for workflow completion and then requires the exact checklist
+to be closed with zero pending candidates. A process failure after registration
+does not lose ownership: rerun the same operation. Do not invent a new slug to
+escape a failed run. EventWorkflow releases Firefox on normal completion; an
+exhausted abnormal run keeps its checklist and browser recoverable under the
+existing failed-run contract.
+
 ## Recovery boundaries
 
 Prefer deterministic self-recovery over an ad-hoc write:
