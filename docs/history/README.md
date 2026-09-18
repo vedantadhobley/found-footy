@@ -5,6 +5,9 @@ preserve sequence and rationale but do not define current behavior or work.
 Use the [`docs` routing index](../README.md) for current ledgers and
 [`todo.md`](../todo.md) for active issues.
 
+- [Running-stoppage rollout — September 18 UTC](./running-stoppage-rollout-2026-09-18.md)
+  — 06524ff/v4 deployment, release gates, retired-model blocker and the
+  exact four-candidate Gueye recovery approval boundary.
 - [Clock validation rollout — 2026-09-17 UTC](./clock-validation-rollout-2026-09-17.md)
   — a2a6830 deployment, literal clock parsing, unsupported-offset rejection,
   release gates and remaining natural-event validation.

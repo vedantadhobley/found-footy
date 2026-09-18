@@ -298,11 +298,14 @@ dense hashing, then two dedup stages straddle vision (#171 shipped 2026-08-09):
   ±1 tolerance and the any-usable-match rule remain unchanged. Deployed as
   a2a6830 on September 17; see the
   [rollout](../history/clock-validation-rollout-2026-09-17.md).
-  Local FF-097 advances new activity provenance to v4 and recognizes running
+  FF-097 advances new activity provenance to v4 and recognizes running
   stoppage from a positive allowance within bounded post-boundary windows.
   Raw model fields, old activity results and saved acceptance stay immutable;
   this adds no model call or workflow command. See the
   [running-stoppage decision](../decisions/2026-09-18-running-stoppage-retains-ending-period.md).
+  Deployed as 06524ff on September 18; the
+  [release record](../history/running-stoppage-rollout-2026-09-18.md) separates
+  application health from the outstanding retired-model pin and recovery.
   Perceptual dedup is deliberately NOT here: a clip's verified/unverified
   category is unknown until vision, and md5-identical bytes are trivially the
   same category.

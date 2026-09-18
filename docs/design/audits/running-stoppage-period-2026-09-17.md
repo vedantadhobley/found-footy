@@ -7,9 +7,9 @@ Read-only production diagnosis for
 The September 17 Malaga–Villarreal incident establishes a real false rejection.
 Historical SQL screens identify the same evidence pattern, not independently
 human-labelled footage or a count of unique lost videos. The initial diagnosis
-changed no runtime policy. The [local implementation](#implementation-and-verification)
-below followed user approval; production data, search and model calls remain
-unchanged.
+changed no runtime policy. The [implementation](#implementation-and-verification)
+below followed user approval. At that checkpoint production data, search and
+model calls were unchanged; the subsequent release is recorded below.
 
 ## Gueye 45+2′
 
@@ -189,4 +189,7 @@ Artifacts remain under the gitignored
 - `v3-replay.json`: `e5eac4f2711117c0b61dac088ac0a2fd2b06645baa3c60266e7066aa70412741`
 - `v4-replay.json`: `fd20285d1c139ac38d61938f6e17cccdea8fa62ab35857265bee656908e65bc8`
 
-Production remains v3. Deployment and historical replay need separate approval.
+The [September 18 release](../../history/running-stoppage-rollout-2026-09-18.md)
+deployed v4 after full clean-tree gates. It records the separate retired-model
+blocker, failed E4B accuracy trial and exact Gueye recovery candidates.
+No historical recovery has run.

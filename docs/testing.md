@@ -863,7 +863,7 @@ Barcelona's two September 17 admissions have distinct regressions: Yamal's
 unsupported offset now rejects; Jesus's matching-clock/wrong-match result
 remains a documented limitation, not a desired semantic outcome. An offline
 test replays all 52 archived v2 responses without images or model calls. V3
-changes the two Yamal and two unlabelled-reset control verdicts. Local v4 also
+changes the two Yamal and two unlabelled-reset control verdicts. V4 also
 verifies the two Maitland-Niles `95:xx +5` observations as second-half stoppage;
 all remaining evaluations retain their archived expectations.
 

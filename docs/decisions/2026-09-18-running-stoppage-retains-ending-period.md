@@ -2,7 +2,7 @@
 
 ## Decision
 
-FF-097 introduces local `vision-evaluate-v4`. A positive, syntactically valid
+FF-097 introduces `vision-evaluate-v4`. A positive, syntactically valid
 added-time allowance beside an unlabelled running clock just beyond a period
 end supplies stoppage-period evidence. The measured minute stays unchanged:
 `46:35 +4` means minute 46 in 1H, not minute 50 or ordinary 2H.
@@ -55,5 +55,6 @@ replay accepts each known version and keeps recorded/current results separate.
 
 No model request, prompt/schema change, database migration, search change,
 ranking-policy change or frontend contract is introduced. Production deployment
-and historical recovery are separate approved operations. This decision is
-implemented locally; production still runs v3 until an approved release.
+and historical recovery are separate approved operations. The
+[September 18 release](../history/running-stoppage-rollout-2026-09-18.md)
+deployed v4; model selection and historical recovery remain unresolved.

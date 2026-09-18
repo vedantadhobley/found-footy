@@ -493,12 +493,14 @@ the unverified pool instead of being compared against minute zero (FF-031).
   expected time, complete evaluation, sampling and provenance. Validation
   checks identity/shape without reinterpreting historical observations through
   today's evaluator. `EvaluatorVersion` must change with evaluator semantics.
-  Local FF-097 uses `vision-evaluate-v4`; production still combines FF-094 and the unsupported-offset removal as
+  FF-097 uses `vision-evaluate-v4`, deployed in the
+  [September 18 running-stoppage release](./history/running-stoppage-rollout-2026-09-18.md).
+  Previously, production combined FF-094 and the unsupported-offset removal as
   `vision-evaluate-v3`, deployed in the
   [September 17 clock release](./history/clock-validation-rollout-2026-09-17.md).
   See the [visible-period decision](./decisions/2026-09-17-relative-clocks-require-visible-period.md).
   The [running-stoppage decision](./decisions/2026-09-18-running-stoppage-retains-ending-period.md)
-  records v4's bounds, ambiguity limits and separate rollout requirement.
+  records v4's bounds, ambiguity limits and separate recovery requirement.
 
 Consumed by `internal/activity/vision.ValidateClip`: fetch staged clip →
 `ffmpeg.ExtractFrame` @25/50/75% → one multi-image structured-output vision call

@@ -51,7 +51,7 @@ the current branch.
 
 ### FF-097 — running stoppage clocks inherit the next period
 
-- **Status:** `implemented` — local, not deployed
+- **Status:** `validating` — deployed September 18 as 06524ff
 - **Severity:** P1
 - **Evidence:** [Gueye's 45+2′ rejection and historical screen](./design/audits/running-stoppage-period-2026-09-17.md)
   establish accurate `46:35` plus `+4` observations rejected as second half.
@@ -69,7 +69,7 @@ the current branch.
   retain ET2 but still need coverage. Historical verdict stability is not proof
   of correct admission; the missing test combined running stoppage, allowance,
   and no explicit label.
-- **Implementation:** Local v4 recognizes positive-allowance running clocks
+- **Implementation:** V4 recognizes positive-allowance running clocks
   within bounded post-boundary windows, preserving measured minute, explicit
   labels, frozen/compact behavior and allowance overruns. Four-boundary tests,
   Gueye activity evidence and old-proof durability pass. See the
@@ -80,10 +80,11 @@ the current branch.
   Nineteen of the original 82 signatures have changed event expectations and
   remain excluded, not silently repaired. These are evidence rows, not unique
   footage or semantic correctness labels.
-- **Next:** Commit/release review, separately approved deployment, then scoped
-  historical candidate recovery. No deployment or recovery has run for FF-097.
-- **Release/model checkpoint (September 18 UTC):** Application rollout is
-  approved. Recovery is not yet approved or applied. The
+- **Next:** Test and approve a replacement production vision model, then
+  approve scoped historical candidate recovery. No FF-097 recovery has run.
+- **Release/model checkpoint (September 18 UTC):** The
+  [application rollout](./history/running-stoppage-rollout-2026-09-18.md)
+  passed exact-release gates. Recovery is not yet approved or applied. The
   [E4B trial](./design/audits/gemma-e4b-vision-trial-2026-09-18.md) completes ten
   calls but invents timing evidence. Production still pins the retired 12B;
   choose and approve a tested replacement before replaying the four Gueye posts.
