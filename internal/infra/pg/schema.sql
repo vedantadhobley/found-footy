@@ -18,6 +18,7 @@
 -- ────────────────────────────────────────────────────────────────
 
 CREATE EXTENSION IF NOT EXISTS pgcrypto;                    -- gen_random_uuid()
+CREATE EXTENSION IF NOT EXISTS unaccent;                    -- accent-insensitive public search
 -- Note: pg_trgm was declared for a team_name fuzzy-match GIN index in
 -- an earlier team_aliases shape. The new deterministic pipeline looks
 -- up teams by exact team_id (API-Football), so trigram matching isn't

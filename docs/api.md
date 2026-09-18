@@ -23,7 +23,7 @@ single-event path routes.
 | `GET /api/v1/fixtures` | Flat fixture array containing every staging/active row plus completed fixtures on the newest configured UTC kickoff dates. This is the initial and reconnect snapshot. |
 | `GET /api/v1/fixtures?ids=1,2` | Flat fixture array for up to 200 IDs. Unknown IDs are omitted; older retained rows remain addressable. |
 | `GET /api/v1/events?ids=<uuid>,<uuid>` | Flat event array for up to 200 IDs. `ids` is required; unknown IDs are omitted. |
-| `GET /api/v1/search?q=<text>` | Up to 100 publicly-windowed fixtures, kickoff-newest first, matched case-insensitively by competition, team, scorer, or assist. |
+| `GET /api/v1/search?q=<text>` | Up to 100 publicly-windowed fixtures, kickoff-newest first, matched case- and accent-insensitively by competition, team, scorer, or assist. Stored display spelling is unchanged. |
 | `GET /api/v1/videos/{share_id}` | Playback redirect or terminal share status. |
 
 Malformed ID lists, more than 200 IDs, and an empty search query return `400`

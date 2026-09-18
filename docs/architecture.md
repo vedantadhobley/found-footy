@@ -83,7 +83,7 @@ found-footy/
 │   │   ├── livefeed/                     ✓ publish-activity boundary for all NATS live-feed emits
 │   │   ├── twittermaintenance/           ✓ FF-058: forced auth/cookie sync plus minimum-evidence live-search probe
 │   │   └── heartbeat/                    shared time-based activity heartbeat loop
-│   ├── api/                             ✓ Chi bounded/batched read API over Postgres + S3; no NATS/Temporal dependency; SSE is vedanta-systems'
+│   ├── api/                             ✓ Chi bounded/batched read API over Postgres + S3 with case/accent-insensitive public search; no NATS/Temporal dependency; SSE is vedanta-systems'
 │   ├── app/worker/                      ✓ worker composition root + Temporal schedule reconciliation; cmd/worker contains no wiring
 │   ├── bootstrap/                       ✓ S1 + FF-026 (NOT IN PLAN — see decisions.md 2026-07-07)
 │   │   └── bootstrap.go                 Deps + LIFO closer registry; fail-fast metrics/health listener; shared binary lifecycle

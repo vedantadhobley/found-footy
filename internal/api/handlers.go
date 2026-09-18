@@ -207,11 +207,11 @@ func (h *Handlers) getFixturesByIDs(ctx context.Context, w http.ResponseWriter, 
 const searchLimit = 100
 
 // Search is the free-text fixture search (GET /api/v1/search?q=…). It matches
-// the query, case-insensitive substring, against competition (league) name,
-// either team name, and any event scorer or assist name, returning the same
-// []fixtureDTO shape as /fixtures (fixtures carry their events + live clips) so
-// the frontend renders results with the component it already uses. Empty /
-// whitespace-only q → 400.
+// the query as a case- and accent-insensitive substring against competition
+// (league) name, either team name, and any event scorer or assist name,
+// returning the same []fixtureDTO shape as /fixtures (fixtures carry their
+// events + live clips) so the frontend renders results with the component it
+// already uses. Empty / whitespace-only q → 400.
 func (h *Handlers) Search(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	q := strings.TrimSpace(r.URL.Query().Get("q"))

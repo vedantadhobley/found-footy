@@ -12,8 +12,8 @@ import (
 	"github.com/vedantadhobley/found-footy/internal/infra/pg"
 )
 
-// TestFixtureRepo_SearchFixtures exercises case-insensitive competition, team,
-// scorer, and assist matching across fixture states.
+// TestFixtureRepo_SearchFixtures exercises case- and accent-insensitive
+// competition, team, scorer, and assist matching across fixture states.
 func TestFixtureRepo_SearchFixtures(t *testing.T) {
 	ctx, pool, repo := setupRepo(t)
 
@@ -29,6 +29,7 @@ func TestFixtureRepo_SearchFixtures(t *testing.T) {
 		t.Fatalf("insert A: %v", err)
 	}
 	insertSearchEvent(t, ctx, pool, 8001, "529_1_goal_1", "R. Lewandowski", "L. Yamal")
+	insertSearchEvent(t, ctx, pool, 8001, "529_1_goal_2", "K. Mbappé", "İ. Gündoğan")
 
 	// Fixture B: Serie A · Inter vs AC Milan · goal (Martinez, no assist).
 	fb := makeStaging(8002, time.Date(2026, 8, 2, 19, 0, 0, 0, time.UTC))
@@ -42,6 +43,15 @@ func TestFixtureRepo_SearchFixtures(t *testing.T) {
 		t.Fatalf("insert B: %v", err)
 	}
 	insertSearchEvent(t, ctx, pool, 8002, "505_2_goal_1", "L. Martinez", "")
+
+	// Fixture C: accent folding applies to competition and team names too.
+	fc := makeStaging(8003, time.Date(2026, 8, 3, 19, 0, 0, 0, time.UTC))
+	fc.Home = fixture.Team{ID: 549, Name: "Beşiktaş"}
+	fc.Away = fixture.Team{ID: 3573, Name: "Eyüpspor"}
+	fc.League = fixture.League{ID: 203, Name: "Süper Lig", Season: 2026}
+	if err := repo.Insert(ctx, fc); err != nil {
+		t.Fatalf("insert C: %v", err)
+	}
 
 	check := func(q string, wantID int64) {
 		t.Helper()
@@ -67,6 +77,11 @@ func TestFixtureRepo_SearchFixtures(t *testing.T) {
 	check("lewandowski", 8001) // scorer
 	check("yamal", 8001)       // assist
 	check("MARTINEZ", 8002)    // scorer, case-insensitive
+	check("mbappe", 8001)      // scorer, accent-insensitive
+	check("gundogan", 8001)    // assist, accent-insensitive
+	check("super lig", 8003)   // competition, accent-insensitive
+	check("besiktas", 8003)    // team, accent-insensitive
+	check("eyupspor", 8003)    // second team, accent-insensitive
 	check("zzznomatch", 0)     // none
 }
 

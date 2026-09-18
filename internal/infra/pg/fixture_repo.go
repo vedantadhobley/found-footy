@@ -448,9 +448,11 @@ func (r *FixtureRepo) GetByIDs(ctx context.Context, ids []int64) ([]*fixture.Fix
 // state (staging/active/completed), kickoff-newest first, capped at limit.
 //
 // q's ILIKE metacharacters are escaped so a literal "%"/"_" in the query is
-// matched verbatim, not as a wildcard. The scorer/assist arm is an EXISTS
-// subquery over the fixture's non-removed events (indexed by fixture_id); across
-// the bounded retained window a seq scan of the ~hundreds of fixtures is cheap.
+// matched verbatim, not as a wildcard. PostgreSQL's official unaccent
+// dictionary folds both operands without changing retained display text. The
+// scorer/assist arm is an EXISTS subquery over the fixture's non-removed events
+// (indexed by fixture_id); across the bounded retained window a seq scan of the
+// ~hundreds of fixtures is cheap.
 func (r *FixtureRepo) SearchPublicFixtures(ctx context.Context, q string, limit, completedFixtureDates int) ([]*fixture.Fixture, error) {
 	if completedFixtureDates <= 0 {
 		return nil, fmt.Errorf("pg.FixtureRepo.SearchPublicFixtures: completed fixture dates must be > 0")
@@ -469,13 +471,14 @@ func (r *FixtureRepo) SearchPublicFixtures(ctx context.Context, q string, limit,
 		)
 		 SELECT `+fixtureColumns+` FROM fixtures CROSS JOIN public_cutoff
 		 WHERE (state <> 'completed' OR (public_cutoff.cutoff IS NOT NULL AND kickoff >= public_cutoff.cutoff))
-		   AND (league_name ILIKE $1
-		    OR home_team_name ILIKE $1
-		    OR away_team_name ILIKE $1
+		   AND (public.unaccent(league_name) ILIKE public.unaccent($1)
+		    OR public.unaccent(home_team_name) ILIKE public.unaccent($1)
+		    OR public.unaccent(away_team_name) ILIKE public.unaccent($1)
 		    OR EXISTS (
 		        SELECT 1 FROM events e
 		        WHERE e.fixture_id = fixtures.id AND NOT e.removed
-		          AND (e.player_name ILIKE $1 OR e.assist_name ILIKE $1)
+		          AND (public.unaccent(e.player_name) ILIKE public.unaccent($1)
+		            OR public.unaccent(e.assist_name) ILIKE public.unaccent($1))
 		    ))
 		 ORDER BY kickoff DESC
 		 LIMIT $2`,

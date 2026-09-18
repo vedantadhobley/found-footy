@@ -87,6 +87,34 @@ func TestMigrateAdoptsCurrentSchemaAndIsIdempotent(t *testing.T) {
 	}
 }
 
+// TestMigrateAddsSearchUnaccent proves the ordered suffix creates the official
+// dictionary on a durable baseline and that startup treats its later removal
+// as schema drift rather than silently degrading public-search semantics.
+func TestMigrateAddsSearchUnaccent(t *testing.T) {
+	ctx, pool, _ := setupMigrationPool(t)
+	if _, err := pool.Exec(ctx, `DROP EXTENSION unaccent`); err != nil {
+		t.Fatalf("model pre-unaccent schema: %v", err)
+	}
+	if err := pool.Migrate(ctx, migrations.FS); err != nil {
+		t.Fatalf("apply unaccent migration: %v", err)
+	}
+	var exists bool
+	if err := pool.QueryRow(ctx, `SELECT EXISTS (
+		SELECT 1 FROM pg_extension WHERE extname = 'unaccent'
+	)`).Scan(&exists); err != nil {
+		t.Fatalf("inspect unaccent extension: %v", err)
+	}
+	if !exists {
+		t.Fatal("unaccent migration did not install extension")
+	}
+	if _, err := pool.Exec(ctx, `DROP EXTENSION unaccent`); err != nil {
+		t.Fatalf("remove required extension: %v", err)
+	}
+	if err := pool.VerifyMigrations(ctx, migrations.FS); err == nil {
+		t.Fatal("VerifyMigrations accepted missing unaccent extension")
+	}
+}
+
 // TestMigrateTerminalizesRemovedEventCandidates proves FF-084's bounded data
 // repair touches only pending candidates whose owning event is already removed.
 func TestMigrateTerminalizesRemovedEventCandidates(t *testing.T) {

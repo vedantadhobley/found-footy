@@ -14,6 +14,9 @@ its historical heading anchors valid.
 
 New decisions after the frozen archive:
 
+- [Public search folds accents in PostgreSQL](./2026-09-18-public-search-folds-accents.md)
+  — keeps the frontend and stored display text unchanged while the official
+  `unaccent` extension matches plain-keyboard queries across every search arm.
 - [Track Turkish Süper Lig clubs across competitions](./2026-09-18-track-turkish-super-lig.md)
   — adds league 203 as a team-roster seed and makes tracked-team cache refresh
   immediately when the configured league set changes.

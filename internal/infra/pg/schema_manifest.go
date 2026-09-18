@@ -102,6 +102,9 @@ func verifyCurrentSchema(ctx context.Context, tx pgx.Tx) error {
 	if err := verifyBaselineSchema(ctx, tx); err != nil {
 		return err
 	}
+	if err := requireExtension(ctx, tx, "unaccent"); err != nil {
+		return err
+	}
 	for _, name := range []string{"provider_health", "provider_fixture_health", "provider_health_polls", "provider_health_polls_observed", "provider_mutation_receipts", "provider_mutation_receipts_observed"} {
 		if err := requireRelation(ctx, tx, name); err != nil {
 			return err

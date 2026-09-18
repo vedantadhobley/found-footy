@@ -189,7 +189,7 @@ func TestProviderHealthMigrationUpgrade(t *testing.T) {
 	require.NoError(t, fixtures.Insert(ctx, makeStaging(9704, healthPoll(0).At)))
 	// Only this disposable test database is reduced to the predecessor schema.
 	_, err := pool.Exec(ctx, `DROP TABLE provider_mutation_receipts,provider_fixture_health,provider_health_polls,provider_health;
-		DELETE FROM schema_migrations WHERE version IN ('20260916_01_add_provider_health','20260916_02_add_provider_mutation_receipts')`)
+		DELETE FROM schema_migrations WHERE version >= '20260916_01_add_provider_health'`)
 	require.NoError(t, err)
 	require.NoError(t, pool.Migrate(ctx, migrations.FS))
 	require.NoError(t, pool.VerifyMigrations(ctx, migrations.FS))
