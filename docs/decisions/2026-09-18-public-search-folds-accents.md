@@ -19,6 +19,21 @@ scan of database rows. Public search needs accent folding, not Twitter query
 expansion, so the database-native operation is the smaller and clearer
 contract.
 
+## Authoritative match provenance
+
+The first rollout selected the correct fixture but returned only the ordinary
+fixture DTO. Vedanta Systems then reconstructed team and event highlights with
+JavaScript `toLowerCase().includes()`. That second matcher did not fold accents,
+so `mbappe` returned Mbappé's complete fixture without marking his event.
+
+The search result now adds typed `search_match` provenance for competition,
+home team, away team, and each matching event's player/assist fields. One SQL
+statement computes selection and provenance from the same expressions and
+snapshot. The ordinary event list remains complete. Consumers only translate
+the supplied flags into presentation metadata; they do not inspect names or
+repeat normalization. This is an additive REST change with no schema, fixture
+visibility, NATS, or search-query change.
+
 ## Production rollout
 
 Release `7386672` deployed on September 18, 2026 UTC. The separately gated
@@ -32,3 +47,6 @@ Real-database regressions cover `mbappe`, `gundogan`, `super lig`, `besiktas`,
 and `eyupspor` against accented stored values across event, competition, and
 team fields. A direct post-deployment production search request remains a
 separately approved acceptance action under the production access policy.
+
+The later match-provenance correction is tracked as FF-099 and remains a
+separate code and consumer rollout until its release is recorded here.

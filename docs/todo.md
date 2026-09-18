@@ -49,6 +49,35 @@ the current branch.
 
 ## Confirmed issues
 
+### FF-099 — search highlighting reconstructs backend matching incorrectly
+
+- **Status:** `implemented` — Found Footy and Vedanta Systems changes are local,
+  not deployed
+- **Severity:** P1
+- **Evidence:** Production Found Footy correctly matches `mbappe` to `Mbappé`
+  after the September 18 accent-folding rollout. Its response discarded match
+  provenance, and the Vedanta Systems BFF independently derived
+  `matchedEventIds` with accent-sensitive `toLowerCase().includes()`. The full
+  fixture appeared while Mbappé's event was not highlighted.
+- **Cause:** Search selection and presentation metadata had separate matching
+  authorities. The BFF could not reproduce PostgreSQL `unaccent` semantics
+  from the plain fixture DTO.
+- **Implementation:** `GET /api/v1/search` keeps returning each complete
+  fixture and adds typed competition, home-team, away-team, and event-field
+  provenance from the same SQL statement that selects it. The BFF removes all
+  text matching and translates only those flags into its existing `_search`
+  shape. React behavior and result scope remain unchanged. No schema or NATS
+  change is required.
+- **Verification:** Found Footy's complete `make check` gate passes, including
+  the real PostgreSQL suite. Vedanta Systems passes type-check, 40 focused
+  Found Footy tests (one real-NATS test skipped without credentials),
+  changed-file lint, production build, and both production image builds. Its
+  repository-wide lint retains unrelated pre-existing failures outside the
+  changed files.
+- **Next:** Review the isolated commits, then authorize and coordinate the
+  additive backend-first rollout. Verify a plain-keyboard `mbappe` search
+  returns the full fixture and highlights the accented player event.
+
 ### FF-097 — running stoppage clocks inherit the next period
 
 - **Status:** `validating` — V4 deployed as `06524ff`; V5 as `e2aa4a9`;

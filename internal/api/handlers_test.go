@@ -25,8 +25,9 @@ import (
 // ─── fakes ──────────────────────────────────────────────────────────────────
 
 type fakeFixtures struct {
-	byID    map[int64]*fixture.Fixture
-	byState map[fixture.State][]*fixture.Fixture
+	byID         map[int64]*fixture.Fixture
+	byState      map[fixture.State][]*fixture.Fixture
+	searchResult map[string][]fixture.SearchResult
 }
 
 func (f *fakeFixtures) ListPublicWindow(_ context.Context, _ int) ([]*fixture.Fixture, error) {
@@ -45,17 +46,23 @@ func (f *fakeFixtures) GetByIDs(_ context.Context, ids []int64) ([]*fixture.Fixt
 	}
 	return out, nil
 }
-func (f *fakeFixtures) SearchPublicFixtures(_ context.Context, q string, _, _ int) ([]*fixture.Fixture, error) {
+func (f *fakeFixtures) SearchPublicFixtures(_ context.Context, q string, _, _ int) ([]fixture.SearchResult, error) {
 	// A lightweight league/team substring match — enough to exercise the
 	// handler's wire-through + assembly. The full 4-arm SQL (incl. scorer/
 	// assist) is covered by TestFixtureRepo_SearchFixtures.
-	var out []*fixture.Fixture
+	var out []fixture.SearchResult
 	ql := strings.ToLower(q)
+	if results, ok := f.searchResult[ql]; ok {
+		return results, nil
+	}
 	for _, fx := range f.byID {
-		if strings.Contains(strings.ToLower(fx.League.Name), ql) ||
-			strings.Contains(strings.ToLower(fx.Home.Name), ql) ||
-			strings.Contains(strings.ToLower(fx.Away.Name), ql) {
-			out = append(out, fx)
+		match := fixture.SearchMatch{
+			Competition: strings.Contains(strings.ToLower(fx.League.Name), ql),
+			HomeTeam:    strings.Contains(strings.ToLower(fx.Home.Name), ql),
+			AwayTeam:    strings.Contains(strings.ToLower(fx.Away.Name), ql),
+		}
+		if match.Competition || match.HomeTeam || match.AwayTeam {
+			out = append(out, fixture.SearchResult{Fixture: fx, Match: match})
 		}
 	}
 	return out, nil
@@ -226,19 +233,50 @@ func TestGetFixtures_Batch(t *testing.T) {
 }
 
 func TestSearch(t *testing.T) {
-	h, fxID, _ := scaffold() // fixture 100: La Liga · Alpha vs Beta · one goal event w/ clip
+	h, fxID, evID := scaffold() // fixture 100: La Liga · Alpha vs Beta · one goal event w/ clip
 
 	// competition match → the fixture assembled with its event + live clip
 	rec := get(h, "/api/v1/search?q=la+liga")
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200", rec.Code)
 	}
-	var list []fixtureDTO
+	var list []searchFixtureDTO
 	if err := json.Unmarshal(rec.Body.Bytes(), &list); err != nil {
 		t.Fatalf("decode: %v", err)
 	}
 	if len(list) != 1 || list[0].ID != fxID || len(list[0].Events) != 1 || len(list[0].Events[0].Videos) != 1 {
 		t.Fatalf("search = %+v, want fixture %d assembled with its event+clip", list, fxID)
+	}
+	if !list[0].SearchMatch.Competition || list[0].SearchMatch.HomeTeam || list[0].SearchMatch.AwayTeam || len(list[0].SearchMatch.Events) != 0 {
+		t.Fatalf("competition provenance = %+v, want competition only", list[0].SearchMatch)
+	}
+
+	// Event provenance is carried independently from the complete fixture. The
+	// response still contains every event; only the matching event is marked.
+	fixtures := h.Fixtures.(*fakeFixtures)
+	fixtures.searchResult = map[string][]fixture.SearchResult{
+		"scorer": {{
+			Fixture: fixtures.byID[fxID],
+			Match: fixture.SearchMatch{Events: []fixture.SearchEventMatch{{
+				EventID: evID,
+				Player:  true,
+			}}},
+		}},
+	}
+	rec = get(h, "/api/v1/search?q=scorer")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("event match status = %d, want 200", rec.Code)
+	}
+	list = nil
+	if err := json.Unmarshal(rec.Body.Bytes(), &list); err != nil {
+		t.Fatalf("decode event match: %v", err)
+	}
+	if len(list) != 1 || len(list[0].Events) != 1 || len(list[0].SearchMatch.Events) != 1 {
+		t.Fatalf("event search = %+v, want complete fixture plus one event match", list)
+	}
+	match := list[0].SearchMatch.Events[0]
+	if match.EventID != evID.String() || !match.Player || match.Assist {
+		t.Fatalf("event provenance = %+v, want player match for %s", match, evID)
 	}
 
 	// team match, case-insensitive
@@ -248,7 +286,7 @@ func TestSearch(t *testing.T) {
 
 	// no match → 200 + empty array (not 404)
 	rec = get(h, "/api/v1/search?q=zzznope")
-	var empty []fixtureDTO
+	var empty []searchFixtureDTO
 	_ = json.Unmarshal(rec.Body.Bytes(), &empty)
 	if rec.Code != http.StatusOK || len(empty) != 0 {
 		t.Errorf("no-match = %d / %+v, want 200 / empty", rec.Code, empty)

@@ -23,7 +23,7 @@ single-event path routes.
 | `GET /api/v1/fixtures` | Flat fixture array containing every staging/active row plus completed fixtures on the newest configured UTC kickoff dates. This is the initial and reconnect snapshot. |
 | `GET /api/v1/fixtures?ids=1,2` | Flat fixture array for up to 200 IDs. Unknown IDs are omitted; older retained rows remain addressable. |
 | `GET /api/v1/events?ids=<uuid>,<uuid>` | Flat event array for up to 200 IDs. `ids` is required; unknown IDs are omitted. |
-| `GET /api/v1/search?q=<text>` | Up to 100 publicly-windowed fixtures, kickoff-newest first, matched case- and accent-insensitively by competition, team, scorer, or assist. Stored display spelling is unchanged. |
+| `GET /api/v1/search?q=<text>` | Up to 100 publicly-windowed complete fixtures, kickoff-newest first, matched case- and accent-insensitively by competition, team, scorer, or assist. Each result adds authoritative `search_match` provenance; stored display spelling is unchanged. |
 | `GET /api/v1/videos/{share_id}` | Playback redirect or terminal share status. |
 
 Malformed ID lists, more than 200 IDs, and an empty search query return `400`
@@ -64,6 +64,34 @@ contiguous `rank` values from timestamp verification, popularity, file size,
 creation time, and share ID; the stored compatibility rank is never part of the
 public result. A batch-event lookup can still return a directly requested
 removed event with `phase: "removed"`.
+
+Search preserves that complete fixture shape and adds one endpoint-specific
+field:
+
+```jsonc
+{
+  // ...the complete fixture, including every public event and live clip...
+  "search_match": {
+    "competition": false,
+    "home_team": false,
+    "away_team": false,
+    "events": [
+      {
+        "event_id": "<uuid>",
+        "player": true,
+        "assist": false
+      }
+    ]
+  }
+}
+```
+
+The fixture and event flags come from the same PostgreSQL `unaccent` predicates
+that select the row. `search_match.events` describes only matching non-removed
+events; the fixture's ordinary `events` array remains complete. Consumers use
+the provenance for highlights and must not repeat text normalization or
+substring matching. The additive field lets an older consumer continue
+rendering full fixtures while the BFF rolls forward.
 
 **Local FF-081 change, not deployed:** selection-enabled histories populate
 `popularity` with direct accepted-source support. Each source counts once for
@@ -222,6 +250,8 @@ REST. Applying the same refetch more than once must be harmless.
   clip count.
 - `player: null` is a valid unknown-player event. It is not searched until the
   provider supplies a player identity.
+- Search consumers trust `search_match` for competition, team, player, and
+  assist highlights. They do not reconstruct matches from display strings.
 - `score`, `clock.minute`, `clock.extra`, and `penalty` use `null` for
   not-reported. A
   normal or extra-time `winner` is derived from the current score; a terminal

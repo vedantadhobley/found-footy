@@ -101,6 +101,33 @@ type fixtureDTO struct {
 	Events         []eventDTO  `json:"events"`
 }
 
+// searchEventMatchDTO names the exact event fields that matched the query.
+// Both flags are retained because a query can match player and assist text on
+// the same event.
+type searchEventMatchDTO struct {
+	EventID string `json:"event_id"`
+	Player  bool   `json:"player"`
+	Assist  bool   `json:"assist"`
+}
+
+// searchMatchDTO is backend-owned match provenance. It describes why the full
+// fixture was returned without asking a consumer to repeat normalization or
+// substring rules.
+type searchMatchDTO struct {
+	Competition bool                  `json:"competition"`
+	HomeTeam    bool                  `json:"home_team"`
+	AwayTeam    bool                  `json:"away_team"`
+	Events      []searchEventMatchDTO `json:"events"`
+}
+
+// searchFixtureDTO preserves the ordinary flat fixture shape and adds one
+// search-only field. Existing consumers can ignore search_match during the
+// additive rollout; updated consumers use it as the sole highlight authority.
+type searchFixtureDTO struct {
+	fixtureDTO
+	SearchMatch searchMatchDTO `json:"search_match"`
+}
+
 // GET /fixtures and /fixtures?ids=… both return a flat []fixtureDTO — one shape
 // for one / many / all, so "pass a list" works exactly like "pass one". The
 // frontend keys by id and buckets by each fixture's `state`. Likewise /events
@@ -160,6 +187,24 @@ func toFixtureDTO(f *fixture.Fixture, events []eventDTO, lastActivityAt *time.Ti
 		Penalty:        toPenaltyDTO(f.HomePenalty, f.AwayPenalty),
 		LastActivityAt: lastActivityAt,
 		Events:         ensureEvents(events),
+	}
+}
+
+// toSearchMatchDTO maps typed domain provenance onto the public wire shape.
+func toSearchMatchDTO(match fixture.SearchMatch) searchMatchDTO {
+	events := make([]searchEventMatchDTO, len(match.Events))
+	for i, eventMatch := range match.Events {
+		events[i] = searchEventMatchDTO{
+			EventID: eventMatch.EventID.String(),
+			Player:  eventMatch.Player,
+			Assist:  eventMatch.Assist,
+		}
+	}
+	return searchMatchDTO{
+		Competition: match.Competition,
+		HomeTeam:    match.HomeTeam,
+		AwayTeam:    match.AwayTeam,
+		Events:      events,
 	}
 }
 

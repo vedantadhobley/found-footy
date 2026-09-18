@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 
@@ -54,8 +55,22 @@ type rowScanner interface {
 func scanFixture(row rowScanner) (*fixture.Fixture, error) {
 	var f fixture.Fixture
 	var stateStr string
-	if err := row.Scan(
-		&f.ID, &stateStr,
+	if err := row.Scan(fixtureScanDestinations(&f, &stateStr)...); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, fixture.ErrNotFound
+		}
+		return nil, fmt.Errorf("pg.FixtureRepo.scanFixture: %w", err)
+	}
+	f.State = fixture.State(stateStr)
+	return &f, nil
+}
+
+// fixtureScanDestinations returns the canonical fixture column destinations.
+// Search appends provenance columns to this slice so every fixture SELECT keeps
+// one column-order contract instead of duplicating the scanner.
+func fixtureScanDestinations(f *fixture.Fixture, stateStr *string) []any {
+	return []any{
+		&f.ID, stateStr,
 		&f.APIStatus.Short, &f.APIStatus.Long, &f.APIElapsed, &f.APIExtra,
 		&f.Kickoff,
 		&f.Home.ID, &f.Home.Name, &f.Away.ID, &f.Away.Name,
@@ -64,14 +79,7 @@ func scanFixture(row rowScanner) (*fixture.Fixture, error) {
 		&f.ActivatedAt, &f.CompletedAt, &f.TerminalObservedAt, &f.LastActivityAt, &f.LastPolledAt,
 		&f.League.Country, &f.League.Round, &f.HomePenalty, &f.AwayPenalty,
 		&f.CreatedAt, &f.UpdatedAt,
-	); err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			return nil, fixture.ErrNotFound
-		}
-		return nil, fmt.Errorf("pg.FixtureRepo.scanFixture: %w", err)
 	}
-	f.State = fixture.State(stateStr)
-	return &f, nil
 }
 
 // Get returns the fixture by ID, or fixture.ErrNotFound.
@@ -450,10 +458,10 @@ func (r *FixtureRepo) GetByIDs(ctx context.Context, ids []int64) ([]*fixture.Fix
 // q's ILIKE metacharacters are escaped so a literal "%"/"_" in the query is
 // matched verbatim, not as a wildcard. PostgreSQL's official unaccent
 // dictionary folds both operands without changing retained display text. The
-// scorer/assist arm is an EXISTS subquery over the fixture's non-removed events
-// (indexed by fixture_id); across the bounded retained window a seq scan of the
-// ~hundreds of fixtures is cheap.
-func (r *FixtureRepo) SearchPublicFixtures(ctx context.Context, q string, limit, completedFixtureDates int) ([]*fixture.Fixture, error) {
+// scorer/assist lateral aggregate returns matching event IDs and field flags
+// from non-removed events (indexed by fixture_id). Across the bounded retained
+// window a seq scan of the ~hundreds of fixtures is cheap.
+func (r *FixtureRepo) SearchPublicFixtures(ctx context.Context, q string, limit, completedFixtureDates int) ([]fixture.SearchResult, error) {
 	if completedFixtureDates <= 0 {
 		return nil, fmt.Errorf("pg.FixtureRepo.SearchPublicFixtures: completed fixture dates must be > 0")
 	}
@@ -468,18 +476,40 @@ func (r *FixtureRepo) SearchPublicFixtures(ctx context.Context, q string, limit,
 		), public_cutoff AS (
 			SELECT min(fixture_date)::timestamp AT TIME ZONE 'UTC' AS cutoff
 			FROM recent_completed_dates
+		), search_query AS (
+			SELECT public.unaccent($1::text) AS pattern
 		)
-		 SELECT `+fixtureColumns+` FROM fixtures CROSS JOIN public_cutoff
+		 SELECT `+fixtureColumns+`,
+		        fixture_matches.competition,
+		        fixture_matches.home_team,
+		        fixture_matches.away_team,
+		        COALESCE(event_matches.event_ids, ARRAY[]::uuid[]),
+		        COALESCE(event_matches.player_matches, ARRAY[]::boolean[]),
+		        COALESCE(event_matches.assist_matches, ARRAY[]::boolean[])
+		 FROM fixtures
+		 CROSS JOIN public_cutoff
+		 CROSS JOIN search_query
+		 CROSS JOIN LATERAL (
+			SELECT public.unaccent(league_name) ILIKE search_query.pattern AS competition,
+			       public.unaccent(home_team_name) ILIKE search_query.pattern AS home_team,
+			       public.unaccent(away_team_name) ILIKE search_query.pattern AS away_team
+		 ) fixture_matches
+		 LEFT JOIN LATERAL (
+			SELECT array_agg(e.id ORDER BY e.minute, e.extra NULLS FIRST, e.id) AS event_ids,
+			       array_agg(COALESCE(public.unaccent(e.player_name) ILIKE search_query.pattern, FALSE)
+			                 ORDER BY e.minute, e.extra NULLS FIRST, e.id) AS player_matches,
+			       array_agg(COALESCE(public.unaccent(e.assist_name) ILIKE search_query.pattern, FALSE)
+			                 ORDER BY e.minute, e.extra NULLS FIRST, e.id) AS assist_matches
+			FROM events e
+			WHERE e.fixture_id = fixtures.id AND NOT e.removed
+			  AND (public.unaccent(e.player_name) ILIKE search_query.pattern
+			    OR public.unaccent(e.assist_name) ILIKE search_query.pattern)
+		 ) event_matches ON TRUE
 		 WHERE (state <> 'completed' OR (public_cutoff.cutoff IS NOT NULL AND kickoff >= public_cutoff.cutoff))
-		   AND (public.unaccent(league_name) ILIKE public.unaccent($1)
-		    OR public.unaccent(home_team_name) ILIKE public.unaccent($1)
-		    OR public.unaccent(away_team_name) ILIKE public.unaccent($1)
-		    OR EXISTS (
-		        SELECT 1 FROM events e
-		        WHERE e.fixture_id = fixtures.id AND NOT e.removed
-		          AND (public.unaccent(e.player_name) ILIKE public.unaccent($1)
-		            OR public.unaccent(e.assist_name) ILIKE public.unaccent($1))
-		    ))
+		   AND (fixture_matches.competition
+		    OR fixture_matches.home_team
+		    OR fixture_matches.away_team
+		    OR cardinality(event_matches.event_ids) > 0)
 		 ORDER BY kickoff DESC
 		 LIMIT $2`,
 		pattern, limit, completedFixtureDates)
@@ -487,7 +517,7 @@ func (r *FixtureRepo) SearchPublicFixtures(ctx context.Context, q string, limit,
 		return nil, fmt.Errorf("pg.FixtureRepo.SearchPublicFixtures: %w", err)
 	}
 	defer rows.Close()
-	return collectFixtures(rows)
+	return collectFixtureSearchResults(rows)
 }
 
 // escapeLike escapes LIKE/ILIKE metacharacters (\ % _) so a user query matches
@@ -628,6 +658,47 @@ func collectFixtures(rows pgx.Rows) ([]*fixture.Fixture, error) {
 	}
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("pg.FixtureRepo.collectFixtures: %w", err)
+	}
+	return out, nil
+}
+
+// collectFixtureSearchResults scans complete fixture rows plus the parallel
+// event-match arrays emitted by SearchPublicFixtures.
+func collectFixtureSearchResults(rows pgx.Rows) ([]fixture.SearchResult, error) {
+	var out []fixture.SearchResult
+	for rows.Next() {
+		var (
+			f             fixture.Fixture
+			stateStr      string
+			match         fixture.SearchMatch
+			eventIDs      []uuid.UUID
+			playerMatches []bool
+			assistMatches []bool
+		)
+		destinations := fixtureScanDestinations(&f, &stateStr)
+		destinations = append(destinations,
+			&match.Competition, &match.HomeTeam, &match.AwayTeam,
+			&eventIDs, &playerMatches, &assistMatches,
+		)
+		if err := rows.Scan(destinations...); err != nil {
+			return nil, fmt.Errorf("pg.FixtureRepo.collectFixtureSearchResults: %w", err)
+		}
+		if len(eventIDs) != len(playerMatches) || len(eventIDs) != len(assistMatches) {
+			return nil, fmt.Errorf("pg.FixtureRepo.collectFixtureSearchResults: mismatched event provenance arrays")
+		}
+		f.State = fixture.State(stateStr)
+		match.Events = make([]fixture.SearchEventMatch, len(eventIDs))
+		for i, eventID := range eventIDs {
+			match.Events[i] = fixture.SearchEventMatch{
+				EventID: eventID,
+				Player:  playerMatches[i],
+				Assist:  assistMatches[i],
+			}
+		}
+		out = append(out, fixture.SearchResult{Fixture: &f, Match: match})
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("pg.FixtureRepo.collectFixtureSearchResults: %w", err)
 	}
 	return out, nil
 }

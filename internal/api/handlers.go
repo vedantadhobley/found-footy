@@ -32,9 +32,9 @@ type FixtureReader interface {
 	ListPublicWindow(ctx context.Context, completedFixtureDates int) ([]*fixture.Fixture, error)
 	GetByIDs(ctx context.Context, ids []int64) ([]*fixture.Fixture, error)
 	// SearchPublicFixtures returns fixtures whose competition, team, or event
-	// scorer/assist names match the free-text query — the /search backing,
-	// capped at limit.
-	SearchPublicFixtures(ctx context.Context, q string, limit, completedFixtureDates int) ([]*fixture.Fixture, error)
+	// scorer/assist names match the free-text query, together with the exact
+	// fields that matched — the /search backing, capped at limit.
+	SearchPublicFixtures(ctx context.Context, q string, limit, completedFixtureDates int) ([]fixture.SearchResult, error)
 }
 
 // EventReader is the event read surface the API needs.
@@ -209,9 +209,10 @@ const searchLimit = 100
 // Search is the free-text fixture search (GET /api/v1/search?q=…). It matches
 // the query as a case- and accent-insensitive substring against competition
 // (league) name, either team name, and any event scorer or assist name,
-// returning the same []fixtureDTO shape as /fixtures (fixtures carry their
-// events + live clips) so the frontend renders results with the component it
-// already uses. Empty / whitespace-only q → 400.
+// returning complete fixtures carrying every event and live clip. Each result
+// adds authoritative match provenance from the same SQL expressions that
+// selected it; consumers must not repeat text matching to infer highlights.
+// Empty / whitespace-only q → 400.
 func (h *Handlers) Search(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	q := strings.TrimSpace(r.URL.Query().Get("q"))
@@ -219,15 +220,30 @@ func (h *Handlers) Search(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "q required")
 		return
 	}
-	fx, err := h.Fixtures.SearchPublicFixtures(ctx, q, searchLimit, h.CompletedFixtureDates)
+	results, err := h.Fixtures.SearchPublicFixtures(ctx, q, searchLimit, h.CompletedFixtureDates)
 	if err != nil {
 		h.serverError(ctx, w, "search fixtures", err)
 		return
 	}
-	out, err := h.assembleFixtures(ctx, fx)
+	fixtures := make([]*fixture.Fixture, len(results))
+	for i, result := range results {
+		fixtures[i] = result.Fixture
+	}
+	assembled, err := h.assembleFixtures(ctx, fixtures)
 	if err != nil {
 		h.serverError(ctx, w, "assemble search results", err)
 		return
+	}
+	if len(assembled) != len(results) {
+		h.serverError(ctx, w, "assemble search results", fmt.Errorf("assembled %d of %d fixtures", len(assembled), len(results)))
+		return
+	}
+	out := make([]searchFixtureDTO, len(results))
+	for i, result := range results {
+		out[i] = searchFixtureDTO{
+			fixtureDTO:  assembled[i],
+			SearchMatch: toSearchMatchDTO(result.Match),
+		}
 	}
 	writeJSON(w, http.StatusOK, out)
 }
