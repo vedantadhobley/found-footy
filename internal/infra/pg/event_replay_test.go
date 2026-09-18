@@ -22,6 +22,8 @@ func TestEventReplayStore_PrepareRecoverIsBoundedAndIdempotent(t *testing.T) {
 		"https://x.com/a/status/1", "vision_error", "model_admission", "timeout")
 	eligibleDownload := seedReplayFailure(t, ctx, pool, eventID, fixtureID,
 		"https://x.com/b/status/2", "download_error", "cdn_download", "forbidden")
+	eligibleActivity := seedReplayFailureWithTimeout(t, ctx, pool, eventID, fixtureID,
+		"https://x.com/d/status/4", "vision_error", "activity", "timeout", "start_to_close")
 	ineligible := seedReplayFailure(t, ctx, pool, eventID, fixtureID,
 		"https://x.com/c/status/3", "vision_error", "response_parse", "invalid_json")
 
@@ -38,7 +40,7 @@ func TestEventReplayStore_PrepareRecoverIsBoundedAndIdempotent(t *testing.T) {
 	if err != nil {
 		t.Fatalf("PlanEventReplay: %v", err)
 	}
-	if plan.AlreadyPrepared || plan.Completed || plan.SelectedCandidates != 2 || len(plan.RetryCandidates) != 2 ||
+	if plan.AlreadyPrepared || plan.Completed || plan.SelectedCandidates != 3 || len(plan.RetryCandidates) != 3 ||
 		plan.Input.EventID != eventID || plan.FixtureState != "completed" {
 		t.Fatalf("plan = %+v", plan)
 	}
@@ -52,6 +54,7 @@ func TestEventReplayStore_PrepareRecoverIsBoundedAndIdempotent(t *testing.T) {
 	}
 	assertCandidateOutcome(t, ctx, pool, eligibleVision, "pending")
 	assertCandidateOutcome(t, ctx, pool, eligibleDownload, "pending")
+	assertCandidateOutcome(t, ctx, pool, eligibleActivity, "pending")
 	assertCandidateOutcome(t, ctx, pool, ineligible, "failed")
 
 	var attempts int
@@ -80,16 +83,16 @@ func TestEventReplayStore_PrepareRecoverIsBoundedAndIdempotent(t *testing.T) {
 	if err != nil {
 		t.Fatalf("retry PrepareEventReplay: %v", err)
 	}
-	if !retried.AlreadyPrepared || retried.SelectedCandidates != 2 || len(retried.RetryCandidates) != 0 {
+	if !retried.AlreadyPrepared || retried.SelectedCandidates != 3 || len(retried.RetryCandidates) != 0 {
 		t.Fatalf("retried = %+v", retried)
 	}
 	assertCandidateOutcome(t, ctx, pool, eligibleVision, "rejected")
 	if _, err := pool.Exec(ctx, `
 		UPDATE event_search_candidates
 		SET outcome_class='failed', reject_reason='vision_error', outcome_at=NOW()
-		WHERE id=$1
-	`, eligibleDownload); err != nil {
-		t.Fatalf("finish replay candidate: %v", err)
+		WHERE id = ANY($1::uuid[])
+	`, []uuid.UUID{eligibleDownload, eligibleActivity}); err != nil {
+		t.Fatalf("finish replay candidates: %v", err)
 	}
 	if _, err := pool.Exec(ctx, `
 		UPDATE event_downstream_workflows
@@ -102,7 +105,7 @@ func TestEventReplayStore_PrepareRecoverIsBoundedAndIdempotent(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ReadEventReplayResult: %v", err)
 	}
-	if !result.ChecklistCompleted || result.PendingCandidates != 0 || result.ReplayCandidates != 2 {
+	if !result.ChecklistCompleted || result.PendingCandidates != 0 || result.ReplayCandidates != 3 {
 		t.Fatalf("result = %+v", result)
 	}
 }
@@ -243,6 +246,30 @@ func seedReplayFailure(
 		          jsonb_build_object('failure',jsonb_build_object('stage',$6::text,'class',$7::text)),NOW())
 	`, id, eventID, fixtureID, tweetURL, reason, stage, class); err != nil {
 		t.Fatalf("seed failure: %v", err)
+	}
+	return id
+}
+
+// seedReplayFailureWithTimeout adds one typed Temporal activity timeout.
+func seedReplayFailureWithTimeout(
+	t *testing.T,
+	ctx context.Context,
+	pool *pginfra.Pool,
+	eventID uuid.UUID,
+	fixtureID int64,
+	tweetURL, reason, stage, class, timeoutType string,
+) uuid.UUID {
+	t.Helper()
+	id := uuid.New()
+	if _, err := pool.Exec(ctx, `
+		INSERT INTO event_search_candidates (
+			id,event_id,fixture_id,search_attempt,query,tweet_url,video_page_url,
+			outcome_class,reject_reason,outcome_detail,outcome_at
+		) VALUES ($1,$2,$3,1,'query',$4,'video','failed',$5,
+		          jsonb_build_object('failure',jsonb_build_object(
+		              'stage',$6::text,'class',$7::text,'timeout_type',$8::text)),NOW())
+	`, id, eventID, fixtureID, tweetURL, reason, stage, class, timeoutType); err != nil {
+		t.Fatalf("seed timeout failure: %v", err)
 	}
 	return id
 }

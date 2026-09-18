@@ -32,7 +32,8 @@ process failure is recoverable by repeating the same command.
 Three modes separate intent. Fresh search resets only the new checklist's
 attempt counter. Transient retry checkpoints search at the schema ceiling so
 configuration drift cannot reopen it, and reopens only the fixed v1
-typed-failure allowlist. Combined recovery does both. Reopened
+typed-failure allowlist: model admission/request failures, Temporal validation-
+activity timeouts and CDN failures. Combined recovery does both. Reopened
 candidates retain their previous terminal evidence under
 `outcome_detail.replay`; existing URLs remain search exclusions.
 

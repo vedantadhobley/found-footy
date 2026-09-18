@@ -479,6 +479,11 @@ const transientReplayPredicate = `
 			OR
 			(outcome_detail#>>'{failure,stage}' = 'model_request'
 			 AND outcome_detail#>>'{failure,class}' IN ('timeout','rate_limited','capacity','unavailable','transport'))
+			OR
+			(outcome_detail#>>'{failure,stage}' = 'activity'
+			 AND outcome_detail#>>'{failure,class}' = 'timeout'
+			 AND outcome_detail#>>'{failure,timeout_type}' IN
+			     ('start_to_close','schedule_to_start','schedule_to_close','heartbeat','unknown'))
 		))
 		OR
 		(reject_reason = 'download_error'

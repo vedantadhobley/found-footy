@@ -68,9 +68,10 @@ the current branch.
   dedup, ranking, publication and cleanup remain unchanged.
 - **Modes:** `fresh-search` resets only the new checklist's usable-search budget
   and retains every old URL as an exclusion. `retry-transient` reopens only a
-  fixed v1 allowlist of typed model-admission/request and CDN failures while
-  pinning the attempt checkpoint at the schema ceiling so config drift cannot
-  reopen search. `recover` combines both. Prior terminal evidence is
+  fixed v1 allowlist of typed model-admission/request, Temporal validation-
+  activity timeout and CDN failures while pinning the attempt checkpoint at the
+  schema ceiling so config drift cannot reopen search. `recover` combines both.
+  Prior terminal evidence is
   retained under `outcome_detail.replay`; deterministic content/clock rejects,
   untyped failures and candidates already attached to assets cannot be reset.
 - **Operational boundary:** The binary ships inert beside worker and migrate.

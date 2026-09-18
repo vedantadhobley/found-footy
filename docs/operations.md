@@ -395,8 +395,9 @@ Modes are explicit:
 
 - `fresh-search` gives the new checklist a fresh configured usable-search
   budget. Every existing candidate URL remains excluded.
-- `retry-transient` reopens the fixed v1 set of typed transient vision-model and
-  CDN failures, but checkpoints search at the schema ceiling. This remains
+- `retry-transient` reopens the fixed v1 set of typed transient vision-model,
+  Temporal validation-activity timeout and CDN failures, but checkpoints search
+  at the schema ceiling. This remains
   search-complete if the configured attempt count later changes.
 - `recover` combines both and is the default recommendation after a resource
   outage. It is not “retry everything”: deterministic rejects, untyped failures
