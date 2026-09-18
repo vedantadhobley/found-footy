@@ -145,3 +145,20 @@ func TestToEventDTO_Assist(t *testing.T) {
 		t.Errorf("no assist: got %+v, want nil", d.Assist)
 	}
 }
+
+func TestToEventDTO_PresentationStateSeparatesUnknownFromConfirming(t *testing.T) {
+	knownID, knownName := 7, "Scorer"
+	known := &event.Event{Player: event.Player{ID: &knownID, Name: &knownName}}
+	unknown := &event.Event{}
+
+	knownDTO := toEventDTO(known, nil, false, eventpresentation.Basic(known))
+	unknownDTO := toEventDTO(unknown, nil, false, eventpresentation.Basic(unknown))
+	if knownDTO.Phase != "detected" || unknownDTO.Phase != "detected" {
+		t.Fatalf("compatibility phases = known %q unknown %q, want detected/detected", knownDTO.Phase, unknownDTO.Phase)
+	}
+	if knownDTO.PresentationState != eventpresentation.StateConfirming ||
+		unknownDTO.PresentationState != eventpresentation.StateUnidentified {
+		t.Fatalf("presentation states = known %q unknown %q, want confirming/unidentified",
+			knownDTO.PresentationState, unknownDTO.PresentationState)
+	}
+}

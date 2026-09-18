@@ -64,10 +64,13 @@ the current branch.
   scoreline wrong. Compatibility fields also leave two semantic authorities
   and keep API-Football vocabulary embedded in the browser.
 - **Producer implementation:** The additive API exposes provider-independent
-  event `kind`, normalized `presentation` label/team side, parity-guarded score
-  context, normalized round label/kind, and producer-owned competition
-  priority. Existing `phase` and `share_id` remain authoritative. Fixture event
-  arrays have a documented match-clock order; no opaque sort key is added.
+  event `kind`, complete `presentation_state`, normalized `presentation`
+  label/team side, ambiguity- and parity-guarded score context, normalized
+  round label/kind, and producer-owned competition priority. Existing `phase`
+  remains for additive compatibility and `share_id` remains authoritative.
+  Equal-clock goals receive null score context because provider-array position
+  is not stored; their aggregate still advances later score boundaries. Fixture
+  event arrays have a documented match-clock order; no opaque sort key is added.
   `GET /events?ids=` loads parent/sibling context so an event-only refetch has
   the same projection as a fixture snapshot, including a directly requested
   removed event. No schema or NATS change is required.

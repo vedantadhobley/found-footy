@@ -27,7 +27,7 @@ found-footy/
 ├── internal/
 │   ├── contract/auditlog/               ✓ FF-070 typed semantic-transition kinds, payloads, and immutable Postgres audit records
 │   ├── contract/discovery/              stable EventWorkflowInput + CandidateEvidence shared across workflow, activity, and persistence boundaries
-│   ├── contract/eventpresentation/       ✓ FF-100 provider-independent event kind, label, side, and parity-guarded score context
+│   ├── contract/eventpresentation/       ✓ FF-100 provider-independent event state, kind, label, side, and ambiguity/parity-guarded score context
 │   ├── contract/fixturepresentation/     ✓ FF-077/FF-100 REST/NATS status projection plus normalized competition round/order metadata
 │   ├── contract/twittersearch/           ✓ FF-061: one browser/HTTP/activity wire contract for classified search states, evidence, and video refs
 │   ├── domain/                          active domain logic only

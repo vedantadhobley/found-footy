@@ -167,6 +167,7 @@ display value, and `round_kind` is `regular_season`, `final`, `other`, or
   "type": "goal",
   "detail": "normal goal",
   "kind": "goal",
+  "presentation_state": "searching",
   "minute": 62,
   "extra": null,
   "team": { "id": 505, "name": "Inter" },
@@ -184,9 +185,14 @@ display value, and `round_kind` is `regular_season`, `final`, `other`, or
 }
 ```
 
-`player` and `assist` can be `null`. `phase` is one of `detected`, `searching`,
-`complete`, or `removed`. Phase and clip presence are independent: clips may
-arrive while search is still running, and a complete search may have no clips.
+`player` and `assist` can be `null`. `presentation_state` is the complete
+consumer lifecycle: `unidentified`, `confirming`, `searching`, `complete`, or
+`removed`. An unidentified event lacks the searchable player identity required
+to enter confirmation; confirming means a known-player event is still passing
+the event debounce. Clip presence is independent: clips may arrive while
+searching, and a complete search may have no clips. The older `phase` field
+remains additive-cutover compatibility; consumers do not combine it with
+player nullability to reconstruct presentation state.
 
 `kind` is the provider-independent event class: `goal`, `red_card`, or
 `missed_penalty` for the public tracked set. `presentation.label` supplies the
@@ -199,10 +205,14 @@ directly requested removed goal can carry its tentative before/after score, but
 it never advances the score of later surviving events.
 
 Fixture event arrays are in ascending match-clock order, then first-observed
-and UUID order for deterministic ties. Consumers may reverse that array for
-recent-first display. They must not fabricate observation timestamps. The
-event-only endpoint derives the same presentation from the authoritative
-parent and surviving siblings, including for directly requested removed rows.
+and UUID order for deterministic ties. Those final tie-breakers make transport
+deterministic; they do not claim a real order between goals with the same
+minute and stoppage minute. Equal-clock goals therefore receive null score
+context. Their aggregate still advances the baseline for later unambiguous
+goals. Consumers may reverse the array for recent-first display, but must not
+fabricate observation timestamps or score chronology. The event-only endpoint
+derives the same presentation from the authoritative parent and surviving
+siblings, including for directly requested removed rows.
 
 ```jsonc
 {
@@ -279,10 +289,10 @@ REST. Applying the same refetch more than once must be harmless.
 - An `event.update` response upserts the requested event. A missing parent
   fixture requires one targeted fixture fetch; silently discarding the event
   is invalid because Core NATS does not replay an earlier fixture hint.
-- `phase` and `videos` render independently. Do not derive workflow state from
-  clip count.
-- Preserve `phase` and each video's explicit `share_id`; do not translate them
-  into legacy monitor/download flags or recover media identity from `url`.
+- `presentation_state` and `videos` render independently. Do not derive state
+  from clip count or from `phase` plus player nullability.
+- Preserve each video's explicit `share_id`; do not recover media identity
+  from `url`. `phase` remains only as additive compatibility during cutover.
 - Use `kind`, `presentation`, `round_label`, `round_kind`, and league
   `priority` directly. Do not parse provider event/round strings or sort
   competitions by provider identity.

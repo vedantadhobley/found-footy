@@ -85,13 +85,15 @@ type eventDTO struct {
 	// Type/detail remain during the additive cutover for older consumers.
 	Kind         eventpresentation.Kind         `json:"kind"`
 	Presentation eventpresentation.Presentation `json:"presentation"`
-	// Phase — the derived semantic lifecycle: detected / searching / complete /
-	// removed (see internal/domain/event/phase.go). The layer-2 contract: the
-	// frontend renders this + Videos (orthogonal) without re-deriving pipeline
-	// state. No layer-1 fields (edw.completed_at, outcome_class, the legacy
+	// PresentationState is the complete consumer-facing lifecycle. It splits
+	// compatibility phase=detected into unidentified versus confirming.
+	PresentationState eventpresentation.State `json:"presentation_state"`
+	// Phase is the coarse compatibility lifecycle retained during the additive
+	// cutover. New consumers render PresentationState + Videos (orthogonal).
+	// No layer-1 fields (edw.completed_at, outcome_class, the legacy
 	// monitor/download flags) cross this boundary.
 	Phase string `json:"phase"`
-	// DebounceCount (0–3) — raw, for "confirming N/3" during the detected phase.
+	// DebounceCount (0–3) — raw, for "confirming N/3" during presentation_state=confirming.
 	DebounceCount int        `json:"debounce_count"`
 	Videos        []videoDTO `json:"videos"`
 }
@@ -170,12 +172,13 @@ func toEventDTO(
 		ID: e.ID.String(), FixtureID: e.FixtureID,
 		Type: string(e.Type), Detail: string(e.Detail),
 		Minute: e.Minute, Extra: e.Extra,
-		Team:          teamRefDTO{ID: e.Team.ID, Name: e.Team.Name},
-		Kind:          projection.Kind,
-		Presentation:  projection.Presentation,
-		Phase:         string(event.DerivePhase(e.Removed, e.DownstreamTriggered, discoveryComplete)),
-		DebounceCount: e.DebounceCount,
-		Videos:        ensureVideos(videos),
+		Team:              teamRefDTO{ID: e.Team.ID, Name: e.Team.Name},
+		Kind:              projection.Kind,
+		Presentation:      projection.Presentation,
+		PresentationState: eventpresentation.DeriveState(e, discoveryComplete),
+		Phase:             string(event.DerivePhase(e.Removed, e.DownstreamTriggered, discoveryComplete)),
+		DebounceCount:     e.DebounceCount,
+		Videos:            ensureVideos(videos),
 	}
 	if e.Player.Known() {
 		d.Player = &playerDTO{ID: *e.Player.ID, Name: *e.Player.Name}

@@ -1,12 +1,11 @@
-// phase.go — the event's semantic lifecycle phase: the API-boundary truth the
-// frontend renders WITHOUT re-deriving pipeline state. This is the layer-2
-// seam from vedanta-systems' docs/design.md "Data contracts" — internal
-// mechanism (edw.completed_at, outcome_class, the legacy monitor/download
-// flags) never crosses the API; the frontend consumes this derived meaning
-// as-is. See decisions.md 2026-08-13 (event phase contract).
+// phase.go — the event's coarse semantic lifecycle phase. The API retains it
+// during the additive consumer cutover; eventpresentation.DeriveState splits
+// its ambiguous detected value into unidentified versus confirming. Internal
+// mechanism (edw.completed_at, outcome_class, legacy monitor/download flags)
+// still never crosses the API. See decisions.md 2026-08-13 and FF-100.
 package event
 
-// Phase is the derived, stable meaning of where an event sits in the discovery
+// Phase is the derived, coarse meaning of where an event sits in the discovery
 // pipeline. Deliberately coarse: "has clips" is NOT a phase — clips surface
 // incrementally during `searching` and persist into `complete`, so the video
 // count is an ORTHOGONAL axis the frontend reads separately, never a phase
@@ -14,10 +13,10 @@ package event
 type Phase string
 
 const (
-	// PhaseDetected — the goal exists but discovery hasn't started. Either
+	// PhaseDetected — the event exists but discovery hasn't started. Either
 	// debouncing toward the trigger (known scorer) or never to be searched
-	// (unknown scorer). The nil player distinguishes the two; debounce_count
-	// carries the "confirming N/3" progress. No separate `unsearched` phase.
+	// (unknown scorer). New consumers use event presentation_state rather than
+	// combining this compatibility value with player nullability.
 	PhaseDetected Phase = "detected"
 	// PhaseSearching — discovery is in flight (downstream triggered, the
 	// discovery workflow not yet complete). Clips may ALREADY be surfaced.

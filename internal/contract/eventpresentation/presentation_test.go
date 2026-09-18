@@ -46,6 +46,27 @@ func TestBuildRemovedGoalIsTentativeAndDoesNotAdvanceLaterScore(t *testing.T) {
 	assertProjection(t, got[last.ID], KindGoal, "Goal", TeamSideAway, &Score{1, 0}, &Score{1, 1})
 }
 
+func TestBuildSuppressesEqualClockGoalsButAdvancesTheirAggregate(t *testing.T) {
+	homeScore, awayScore := 2, 1
+	f := &fixture.Fixture{Home: fixture.Team{ID: 10}, Away: fixture.Team{ID: 20}, HomeScore: &homeScore, AwayScore: &awayScore}
+	extra := 2
+	homeTied := makeEvent(1, event.TypeGoal, apifootball.DetailNormalGoal, 10, 45, &extra, false)
+	awayTied := makeEvent(2, event.TypeGoal, apifootball.DetailNormalGoal, 20, 45, &extra, false)
+	later := makeEvent(3, event.TypeGoal, apifootball.DetailNormalGoal, 10, 60, nil, false)
+	// Even different observation times cannot prove the real order of provider
+	// events carrying the same displayed match clock.
+	awayTied.FirstSeenAt = homeTied.FirstSeenAt.Add(time.Minute)
+
+	got := Build(f, []*event.Event{later, awayTied, homeTied})
+	for _, tied := range []*event.Event{homeTied, awayTied} {
+		presentation := got[tied.ID].Presentation
+		if presentation.ScoreBefore != nil || presentation.ScoreAfter != nil {
+			t.Fatalf("equal-clock goal %s exposed arbitrary score context: %+v", tied.ID, presentation)
+		}
+	}
+	assertProjection(t, got[later.ID], KindGoal, "Goal", TeamSideHome, &Score{1, 1}, &Score{2, 1})
+}
+
 func TestBuildSuppressesScoresWhenInventoryDoesNotMatchProvider(t *testing.T) {
 	homeScore, awayScore := 2, 0
 	f := &fixture.Fixture{Home: fixture.Team{ID: 10}, Away: fixture.Team{ID: 20}, HomeScore: &homeScore, AwayScore: &awayScore}
@@ -65,6 +86,29 @@ func TestBuildSuppressesUnknownTeamSide(t *testing.T) {
 	projection := Build(f, []*event.Event{goal})[goal.ID]
 	if projection.Presentation.TeamSide != nil || projection.Presentation.ScoreAfter != nil {
 		t.Fatalf("unknown event team exposed side/score: %+v", projection.Presentation)
+	}
+}
+
+func TestDeriveState(t *testing.T) {
+	knownID, knownName := 7, "Scorer"
+	known := event.Player{ID: &knownID, Name: &knownName}
+	for _, tc := range []struct {
+		name              string
+		event             *event.Event
+		discoveryComplete bool
+		want              State
+	}{
+		{"unknown player", &event.Event{}, false, StateUnidentified},
+		{"known player debouncing", &event.Event{Player: known}, false, StateConfirming},
+		{"search in flight", &event.Event{Player: known, DownstreamTriggered: true}, false, StateSearching},
+		{"discovery complete", &event.Event{Player: known, DownstreamTriggered: true}, true, StateComplete},
+		{"removed wins", &event.Event{Player: known, DownstreamTriggered: true, Removed: true}, true, StateRemoved},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := DeriveState(tc.event, tc.discoveryComplete); got != tc.want {
+				t.Fatalf("DeriveState() = %q, want %q", got, tc.want)
+			}
+		})
 	}
 }
 

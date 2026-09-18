@@ -29,6 +29,19 @@ const (
 	TeamSideAway TeamSide = "away"
 )
 
+// State is the complete event lifecycle meaning a public consumer renders.
+// It deliberately separates an event that lacks a searchable player identity
+// from a known-player event still passing the confirmation debounce.
+type State string
+
+const (
+	StateUnidentified State = "unidentified"
+	StateConfirming   State = "confirming"
+	StateSearching    State = "searching"
+	StateComplete     State = "complete"
+	StateRemoved      State = "removed"
+)
+
 // Score is the regulation/extra-time score at one event boundary.
 type Score struct {
 	Home int `json:"home"`
@@ -37,7 +50,8 @@ type Score struct {
 
 // Presentation contains semantic display inputs without frontend markup.
 // Score fields are nil when the retained event inventory does not reconcile
-// with the provider score, so consumers never display invented history.
+// with the provider score or equal-clock goals have no durable relative order,
+// so consumers never display invented history.
 type Presentation struct {
 	Label       string    `json:"label"`
 	TeamSide    *TeamSide `json:"team_side"`
@@ -45,7 +59,8 @@ type Presentation struct {
 	ScoreAfter  *Score    `json:"score_after"`
 }
 
-// Projection is the complete additive public presentation for one event.
+// Projection contains the football presentation that does not depend on the
+// asynchronous discovery-completion lookup.
 type Projection struct {
 	Kind         Kind
 	Presentation Presentation
@@ -58,6 +73,23 @@ func Basic(e *event.Event) Projection {
 		Presentation: Presentation{
 			Label: label(e.Type, e.Detail),
 		},
+	}
+}
+
+// DeriveState maps internal event/discovery facts to one complete public
+// presentation state. Video presence remains an independent axis.
+func DeriveState(e *event.Event, discoveryComplete bool) State {
+	switch {
+	case e.Removed:
+		return StateRemoved
+	case !e.Player.Known():
+		return StateUnidentified
+	case discoveryComplete:
+		return StateComplete
+	case e.DownstreamTriggered:
+		return StateSearching
+	default:
+		return StateConfirming
 	}
 }
 
@@ -89,29 +121,65 @@ func Build(f *fixture.Fixture, events []*event.Event) map[uuid.UUID]Projection {
 	}
 
 	reliable := scoreInventoryReconciles(f, ordered)
+	if !reliable {
+		return projections
+	}
+
 	home, away := 0, 0
-	for _, e := range ordered {
-		if e.Type != event.TypeGoal {
-			continue
+	for start := 0; start < len(ordered); {
+		end := start + 1
+		for end < len(ordered) && sameClock(ordered[start], ordered[end]) {
+			end++
 		}
-		projection := projections[e.ID]
-		if reliable && projection.Presentation.TeamSide != nil {
-			before := Score{Home: home, Away: away}
-			after := before
-			if *projection.Presentation.TeamSide == TeamSideHome {
-				after.Home++
+		goals := make([]*event.Event, 0, end-start)
+		for _, e := range ordered[start:end] {
+			if e.Type == event.TypeGoal {
+				goals = append(goals, e)
+			}
+		}
+
+		// The provider array is chronological, but its position is not retained.
+		// Multiple goals at one displayed clock therefore have no durable relative
+		// order. Suppress their individual boundaries rather than assigning them
+		// by observation timestamp or UUID. Their aggregate still advances the
+		// baseline used by later, unambiguous goals.
+		if len(goals) == 1 {
+			e := goals[0]
+			projection := projections[e.ID]
+			if projection.Presentation.TeamSide != nil {
+				before := Score{Home: home, Away: away}
+				after := before
+				if *projection.Presentation.TeamSide == TeamSideHome {
+					after.Home++
+				} else {
+					after.Away++
+				}
+				projection.Presentation.ScoreBefore = &before
+				projection.Presentation.ScoreAfter = &after
+				projections[e.ID] = projection
+			}
+		}
+		for _, e := range goals {
+			if e.Removed {
+				continue
+			}
+			side := projections[e.ID].Presentation.TeamSide
+			if side == nil {
+				continue
+			}
+			if *side == TeamSideHome {
+				home++
 			} else {
-				after.Away++
+				away++
 			}
-			projection.Presentation.ScoreBefore = &before
-			projection.Presentation.ScoreAfter = &after
-			if !e.Removed {
-				home, away = after.Home, after.Away
-			}
-			projections[e.ID] = projection
 		}
+		start = end
 	}
 	return projections
+}
+
+func sameClock(left, right *event.Event) bool {
+	return left.Minute == right.Minute && intValue(left.Extra) == intValue(right.Extra)
 }
 
 func kind(t event.Type) Kind {

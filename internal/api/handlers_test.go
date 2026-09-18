@@ -317,6 +317,9 @@ func TestGetEvents_Batch(t *testing.T) {
 		list[0].Presentation.ScoreAfter == nil || list[0].Presentation.ScoreAfter.Home != 1 {
 		t.Fatalf("event presentation = kind %q %+v, want home goal at 1-0", list[0].Kind, list[0].Presentation)
 	}
+	if list[0].PresentationState != eventpresentation.StateConfirming {
+		t.Fatalf("event presentation_state = %q, want confirming", list[0].PresentationState)
+	}
 	if rec := get(h, "/api/v1/events"); rec.Code != http.StatusBadRequest {
 		t.Errorf("events without ids = %d, want 400", rec.Code)
 	}
@@ -341,6 +344,9 @@ func TestGetEvents_RemovedEventUsesParentContextWithoutChangingSurvivingScore(t 
 	}
 	if len(list) != 1 || list[0].Phase != "removed" {
 		t.Fatalf("removed event = %+v, want one removed projection", list)
+	}
+	if list[0].PresentationState != eventpresentation.StateRemoved {
+		t.Fatalf("removed presentation_state = %q, want removed", list[0].PresentationState)
 	}
 	presentation := list[0].Presentation
 	if presentation.TeamSide == nil || *presentation.TeamSide != "away" ||
