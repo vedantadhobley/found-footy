@@ -55,7 +55,7 @@ func replayCurrent(paths []string, output io.Writer) error {
 			continue
 		}
 		frames, exp, tolerance, recorded := r.Frames, r.Expected, r.Tolerance, r.Evaluation
-		if r.Source == "accepted" && r.Evaluator != "vision-evaluate-v1" && r.Evaluator != "vision-evaluate-v2" && r.Evaluator != vision.EvaluatorVersion {
+		if r.Source == "accepted" && r.Evaluator != "vision-evaluate-v1" && r.Evaluator != "vision-evaluate-v2" && r.Evaluator != "vision-evaluate-v3" && r.Evaluator != vision.EvaluatorVersion {
 			return fmt.Errorf("%s: unknown saved evaluator %q", r.ID, r.Evaluator)
 		}
 		if r.Source == "rejected" {

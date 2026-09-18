@@ -96,5 +96,8 @@ The [v2 implementation report](../../docs/design/audits/clock-normalization-impl
 records the subsequent full replay and its extra malformed-clock effects.
 The [v3 follow-up](../../docs/design/audits/period-label-recognition-2026-09-17.md#implementation-follow-up)
 compares this same corpus before and after removing unlabelled period offsets.
-Current replay accepts known v1/v2/current evidence without rewriting its
+Current replay accepts known v1/v2/v3/current evidence without rewriting its
 recorded verdict; unknown evaluator versions still fail the report.
+The [v4 running-stoppage report](../../docs/design/audits/running-stoppage-period-2026-09-17.md#implementation-and-verification)
+compares the same export under deployed v3 and local v4 rather than attributing
+all differences from old recorded verdicts to this fix.

@@ -49,6 +49,45 @@ the current branch.
 
 ## Confirmed issues
 
+### FF-097 — running stoppage clocks inherit the next period
+
+- **Status:** `implemented` — local, not deployed
+- **Severity:** P1
+- **Evidence:** [Gueye's 45+2′ rejection and historical screen](./design/audits/running-stoppage-period-2026-09-17.md)
+  establish accurate `46:35` plus `+4` observations rejected as second half.
+  Four posts for fixture `1570390`, event `5956a72d-75cc-4f7e-bf54-bdf1afc83cd7`,
+  have in-window clocks. Fifteen searches completed normally; no clip surfaced.
+  The historical signature appears on 82 rejected posts across nine events,
+  earliest August 20 UTC; these are not 82 independently verified unique clips.
+- **Cause:** `periodOf` classifies API period bases and already-running broadcast
+  minutes identically. Unlabelled 46:xx becomes 2H, 92:xx becomes ET1, and
+  106:xx becomes ET2. Running clocks bypass allowance interpretation. This
+  dates to July 28's initial Go evaluator, in production since August 15.
+  FF-094's arithmetic correction did not resolve period inference.
+- **Boundary:** H1/H2 conflicts hard-reject; ET conflicts can instead downgrade
+  to unverified. Explicit correct labels avoid the issue. 120+ running clocks
+  retain ET2 but still need coverage. Historical verdict stability is not proof
+  of correct admission; the missing test combined running stoppage, allowance,
+  and no explicit label.
+- **Implementation:** Local v4 recognizes positive-allowance running clocks
+  within bounded post-boundary windows, preserving measured minute, explicit
+  labels, frozen/compact behavior and allowance overruns. Four-boundary tests,
+  Gueye activity evidence and old-proof durability pass. See the
+  [decision and recognition limits](./decisions/2026-09-18-running-stoppage-retains-ending-period.md).
+- **Replay:** On 721 accepted and 7,128 eligible rejected records, v3-to-v4
+  changes 63 rejected outcomes to verified and twelve unverified outcomes to
+  verified; no included accepted outcome is lost. Four are Gueye posts.
+  Nineteen of the original 82 signatures have changed event expectations and
+  remain excluded, not silently repaired. These are evidence rows, not unique
+  footage or semantic correctness labels.
+- **Next:** Commit/release review, separately approved deployment, then scoped
+  historical candidate recovery. No deployment or recovery has run for FF-097.
+- **Release/model checkpoint (September 18 UTC):** Application rollout is
+  approved. Recovery is not yet approved or applied. The
+  [E4B trial](./design/audits/gemma-e4b-vision-trial-2026-09-18.md) completes ten
+  calls but invents timing evidence. Production still pins the retired 12B;
+  choose and approve a tested replacement before replaying the four Gueye posts.
+
 ### FF-094 — added-time announcement incorrectly unpins a running clock
 
 - **Status:** `validating` — deployed September 17 as a2a6830

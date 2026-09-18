@@ -13,7 +13,7 @@ import (
 
 // EvaluatorVersion identifies the clock/content interpretation applied to raw
 // observations. Bump it when Evaluate or its clock interpretation changes.
-const EvaluatorVersion = "vision-evaluate-v3"
+const EvaluatorVersion = "vision-evaluate-v4"
 
 // MaxEvidenceBytes bounds one stored evaluation independently of model output.
 const MaxEvidenceBytes = 16 * 1024

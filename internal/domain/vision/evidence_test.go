@@ -38,6 +38,22 @@ func TestOldAcceptedEvidenceIsNotReinterpreted(t *testing.T) {
 	}
 }
 
+// TestV3StoppageAcceptanceRemainsHistorical keeps old unverified proof unchanged.
+func TestV3StoppageAcceptanceRemainsHistorical(t *testing.T) {
+	e := testEvidence()
+	e.Evaluator = "vision-evaluate-v3"
+	e.Expected = Expected{Elapsed: 90, Extra: 6}
+	e.Frames = rep(frame(true, false, "95:15", "+5", ""), 3)
+	e.Evaluation = Evaluation{Outcome: OutcomeUnverified, FrameCount: 3,
+		Reason: "clock interpretation ambiguous — kept, not clock-verified"}
+	if current := Evaluate(e.Frames, e.Expected, 1); current.Outcome != OutcomeVerified {
+		t.Fatalf("control=%+v", current)
+	}
+	if err := e.Validate(); err != nil || e.Evaluation.Outcome != OutcomeUnverified || e.Evaluator != "vision-evaluate-v3" {
+		t.Fatalf("historical proof changed: %+v, %v", e, err)
+	}
+}
+
 // TestEvidenceValidation guards required evidence while allowing an honestly unknown model ID.
 func TestEvidenceValidation(t *testing.T) {
 	if err := testEvidence().Validate(); err != nil {

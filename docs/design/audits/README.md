@@ -5,6 +5,12 @@ Every surviving finding must have a stable disposition in
 [`todo.md`](../../todo.md), and any old claim must be verified against current
 code before work begins.
 
+- [Gemma E4B vision trial — September 18 UTC](./gemma-e4b-vision-trial-2026-09-18.md)
+  — ten completed calls, invented period/clock evidence, and the unresolved
+  replacement for production's retired 12B model pin.
+- [Running stoppage period failure — 2026-09-17](./running-stoppage-period-2026-09-17.md)
+  — Gueye's false rejection, July 28 origin, four-boundary probes, and 82
+  historical candidate posts with the same first-half failure signature.
 - [Period-label recognition — 2026-09-17](./period-label-recognition-2026-09-17.md)
   — Barcelona's false admissions, 52 isolated model calls, retained label errors,
   and the v3 unsupported-offset fix with saved-evidence replay.

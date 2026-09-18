@@ -74,6 +74,7 @@ batch completion records are preserved in
 This is an experiment snapshot, not a golden assertion that its wrong
 classifications are desirable or that future model versions must repeat them.
 `fixtures/policy_replay_test.go` replays those immutable responses with their
-original expected times through v3. Only Yamal and the no-period reset control
-change to rejected, under both prompt variants; no images or model calls are
+original expected times through v4. V3's Yamal and no-period reset controls
+remain rejected under both prompt variants; v4 additionally verifies the two
+Maitland-Niles running-stoppage responses. No images or model calls are
 required for this policy regression. Period-role wording remains experimental.

@@ -161,7 +161,7 @@ func TestRunningAllowanceRegressions(t *testing.T) {
 		{"fernandez wrong stoppage control", []string{"45:17", "45:25", "45:33"}, "+1", "", Expected{45, 4}, OutcomeRejected},
 		{"adzic running allowance", []string{"90:28", "90:37", "90:59"}, "+4", "", Expected{90, 4}, OutcomeRejected},
 		{"adzic erroneous secondary", []string{"90:28", "90:37", "90:59"}, "", "04:00", Expected{90, 4}, OutcomeRejected},
-		{"maitland erroneous secondary", []string{"95:04", "95:15", "95:27"}, "+5", "05:00", Expected{90, 6}, OutcomeUnverified},
+		{"maitland erroneous secondary", []string{"95:04", "95:15", "95:27"}, "+5", "05:00", Expected{90, 6}, OutcomeVerified},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			var frames []FrameObservation

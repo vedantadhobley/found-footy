@@ -466,6 +466,12 @@ the unverified pool instead of being compared against minute zero (FF-031).
   and adds secondary time only at a compatible period-ending `MM:00` boundary.
   Allowances never erase running clocks or cap elapsed time. Compact clocks
   are not added twice. Unsupported main syntax supplies no usable minute.
+- `running_stoppage.go` — FF-097 uses a positive allowance to recognize an
+  unlabelled running clock strictly inside the 15 minutes after 45/90/105/120.
+  It changes only period/provenance, never the measured minute. Explicit and
+  conflicting period evidence wins; exact boundaries retain frozen-clock
+  composition. The recognition bound is not the announced allowance or a cap
+  on labelled stoppage; outside it the prior interpretation remains.
 - `evaluate.go` — `Evaluate(frames, Expected, tol)`: soccer/screen majority
   gates → period-aware clock check → `Outcome` (verified/unverified/rejected).
   API ordinal minutes normalize to the broadcast's completed-minute clock as
@@ -487,10 +493,12 @@ the unverified pool instead of being compared against minute zero (FF-031).
   expected time, complete evaluation, sampling and provenance. Validation
   checks identity/shape without reinterpreting historical observations through
   today's evaluator. `EvaluatorVersion` must change with evaluator semantics.
-  Production combines FF-094 and the unsupported-offset removal as
+  Local FF-097 uses `vision-evaluate-v4`; production still combines FF-094 and the unsupported-offset removal as
   `vision-evaluate-v3`, deployed in the
   [September 17 clock release](./history/clock-validation-rollout-2026-09-17.md).
   See the [visible-period decision](./decisions/2026-09-17-relative-clocks-require-visible-period.md).
+  The [running-stoppage decision](./decisions/2026-09-18-running-stoppage-retains-ending-period.md)
+  records v4's bounds, ambiguity limits and separate rollout requirement.
 
 Consumed by `internal/activity/vision.ValidateClip`: fetch staged clip →
 `ffmpeg.ExtractFrame` @25/50/75% → one multi-image structured-output vision call

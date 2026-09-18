@@ -11,8 +11,8 @@ import (
 	vision "github.com/vedantadhobley/found-footy/internal/domain/vision"
 )
 
-// TestRecordedPeriodResponses isolates the v3 policy change from the original
-// v2 prompt experiment. Controls are not counted as natural-video evidence.
+// TestRecordedPeriodResponses pins the v3 offset removal and v4 running-stoppage
+// correction against the original v2 experiment without rewriting its archive.
 func TestRecordedPeriodResponses(t *testing.T) {
 	expected := map[string]vision.Expected{}
 	for _, c := range controls() {
@@ -74,6 +74,7 @@ func TestRecordedPeriodResponses(t *testing.T) {
 		}
 		seen[key] = true
 		current := vision.Evaluate(saved.Response.Frames, exp, 1)
+		want := saved.Evaluation
 		if saved.Name == "yamal_first_half_penalty_miss" || saved.Name == "no_half_label" {
 			if saved.Evaluation.Outcome != vision.OutcomeUnverified || current.Outcome != vision.OutcomeRejected {
 				t.Fatalf("%s: expected unverified -> rejected, got %s -> %s", key, saved.Evaluation.Outcome, current.Outcome)
@@ -82,11 +83,25 @@ func TestRecordedPeriodResponses(t *testing.T) {
 			// All evidence fields must survive the narrower acceptance rule.
 			current.Outcome, current.Reason = saved.Evaluation.Outcome, saved.Evaluation.Reason
 		}
-		if !reflect.DeepEqual(current, saved.Evaluation) {
-			t.Fatalf("unexpected evaluation change in %s: recorded=%+v current=%+v", key, saved.Evaluation, current)
+		if saved.Name == "maitland_running_plus_five" {
+			if saved.Evaluation.Outcome != vision.OutcomeUnverified {
+				t.Fatalf("%s: archive no longer records the original period failure", key)
+			}
+			minute := 95
+			want.Outcome, want.MatchedMinute = vision.OutcomeVerified, &minute
+			want.Reason, want.DetectedPeriod = "clock matches minute+period", "2H"
+			want.ClockReadings = append([]vision.ClockReading(nil), saved.Evaluation.ClockReadings...)
+			for i := range want.ClockReadings {
+				want.ClockReadings[i].Period = vision.PeriodSecondHalf
+				want.ClockReadings[i].PeriodPinned, want.ClockReadings[i].Stoppage = true, true
+			}
+			changed++
+		}
+		if !reflect.DeepEqual(current, want) {
+			t.Fatalf("unexpected evaluation change in %s: expected=%+v current=%+v", key, want, current)
 		}
 	}
-	if len(seen) != len(expected)*2 || len(seen) != 52 || changed != 4 || headers != 4 || completions != 4 {
+	if len(seen) != len(expected)*2 || len(seen) != 52 || changed != 6 || headers != 4 || completions != 4 {
 		t.Fatalf("incomplete replay: results=%d changed=%d headers=%d completions=%d", len(seen), changed, headers, completions)
 	}
 }

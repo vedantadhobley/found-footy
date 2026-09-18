@@ -862,9 +862,22 @@ fields never enter model requests; differences include literal annotation loss.
 Barcelona's two September 17 admissions have distinct regressions: Yamal's
 unsupported offset now rejects; Jesus's matching-clock/wrong-match result
 remains a documented limitation, not a desired semantic outcome. An offline
-test replays all 52 archived v2 responses without images or model calls. Only
-the two Yamal and two unlabelled-reset control verdicts change; all other
-evaluations, including labelled clocks and added time, remain identical.
+test replays all 52 archived v2 responses without images or model calls. V3
+changes the two Yamal and two unlabelled-reset control verdicts. Local v4 also
+verifies the two Maitland-Niles `95:xx +5` observations as second-half stoppage;
+all remaining evaluations retain their archived expectations.
+
+FF-097 regressions first fail against v3, then verify Gueye's two saved clock
+sequences and all four ending periods under v4. They reject the same Gueye
+readings for a second-half event, preserve explicit conflicts, invalid/zero
+allowances, unsupported offsets and out-of-window clocks, and pin recognition
+bounds independently of allowance size. Tests retain minute-only precision,
+secondary non-addition and longer labelled stoppage. An activity test preserves
+the original null period separately from inferred 1H and stores v4 provenance.
+Old v3 evidence remains structurally valid without changing its verdict.
+The [implementation replay](./design/audits/running-stoppage-period-2026-09-17.md#implementation-and-verification)
+compares the deployed and local evaluators on the same exported observations;
+candidate-post counts are not unique footage or semantic correctness labels.
 
 FF-032 makes the LLM mock's captured-request buffer concurrency-safe. The
 adapter's concurrency-cap test now exercises parallel handlers without racing

@@ -14,6 +14,9 @@ its historical heading anchors valid.
 
 New decisions after the frozen archive:
 
+- [Running stoppage retains the ending period](./2026-09-18-running-stoppage-retains-ending-period.md)
+  — FF-097 uses bounded running-clock/allowance evidence without minute arithmetic,
+  period-offset guesses, new inference calls or historical evidence rewrites.
 - [Relative clocks require visible period evidence](./2026-09-17-relative-clocks-require-visible-period.md)
   — removes API-driven half/extra-time offset guesses while retaining explicit
   reset clocks, added-time normalization and immutable historical evidence.

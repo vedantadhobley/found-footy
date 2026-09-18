@@ -29,9 +29,10 @@ const (
 // ClockReading is one normalized per-frame scorebug reading. Minute is an
 // absolute completed match minute after any relative-period or stoppage-clock
 // offset. PeriodPinned means the scorebug supplied enough evidence to identify
-// the period (a visible label or compact stoppage form), rather than periodOf
-// inferring one from a conventional continuous clock. Stoppage records a
-// compact/frozen stoppage display; ExactMinute is false only when a
+// the period (a visible label, compact stoppage form, or recognized running
+// clock plus allowance), rather than periodOf inferring one from a conventional
+// continuous clock. Stoppage records compact/frozen or recognized running
+// stoppage evidence; ExactMinute is false only when a
 // frozen boundary and announced added time are visible without a running
 // stoppage sub-clock. Ambiguous readings are diagnostic evidence but may not
 // verify a clip.
@@ -46,8 +47,10 @@ type ClockReading struct {
 	Ambiguous          bool   `json:"ambiguous"`
 }
 
-// periodOf maps a BASE minute (the frozen boundary or the running value,
-// NOT base+stoppage) to its period. Verified against real API-Football data
+// periodOf maps an API BASE minute or a conventional non-stoppage clock to its
+// period. Broadcast values are provisional until explicit labels and allowance
+// evidence have been composed; a running 46:xx can still belong to H1.
+// Verified against real API-Football data
 // (WC-2022 final, 2026-07-28): a 45+3 goal reports elapsed=45 → H1; a 48'
 // goal reports elapsed=48 → H2; a 108' goal reports elapsed=108 → ET2; a
 // 105+3 goal reports elapsed=105 → ET1. So elapsed alone names the period.
@@ -227,6 +230,8 @@ func parseFrameClock(frameIndex int, f FrameObservation) (ClockReading, bool) {
 			}
 		}
 	}
+
+	r = withRunningStoppage(r, f.Added)
 
 	// Only seconds-visible, compatible end boundaries can freeze and accept
 	// elapsed stoppage. Running and compact clocks remain usable even when an

@@ -61,3 +61,22 @@ func TestCurrentReplayRetainsV2OffsetVerdict(t *testing.T) {
 		t.Fatal("unknown evaluator produced a report")
 	}
 }
+
+// TestCurrentReplayRetainsV3StoppageVerdict admits old evidence without relabelling it.
+func TestCurrentReplayRetainsV3StoppageVerdict(t *testing.T) {
+	r := row{Source: "accepted", ID: "proof", EventID: "event", AssetID: "asset", Evaluator: "vision-evaluate-v3", Tolerance: 1,
+		Expected: vision.Expected{Elapsed: 90, Extra: 6}, Frames: repeated(observation("95:15", "+5", "", "")),
+		Evaluation: vision.Evaluation{Outcome: vision.OutcomeUnverified, Reason: "clock interpretation ambiguous — kept, not clock-verified"}}
+	r.Origin.WorkflowID = "event"
+	var output bytes.Buffer
+	if err := replayCurrent([]string{writeRows(t, r)}, &output); err != nil {
+		t.Fatal(err)
+	}
+	var report currentReport
+	if err := json.Unmarshal(output.Bytes(), &report); err != nil {
+		t.Fatal(err)
+	}
+	if len(report.Changes) != 1 || report.Changes[0].Recorded.Outcome != vision.OutcomeUnverified || report.Changes[0].Current.Outcome != vision.OutcomeVerified {
+		t.Fatalf("report=%+v", report)
+	}
+}

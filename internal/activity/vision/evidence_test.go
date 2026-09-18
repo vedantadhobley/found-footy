@@ -102,3 +102,31 @@ func TestLegacyVerdictDoesNotAcquireEvaluator(t *testing.T) {
 	require.NoError(t, err)
 	require.NotContains(t, string(encoded), "Evaluator")
 }
+
+// TestRunningStoppageActivityRetainsRawEvidence reproduces Gueye at the activity boundary.
+func TestRunningStoppageActivityRetainsRawEvidence(t *testing.T) {
+	response := framesJSON(
+		map[string]any{"soccer": true, "clock": "46:35", "added": "+4"},
+		map[string]any{"soccer": true, "clock": "46:37", "added": "+4"},
+		map[string]any{"soccer": true, "clock": "46:39", "added": "+4"},
+	)
+	a, _, _ := newActivities(t, response, nil)
+	out, err := a.ValidateClip(context.Background(), ValidateClipInput{
+		EventID: uuid.MustParse("5956a72d-75cc-4f7e-bf54-bdf1afc83cd7"), FixtureID: 1570390,
+		StagingKey: "clip", APIElapsed: 45, APIExtra: 2,
+		CaptureEvidence: true, MD5: strings.Repeat("ab", 16),
+	})
+	require.NoError(t, err)
+	require.Equal(t, "verified", out.Outcome)
+	require.Equal(t, "vision-evaluate-v4", out.Evaluator)
+	require.NotNil(t, out.MatchedMinute)
+	require.Equal(t, 46, *out.MatchedMinute)
+	require.NoError(t, out.Evidence.Validate())
+	for i, reading := range out.ClockReadings {
+		require.Equal(t, dvision.PeriodFirstHalf, reading.Period)
+		require.Nil(t, out.Frames[i].Period, "inference must not rewrite the model observation")
+		require.Equal(t, "+4", *out.Frames[i].Added)
+	}
+	require.Equal(t, out.Frames, out.Evidence.Frames)
+	require.Equal(t, out.ClockReadings, out.Evidence.Evaluation.ClockReadings)
+}
