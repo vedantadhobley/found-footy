@@ -86,6 +86,12 @@ the current branch.
   candidate URLs but produced no public asset: all candidates ended in a
   deterministic reject or download failure. The exact checklist closed and its
   scoped Firefox instance was released.
+- **Active replay evidence:** Operation `lautaro-46-20260919` ran while its
+  fixture remained active, completed all 15 usable searches, evaluated 69 new
+  candidate URLs, promoted two new assets, increased the event from one to
+  three active public shares, closed with zero pending candidates, and released
+  its scoped Firefox instance. The match-day report now excludes pending work
+  while any discovery checklist still owns the event.
 
 ### FF-100 — public event presentation still passes through the legacy adapter
 

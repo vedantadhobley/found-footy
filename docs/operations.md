@@ -94,8 +94,10 @@ scoped fleet state, recent/upcoming or active fixtures, event/downstream/
 candidate/share progress, and the count plus ten newest FF-034 durability
 violations. For the same fixture window it groups terminal FF-060 download
 failures by bounded stage/class, retaining `legacy_unclassified` for histories
-that predate the versioned payload. It performs no Temporal describe calls; use
-the event workflow ID from the report for deeper inspection.
+that predate the versioned payload. Candidate durability violations exclude an
+event while any discovery checklist still owns it, including an operator
+replay. It performs no Temporal describe calls; use the event workflow ID from
+the report for deeper inspection.
 
 For an event incident, collect these identifiers before drawing a conclusion:
 

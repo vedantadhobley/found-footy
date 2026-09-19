@@ -55,6 +55,8 @@ func TestMatchdayStatusSQLIsReadOnly(t *testing.T) {
 		`outcome_detail#>>'{failure,stage}'`,
 		`outcome_detail#>>'{failure,class}'`,
 		`c.reject_reason = 'download_error'`,
+		`AND d.completed_at IS NULL`,
+		`AND open_d.completed_at IS NULL`,
 	} {
 		if !strings.Contains(sql, required) {
 			t.Errorf("status SQL missing FF-060 evidence %q", required)

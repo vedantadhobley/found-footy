@@ -106,7 +106,7 @@ GROUP BY failure_stage, failure_class
 ORDER BY candidates DESC, failure_stage, failure_class;
 
 \echo ''
-\echo 'Candidate durability violations (completed parent with pending candidate)'
+\echo 'Candidate durability violations (completed parent, no open owner, pending candidate)'
 SELECT count(*) AS total_violations
 FROM event_search_candidates AS c
 WHERE c.outcome_class = 'pending'
@@ -116,6 +116,13 @@ WHERE c.outcome_class = 'pending'
       WHERE d.event_id = c.event_id
         AND d.workflow_type = 'discovery'
         AND d.completed_at IS NOT NULL
+  )
+  AND NOT EXISTS (
+      SELECT 1
+      FROM event_downstream_workflows AS d
+      WHERE d.event_id = c.event_id
+        AND d.workflow_type = 'discovery'
+        AND d.completed_at IS NULL
   );
 
 \echo 'Most recent violations (up to 10)'
@@ -139,6 +146,13 @@ JOIN LATERAL (
     LIMIT 1
 ) AS d ON true
 WHERE c.outcome_class = 'pending'
+  AND NOT EXISTS (
+      SELECT 1
+      FROM event_downstream_workflows AS open_d
+      WHERE open_d.event_id = c.event_id
+        AND open_d.workflow_type = 'discovery'
+        AND open_d.completed_at IS NULL
+  )
 ORDER BY d.completed_at DESC, c.discovered_at
 LIMIT 10;
 

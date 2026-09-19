@@ -63,3 +63,12 @@ EventWorkflow completed 15 usable searches with no unavailable observations,
 closed with zero pending candidates, and released its scoped Firefox instance.
 The fresh searches added 48 candidate URLs, but no candidate produced a public
 asset; every candidate ended in a deterministic rejection or download failure.
+
+Commit `d731b8e` extended the fixture-state guard to active fixtures without
+weakening event ownership. Operation `lautaro-46-20260919` then ran while
+Roma–Inter remained active in its terminal grace window. It completed all 15
+usable searches, evaluated 69 new candidate URLs, promoted two new assets,
+increased the event from one to three active public shares, closed with zero
+pending candidates, and released its scoped Firefox instance. The first live
+run also exposed and corrected a report-only false positive: pending candidates
+under an open replay are owned work, not completed-parent durability violations.
