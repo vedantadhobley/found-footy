@@ -801,6 +801,15 @@ the current branch.
   (`popularity: 7`) and A. Pellegrino at 70′ (`popularity: 3`). Each event's
   unverified popularity-one alternative remained durable but absent from the
   projection.
+- **Quality-review checkpoint (2026-09-19):** The read-only
+  [presentation audit](./design/audits/video-presentation-planning-2026-09-19.md)
+  reconstructed the rule across 590 events with playable selected roots. It
+  found 425 hidden roots across 233 events; 418 have no direct selected clip
+  that satisfies the experimental stable-offset containment rule. Eighty of
+  the hidden roots are timestamp-verified. This does not prove that every root
+  contains useful independent footage, but it proves that event-global support
+  is not a redundancy test. Production remains unchanged while FF-081 settles
+  quality-first ordering and direct-cover presentation policy.
 - **Completion condition:** Verify that the next natural threshold-crossing
   popularity bump emits `event.update` and causes an already-open consumer to
   replace the event with the newly pruned, contiguous list.
@@ -1083,8 +1092,8 @@ the current branch.
   and the [proposal](./design/proposals/reversible-video-selection.md) separates
   overlap, replacement suitability and selected-set enforcement.
 - **Implementation checkpoint (2026-09-12):** FF-093's accepted evidence and
-  FF-081's pure planner plus atomic reselection repository are implemented
-  locally, not deployed. The new operation handles already accepted data,
+  FF-081's pure planner plus atomic reselection repository are implemented.
+  The new operation handles already accepted data,
   preserves share/clock identity, splits complete observed-source credit and
   records immutable previous topology with retry-safe receipts. Incomplete
   historical attribution returns a typed error instead of a fabricated split.
@@ -1152,12 +1161,29 @@ the current branch.
   No new fields are needed; a migration extends the receipt-version CHECK and
   updates column descriptions without rewriting scores or receipts.
   The complete race-enabled Go/integration suite, saved-corpus checks, build,
-  vet and scoped lint pass. The saved comparison report remains byte-identical;
-  implementation and migrations remain local and undeployed.
-- **Next:** Separately approve migrations plus deployment.
-  Validate natural restoration, per-clip direct counts, exact recurrence and frontend
-  updates, and measure placement/HEAD latency and Temporal payload/history growth.
-  Do not apply simulated corpus changes as automatic historical repairs.
+  vet and scoped lint pass. The saved comparison report remains byte-identical.
+  Commit `8c836e0` and its four migrations were deployed on September 13; the
+  [rollout record](./history/direct-support-rollout-2026-09-13.md) preserves
+  execution and natural-acceptance evidence.
+- **Presentation-planning checkpoint (2026-09-19):** The new read-only
+  [quality-first report](./design/audits/video-presentation-planning-2026-09-19.md)
+  separates technical quality, standalone context, direct replacement, and
+  source recurrence. In the current snapshot, 42 event primaries are
+  technically dominated by another root in the same reliability tier. Thirty-four
+  remain honest duration/quality ambiguities; eight have one standalone
+  metadata frontier and are bounded review candidates, not approved automatic
+  replacements. The Raphinha 25′ event demonstrates the intended boundary: a
+  hidden verified 1466×828 60-fps cut technically dominates the popular
+  720p60 primary, but the latter has 19.9 seconds more context, so no primary is
+  selected. Two longer 1080p roots lack both clock verification and a direct
+  dHash anchor and remain manual-review evidence. Support does not choose
+  quality, direct containment never follows a transitive path, and no runtime
+  behavior changes.
+- **Next:** Review the eight bounded primary candidates, the two long Raphinha
+  clips, and representative ambiguous frontiers before accepting a runtime
+  presentation policy. Continue natural restoration and direct-count
+  validation. Do not apply simulated corpus changes as automatic historical
+  repairs.
 
 ### FF-082 — retain cadence as independent keeper-quality evidence
 

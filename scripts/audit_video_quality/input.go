@@ -33,6 +33,7 @@ type asset struct {
 	verified           bool
 	shareState         string
 	shareID            string
+	shareCreatedAt     string
 	fixtureID          int64
 	playerName         string
 	minute             int
@@ -217,7 +218,8 @@ func parseAsset(record []string, columns map[string]int) (asset, error) {
 		observedPopularity: observedPopularity,
 		supersededBy:       value("superseded_by"), verified: verified,
 		shareState: value("share_state"), shareID: value("share_id"),
-		fixtureID: fixtureID, playerName: value("player_name"), minute: minute,
+		shareCreatedAt: optionalValue("share_created_at"),
+		fixtureID:      fixtureID, playerName: value("player_name"), minute: minute,
 		extra: value("extra"), homeTeam: value("home_team_name"),
 		awayTeam: value("away_team_name"), sourceTweetURL: optionalValue("source_tweet_url"),
 		eventRemoved: eventRemoved, objectReclaimedAt: optionalValue("object_reclaimed_at"),

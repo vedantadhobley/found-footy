@@ -5,6 +5,9 @@ Every surviving finding must have a stable disposition in
 [`todo.md`](../../todo.md), and any old claim must be verified against current
 code before work begins.
 
+- [Quality-first video presentation planning — 2026-09-19](./video-presentation-planning-2026-09-19.md)
+  — current FF-078 visibility replay, technical/context Pareto frontiers,
+  graph-aware suppression, and the Raphinha primary ambiguity; offline only.
 - [Gemma 12B literal-period qualification — September 18 UTC](./gemma-12b-period-prompt-2026-09-18.md)
   — failed normalized-label and near-zero trials, then a complete 39-call
   exact-runtime screen for literal labels at temperature zero.

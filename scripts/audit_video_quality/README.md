@@ -229,6 +229,59 @@ duplicate event/MD5 rows. The saved regression also uses
 `FF_POPULARITY_CORPUS`. See the
 [September 13 comparison](../../docs/design/audits/video-direct-support-2026-09-13.md).
 
+## Quality-first presentation planning
+
+`-presentation-json` audits the playable selected roots returned by the current
+graph. It reconstructs FF-078 visibility and public order, then keeps four
+questions separate:
+
+1. **Reliability:** timestamp-verified roots form the primary tier when any
+   exist. An unverified root can lead only when the event has no verified root.
+2. **Technical quality:** pixel area, encoded cadence, and spatial bitrate
+   density form a Pareto relation. A candidate must retain 90% of every known
+   signal and improve at least one by 10%. The report does not fit a scalar
+   quality score or use support as a quality proxy.
+3. **Standalone context:** duration, capped at 60 seconds, is a separate Pareto
+   signal. Extra duration cannot compensate for a material technical loss. A
+   short sharp cut and a longer contextual clip can therefore remain an honest
+   primary ambiguity.
+4. **Redundancy:** a clip is suppressed only when a selected clip has both a
+   direct relation under the current dHash thresholds and cadence-aware
+   stable-offset containment. A transitive path never proves replacement.
+
+A unique standalone frontier produces a diagnostic primary candidate. Later
+clips appear in technical Pareto layers; members of one layer are intentionally
+unordered. Verified clips without a direct substitute remain possible uncovered
+context. Unverified clips without a direct visual anchor to the selected set
+require review because metadata cannot establish event identity.
+
+The diagnostic relation is recomputed across selected roots even when their
+timestamp-verification categories differ. That can establish shared pixels for
+presentation review. It never transfers verification or changes the
+category-scoped production placement graph.
+
+Direct support reports source recurrence. It can describe confidence and help
+prune redundant copies, but it never selects technical quality. The experiment
+does not change the graph, FF-078, keeper selection, ranks, or public API.
+
+Run it against the saved CSV:
+
+```bash
+docker run --rm -i --network none --memory 4g --cpus 4 \
+  -e GOMEMLIMIT=3GiB -e GOMAXPROCS=4 \
+  -e GOCACHE=/gocache -e GOMODCACHE=/gomodcache \
+  -v "$PWD:/src:ro" \
+  -v "$HOME/.cache/found-footy/gocache:/gocache" \
+  -v "$HOME/.cache/found-footy/gomodcache:/gomodcache" \
+  -w /src golang:1.25.11-bookworm \
+  go run -buildvcs=false ./scripts/audit_video_quality \
+  -presentation-json < /tmp/ff081-corpus.csv \
+  > /tmp/ff081-presentation.json
+```
+
+The mode is mutually exclusive with every other report mode. See the
+[September 19 evidence](../../docs/design/audits/video-presentation-planning-2026-09-19.md).
+
 ## Aligned-section report
 
 `-overlap-json` emits one NDJSON record per scoped direct pair from the saved

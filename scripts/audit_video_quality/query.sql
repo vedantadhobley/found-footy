@@ -55,12 +55,15 @@ WITH RECURSIVE lineage AS (
         COALESCE(own_share.timestamp_verified, root_share.timestamp_verified, FALSE) AS timestamp_verified,
         COALESCE(own_share.state::text, 'observed') AS share_state,
         COALESCE(own_share.id, '') AS share_id,
+        COALESCE(own_share.created_at::text, '') AS share_created_at,
         e.fixture_id,
         COALESCE(e.player_name, '') AS player_name,
         e.minute,
         COALESCE(e.extra::text, '') AS extra,
         f.home_team_name,
         f.away_team_name,
+        COALESCE(a.object_reclaimed_at::text, '') AS object_reclaimed_at,
+        e.removed AS event_removed,
         COALESCE(source.tweet_url, '') AS source_tweet_url
     FROM video_assets AS a
     LEFT JOIN roots ON roots.asset_id = a.id

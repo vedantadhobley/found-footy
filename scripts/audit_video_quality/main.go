@@ -40,7 +40,13 @@ func run() error {
 		"audit exact support and alternate source ownership on recorded selected roots; no policy changes")
 	directSupportJSON := flag.Bool("direct-support-json", false,
 		"compare exclusive assigned support with non-exclusive direct support offline")
+	presentationJSON := flag.Bool("presentation-json", false,
+		"audit quality-first primary selection and graph-aware gap candidates offline")
 	flag.Parse()
+	if err := validatePresentationFlags(*presentationJSON, *reviewCSV, *overlapJSON, *pairCorpus,
+		*restorationJSON, *popularityJSON, *directSupportJSON); err != nil {
+		return err
+	}
 	if err := validateDirectSupportFlags(*directSupportJSON, *popularityJSON, *restorationJSON, *reviewCSV, *overlapJSON, *pairCorpus); err != nil {
 		return err
 	}
@@ -72,6 +78,9 @@ func run() error {
 	}
 	if *directSupportJSON {
 		return writeSupportReport(os.Stdout, assets, true)
+	}
+	if *presentationJSON {
+		return writePresentationJSON(os.Stdout, assets)
 	}
 	if *restorationJSON {
 		return writeRestorationJSON(os.Stdout, assets, *maxPermutations)
