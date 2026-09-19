@@ -24,10 +24,13 @@ natural discovery uses. No admin HTTP endpoint or second discovery workflow is
 introduced.
 
 The operation slug is mandatory and part of the durable identity. Preparation
-locks the event and permits only a completed fixture, a named non-removed event,
-a completed original discovery, zero pending candidates and no other pending
-discovery owner. Registration commits before Docker or Temporal effects, so a
-process failure is recoverable by repeating the same command.
+locks the event and permits an active or completed fixture, a named non-removed
+event, a completed original discovery, zero pending candidates and no other
+pending discovery owner. Staging remains invalid because its event lifecycle
+has not started. Active replay uses the ordinary removal and placement locks,
+so a later provider correction remains authoritative. Registration commits
+before Docker or Temporal effects, so a process failure is recoverable by
+repeating the same command.
 
 Three modes separate intent. Fresh search resets only the new checklist's
 attempt counter. Transient retry checkpoints search at the schema ceiling so

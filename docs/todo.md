@@ -61,8 +61,9 @@ the current branch.
   reprocesses one exact deterministic reject class without a fresh search.
 - **Implementation:** `found-footy-ops replay-event` is dry-run-first and uses a
   mandatory operation slug to derive one retry-stable Temporal/checklist ID.
-  It requires a completed fixture, a named non-removed event, completed original
-  discovery, zero pending candidates and no competing discovery owner. The
+  It requires an active or completed fixture, a named non-removed event,
+  completed original discovery, zero pending candidates and no competing
+  discovery owner. Staging fixtures remain ineligible. The
   command commits registration before provisioning the normal scoped Firefox
   instance and starting the existing `EventWorkflow`; normal download, vision,
   dedup, ranking, publication and cleanup remain unchanged.

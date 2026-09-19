@@ -382,14 +382,16 @@ evidence remains in `event_search_candidates.outcome_detail.replay`. Existing
 active shares stay live during replay. See the
 [historical replay decision](./decisions/2026-08-19-historical-candidate-repair-reuses-event-workflow.md).
 
-## Completed event recovery
+## Completed discovery recovery
 
 `found-footy-ops replay-event` is the general FF-101 operator entry point for a
-completed event whose original discovery also completed. It does not reset the
-successful `event-<event-id>` history. A mandatory operation slug derives a new
-retry-stable `event-replay-<event-id>-<operation>` checklist and Temporal ID.
-The same command can therefore resume a registration→provision→start partial
-failure without creating another replay.
+stable named event whose original discovery completed. The fixture may remain
+active or may already be completed; staging fixtures are rejected because their
+event lifecycle has not started. The command does not reset the successful
+`event-<event-id>` history. A mandatory operation slug derives a new retry-stable
+`event-replay-<event-id>-<operation>` checklist and Temporal ID. The same command
+can therefore resume a registration→provision→start partial failure without
+creating another replay.
 
 Modes are explicit:
 
@@ -403,11 +405,13 @@ Modes are explicit:
   outage. It is not “retry everything”: deterministic rejects, untyped failures
   and candidates attached to an asset stay terminal.
 
-The command fails closed unless the fixture is completed, the named event is
-not removed, original discovery is complete, there are no pending candidates,
-and no other discovery checklist is open. A dry run reads and prints the exact
-event, workflow identity and candidate allowlist without provisioning Firefox
-or starting Temporal.
+The command fails closed unless the fixture is active or completed, the named
+event is not removed, original discovery is complete, there are no pending
+candidates, and no other discovery checklist is open. Active replay uses the
+same removal and placement locks as natural discovery, so a later provider
+correction remains authoritative. A dry run reads and prints the exact event,
+workflow identity and candidate allowlist without provisioning Firefox or
+starting Temporal.
 
 Run it from the exact deployed worker image so the command and worker share one
 immutable source identity. Planning is read-only:

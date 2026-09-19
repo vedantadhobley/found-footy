@@ -322,8 +322,12 @@ func loadEventReplayPlan(
 	if removed {
 		return plan, fmt.Errorf("pg.EventReplayStore: event %s is removed", in.EventID)
 	}
-	if plan.FixtureState != "completed" {
-		return plan, fmt.Errorf("pg.EventReplayStore: fixture %d is %s; replay requires completed", plan.Input.FixtureID, plan.FixtureState)
+	if plan.FixtureState != "active" && plan.FixtureState != "completed" {
+		return plan, fmt.Errorf(
+			"pg.EventReplayStore: fixture %d is %s; replay requires active or completed",
+			plan.Input.FixtureID,
+			plan.FixtureState,
+		)
 	}
 	if !triggered || plan.Input.PlayerName == "" {
 		return plan, fmt.Errorf("pg.EventReplayStore: event %s has no completed named discovery", in.EventID)

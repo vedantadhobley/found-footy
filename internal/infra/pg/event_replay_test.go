@@ -3,6 +3,7 @@ package pg_test
 
 import (
 	"context"
+	"strings"
 	"testing"
 	"time"
 
@@ -108,6 +109,56 @@ func TestEventReplayStore_PrepareRecoverIsBoundedAndIdempotent(t *testing.T) {
 	if !result.ChecklistCompleted || result.PendingCandidates != 0 || result.ReplayCandidates != 3 {
 		t.Fatalf("result = %+v", result)
 	}
+}
+
+// TestEventReplayStore_FixtureStateBoundary permits recovery while a match is
+// active but rejects fixtures whose event lifecycle has not started.
+func TestEventReplayStore_FixtureStateBoundary(t *testing.T) {
+	t.Run("active", func(t *testing.T) {
+		ctx, pool, _, fixtures := setupEventRepo(t)
+		const fixtureID int64 = 919005
+		seedFixture(t, ctx, fixtures, fixtureID)
+		eventID := seedReplayEvent(t, ctx, pool, fixtureID)
+		workflowID, err := pginfra.StableEventReplayWorkflowID(eventID, "active-replay-20260919")
+		if err != nil {
+			t.Fatalf("workflow ID: %v", err)
+		}
+
+		plan, err := pginfra.NewEventReplayStore(pool).PlanEventReplay(ctx, pginfra.EventReplayRequest{
+			EventID: eventID, WorkflowID: workflowID, Operation: "active-replay-20260919",
+			Mode: pginfra.EventReplayFreshSearch,
+		})
+		if err != nil {
+			t.Fatalf("PlanEventReplay: %v", err)
+		}
+		if plan.FixtureState != "active" {
+			t.Fatalf("fixture state = %q, want active", plan.FixtureState)
+		}
+	})
+
+	t.Run("staging", func(t *testing.T) {
+		ctx, pool, _, fixtures := setupEventRepo(t)
+		const fixtureID int64 = 919006
+		if err := fixtures.Insert(ctx, makeStaging(
+			fixtureID,
+			time.Date(2026, 9, 19, 18, 0, 0, 0, time.UTC),
+		)); err != nil {
+			t.Fatalf("seed staging fixture: %v", err)
+		}
+		eventID := seedReplayEvent(t, ctx, pool, fixtureID)
+		workflowID, err := pginfra.StableEventReplayWorkflowID(eventID, "staging-replay-20260919")
+		if err != nil {
+			t.Fatalf("workflow ID: %v", err)
+		}
+
+		_, err = pginfra.NewEventReplayStore(pool).PlanEventReplay(ctx, pginfra.EventReplayRequest{
+			EventID: eventID, WorkflowID: workflowID, Operation: "staging-replay-20260919",
+			Mode: pginfra.EventReplayFreshSearch,
+		})
+		if err == nil || !strings.Contains(err.Error(), "requires active or completed") {
+			t.Fatalf("PlanEventReplay error = %v", err)
+		}
+	})
 }
 
 // TestEventReplayStore_FreshSearchDoesNotResetFailures separates the two repair axes.
