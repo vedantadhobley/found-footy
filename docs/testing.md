@@ -22,7 +22,7 @@ updates this doc if it introduces a new test tier or pattern.
 | Scenario corpus | `test/scenarios` | YAML-driven fixture lifecycles against real workflow/activity code and test Postgres. |
 | Configuration contract | `internal/config/contract_test.go` | Derives each binary's env ownership from Go tags and checks `.env.example`, both Compose files, environment routing, and cookie-directory mounts. |
 | Release contract | `test/release_contract_test.go` | Parses production Compose without Docker operations and requires immutable identity propagation plus the stack-wide ffmpeg CPU budget. |
-| Tooling contract | `test/tooling_contract_test.go` | Requires exact Go, golangci-lint, and Air versions across build files plus the intended commit/push hook targets. |
+| Tooling contract | `test/tooling_contract_test.go` | Requires exact Go, golangci-lint, and Air versions across build files, the intended commit/push hook targets, and Git-visible isolation between Go modules. |
 
 For a live inventory, use `rg -n '^func Test' --glob '*_test.go' internal test`
 and `rg --files test/scenarios -g '*.yaml'`.
@@ -735,6 +735,15 @@ scenario rot (red since `d123404`) the day it landed rather than weeks
 later. Host-agnostic (local git, not tied to any forge); each clone
 activates once with `make hooks`. Bypass only with `--no-verify`.
 
+The root gates discover tracked and ordinary untracked Go files through Git,
+then run each visible `go.mod` as an independent module. Gitignored forensic
+directories such as `scratch-audit-*` remain runnable evidence but are not
+product packages. Go still applies the active build tags within that bounded
+source set. Module tidiness is checked in a temporary Git-visible source
+snapshot, so an ignored experiment cannot change dependency metadata. This
+also means a new nested Go service enters every engineering gate as soon as
+its `go.mod` and source are created; no hard-coded Makefile target is required.
+
 **Suites** (each a subdirectory under `test/scenarios/`):
 - `basic/` — happy paths, sanity checks
 - `debounce/` — symmetric counter behavior (increment, decrement, cap,
@@ -918,7 +927,9 @@ make test <pkg>   # selected package
 ```
 
 `test-short` and `test` remain focused test runners. `check-short` and `check`
-are the authoritative engineering gates used by Git hooks.
+are the authoritative engineering gates used by Git hooks. Root build, test,
+vet, lint, format, and tidy targets cover all Git-visible Go modules; a nested
+module's own Makefile remains available for focused work.
 
 ## Coverage floors
 

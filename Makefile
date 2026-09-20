@@ -10,13 +10,16 @@ GOLANGCI_LINT_VERSION  := 2.12.2
 GO_IMAGE               := golang:$(GO_VERSION)-bookworm
 GOLANGCI_IMAGE         := golangci/golangci-lint:v$(GOLANGCI_LINT_VERSION)-alpine
 
-CACHE_DIR   := $(HOME)/.cache/found-footy
-DOCKER_ENV  := -e GOCACHE=/gocache -e GOMODCACHE=/gomodcache
-DOCKER_VOLS := -v $(PWD):/src -v $(CACHE_DIR)/gocache:/gocache -v $(CACHE_DIR)/gomodcache:/gomodcache
-DOCKER_RUN  := docker run --rm $(DOCKER_ENV) $(DOCKER_VOLS) -w /src
+CACHE_DIR        := $(HOME)/.cache/found-footy
+DOCKER_ENV       := -e GOCACHE=/gocache -e GOMODCACHE=/gomodcache
+DOCKER_CACHE_VOL := -v $(CACHE_DIR)/gocache:/gocache -v $(CACHE_DIR)/gomodcache:/gomodcache
+DOCKER_VOLS      := -v $(PWD):/src $(DOCKER_CACHE_VOL)
+DOCKER_RUN       := docker run --rm $(DOCKER_ENV) $(DOCKER_VOLS) -w /src
 
 GO_RUN       := $(DOCKER_RUN) $(GO_IMAGE)
 GOLANGCI_RUN := $(DOCKER_RUN) $(GOLANGCI_IMAGE)
+GO_MODULES   := $(shell ./scripts/go-scope.sh modules)
+GO_FILES     := $(shell ./scripts/go-scope.sh files)
 
 # testcontainers-go spawns sibling containers via the host Docker socket.
 # --network=host lets the test container reach those siblings on
@@ -24,6 +27,37 @@ GOLANGCI_RUN := $(DOCKER_RUN) $(GOLANGCI_IMAGE)
 # returns by default. Without this, tests get the port but can't dial it.
 TEST_DOCKER_ARGS := -v /var/run/docker.sock:/var/run/docker.sock --network=host
 GO_TEST_RUN      := docker run --rm $(DOCKER_ENV) $(DOCKER_VOLS) $(TEST_DOCKER_ARGS) -w /src $(GO_IMAGE)
+
+# Run one gate against every Git-visible Go module. Git supplies concrete
+# source directories; go-run.sh applies build tags and skips packages that are
+# ineligible for that gate. Each nested module keeps its own working directory.
+define run_go_modules
+	@set -eu; \
+	for module in $(GO_MODULES); do \
+		packages="$$(./scripts/go-scope.sh packages "$$module" | tr '\n' ' ')"; \
+		[ -n "$$packages" ] || { printf 'no Go packages in module %s\n' "$$module" >&2; exit 1; }; \
+		printf '==> %s: $(1)\n' "$$module"; \
+		docker run --rm $(DOCKER_ENV) $(DOCKER_VOLS) $(2) -w "/src/$$module" $(3) /src/scripts/go-run.sh $(1) $$packages; \
+	done
+endef
+
+# Tidy in a Git-visible snapshot so ignored forensic programs cannot add or
+# remove module requirements. Mode is "-diff" for the gate and empty for the
+# mutating target; the latter copies only module metadata back to the tree.
+define run_tidy_modules
+	@set -eu; \
+	snapshot="$$(mktemp -d /tmp/found-footy-tidy.XXXXXX)"; \
+	trap 'rm -rf "$$snapshot"' EXIT HUP INT TERM; \
+	./scripts/go-scope.sh snapshot "$$snapshot"; \
+	for module in $(GO_MODULES); do \
+		printf '==> %s: go mod tidy $(1)\n' "$$module"; \
+		docker run --rm $(DOCKER_ENV) -v "$$snapshot:/src" $(DOCKER_CACHE_VOL) -w "/src/$$module" $(GO_IMAGE) go mod tidy $(1); \
+		if [ "$(1)" != "-diff" ]; then \
+			cp "$$snapshot/$$module/go.mod" "$$module/go.mod"; \
+			if [ -f "$$snapshot/$$module/go.sum" ]; then cp "$$snapshot/$$module/go.sum" "$$module/go.sum"; fi; \
+		fi; \
+	done
+endef
 
 .PHONY: help build check check-short test test-short test-race test-corpus hooks \
         lint fmt fmt-check vet tidy tidy-check clean cache-init \
@@ -42,21 +76,21 @@ build: cache-init ## Compile every binary + package
 	# -buildvcs=false: we're inside a container with root-owned bind mount, so
 	# git thinks ownership is dubious. Git SHA is injected via -ldflags in
 	# Dockerfile builds per §11, so Go's built-in VCS stamping is redundant.
-	$(GO_RUN) go build -buildvcs=false ./...
+	$(call run_go_modules,build,,$(GO_IMAGE))
 
 # ────── Test ──────
 
 test: cache-init ## Run all tests (integration tests spawn containers via docker socket)
-	$(GO_TEST_RUN) go test -buildvcs=false ./...
+	$(call run_go_modules,test,$(TEST_DOCKER_ARGS),$(GO_IMAGE))
 
 test-short: cache-init ## Run unit tests only (skips integration tests that require Docker)
-	$(GO_RUN) go test -buildvcs=false -short ./...
+	$(call run_go_modules,test-short,,$(GO_IMAGE))
 
 test-live: cache-init ## Run live-network tests (real Wikidata/Wikipedia) — deliberate, NOT in the push gate
-	$(GO_TEST_RUN) go test -buildvcs=false -tags live ./...
+	$(call run_go_modules,test-live,$(TEST_DOCKER_ARGS),$(GO_IMAGE))
 
 test-race: cache-init ## Run tests with the race detector
-	$(GO_TEST_RUN) go test -buildvcs=false -race ./...
+	$(call run_go_modules,test-race,$(TEST_DOCKER_ARGS),$(GO_IMAGE))
 
 test-corpus: cache-init ## Run the scenario harness (test/scenarios/*.yaml)
 	$(GO_TEST_RUN) go test -buildvcs=false -v -run TestScenarios ./test/
@@ -72,28 +106,28 @@ hooks: ## Install git gates (core.hooksPath → .githooks)
 # ────── Lint + format ──────
 
 lint: cache-init ## Run golangci-lint against the full tree
-	$(GOLANGCI_RUN) golangci-lint run --timeout 5m
+	$(call run_go_modules,lint,,$(GOLANGCI_IMAGE))
 
 fmt: cache-init ## Run gofmt on every .go file (mutates in place)
-	$(GO_RUN) gofmt -w -s .
+	$(GO_RUN) gofmt -w -s $(GO_FILES)
 
 fmt-check: cache-init ## Fail if any Go file needs gofmt; never mutates source
-	@unformatted="$$( $(GO_RUN) gofmt -l . )"; \
+	@unformatted="$$( $(GO_RUN) gofmt -l $(GO_FILES) )"; \
 	if [ -n "$$unformatted" ]; then \
 		printf 'gofmt required:\n%s\n' "$$unformatted"; \
 		exit 1; \
 	fi
 
 vet: cache-init ## Run go vet
-	$(GO_RUN) go vet ./...
+	$(call run_go_modules,vet,,$(GO_IMAGE))
 
 # ────── Modules ──────
 
 tidy: cache-init ## Run go mod tidy
-	$(GO_RUN) go mod tidy
+	$(call run_tidy_modules,)
 
 tidy-check: cache-init ## Fail if go.mod/go.sum need tidying; never mutates source
-	$(GO_RUN) go mod tidy -diff
+	$(call run_tidy_modules,-diff)
 
 # ────── Dev stack ──────
 

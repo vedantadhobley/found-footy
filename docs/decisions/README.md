@@ -14,6 +14,9 @@ its historical heading anchors valid.
 
 New decisions after the frozen archive:
 
+- [Engineering gates follow Git and Go module boundaries](./2026-09-19-engineering-gates-follow-git-and-go-modules.md)
+  — excludes ignored forensic programs while dynamically validating every
+  tracked or ordinary-untracked Go module as independent source.
 - [Event recovery reuses EventWorkflow under a new identity](./2026-09-18-event-recovery-reuses-event-workflow.md)
   — FF-101 adds a dry-run-first operator command with idempotent registration,
   bounded transient retry and fresh-search modes without a second pipeline.

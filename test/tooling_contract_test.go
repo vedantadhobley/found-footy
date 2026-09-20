@@ -4,6 +4,7 @@ package test_test
 
 import (
 	"os"
+	"os/exec"
 	"path/filepath"
 	"regexp"
 	"runtime"
@@ -40,6 +41,7 @@ func TestToolchainVersionsArePinned(t *testing.T) {
 		"Dockerfile.dev",
 		"docker/twitter/Dockerfile",
 		"docker/twitter-auth/Dockerfile",
+		"operator-ui/Dockerfile",
 	} {
 		contents := readToolingFile(t, root, name)
 		if !strings.Contains(contents, wantGoImage) {
@@ -57,6 +59,35 @@ func TestToolchainVersionsArePinned(t *testing.T) {
 	}
 	if strings.Contains(devDockerfile, "air@latest") {
 		t.Error("Dockerfile.dev uses a mutable Air version")
+	}
+}
+
+// TestGoScopeFollowsGitAndModuleBoundaries keeps ignored forensic programs out
+// of product gates while requiring every visible nested module to participate.
+func TestGoScopeFollowsGitAndModuleBoundaries(t *testing.T) {
+	root := repositoryRoot(t)
+	modules := runToolingCommand(t, root, "scripts/go-scope.sh", "modules")
+	for _, want := range []string{".", "operator-ui"} {
+		if !linePresent(modules, want) {
+			t.Errorf("Go module %q missing from scope:\n%s", want, modules)
+		}
+	}
+
+	files := runToolingCommand(t, root, "scripts/go-scope.sh", "files")
+	if strings.Contains(files, "scratch-audit-") {
+		t.Errorf("ignored audit file entered Go scope:\n%s", files)
+	}
+	if !linePresent(files, "operator-ui/cmd/operator-ui/main.go") {
+		t.Error("operator UI source is absent from Go scope")
+	}
+
+	rootPackages := runToolingCommand(t, root, "scripts/go-scope.sh", "packages", ".")
+	if strings.Contains(rootPackages, "operator-ui") {
+		t.Errorf("nested module leaked into root packages:\n%s", rootPackages)
+	}
+	operatorPackages := runToolingCommand(t, root, "scripts/go-scope.sh", "packages", "operator-ui")
+	if !linePresent(operatorPackages, "./cmd/operator-ui") {
+		t.Errorf("operator UI command package missing:\n%s", operatorPackages)
 	}
 }
 
@@ -90,6 +121,26 @@ func readToolingFile(t *testing.T, root, name string) string {
 		t.Fatalf("read %s: %v", name, err)
 	}
 	return string(contents)
+}
+
+func runToolingCommand(t *testing.T, root string, name string, args ...string) string {
+	t.Helper()
+	cmd := exec.Command(filepath.Join(root, filepath.FromSlash(name)), args...) // #nosec G204 -- fixed repository script under test.
+	cmd.Dir = root
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("run %s %v: %v\n%s", name, args, err, output)
+	}
+	return string(output)
+}
+
+func linePresent(contents, want string) bool {
+	for _, line := range strings.Split(strings.TrimSpace(contents), "\n") {
+		if line == want {
+			return true
+		}
+	}
+	return false
 }
 
 func makeVariable(t *testing.T, makefile, name string) string {
