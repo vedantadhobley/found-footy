@@ -415,13 +415,15 @@ correction remains authoritative. A dry run reads and prints the exact event,
 workflow identity and candidate allowlist without provisioning Firefox or
 starting Temporal.
 
-Run it from the exact deployed worker image so the command and worker share one
-immutable source identity. Planning is read-only:
+Run it through `scripts/prod-ops.sh`. The wrapper reads both live worker image
+identities, requires them to agree on one immutable tag, and supplies that tag
+to Compose. A bare `docker compose run` resolves `${IMAGE_TAG:-latest}` and can
+silently select a stale local image instead of the deployed release. Planning
+is read-only:
 
 ```bash
-docker compose -f docker-compose.prod.yml run --rm --no-deps \
-  --entrypoint /usr/local/bin/found-footy-ops worker \
-  replay-event --event-id <event-uuid> --operation <stable-slug> --mode recover
+./scripts/prod-ops.sh replay-event \
+  --event-id <event-uuid> --operation <stable-slug> --mode recover
 ```
 
 Applying the same plan inserts a production checklist row, can reset the shown
@@ -429,9 +431,8 @@ transient candidates, provisions an event Firefox container and starts
 Temporal. It requires explicit approval for that exact operation:
 
 ```bash
-docker compose -f docker-compose.prod.yml run --rm --no-deps \
-  --entrypoint /usr/local/bin/found-footy-ops worker \
-  replay-event --event-id <event-uuid> --operation <stable-slug> \
+./scripts/prod-ops.sh replay-event \
+  --event-id <event-uuid> --operation <stable-slug> \
   --mode recover --apply
 ```
 
