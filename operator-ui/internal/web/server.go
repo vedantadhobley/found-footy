@@ -3,6 +3,7 @@ package web
 
 import (
 	"context"
+	"crypto/sha256"
 	"embed"
 	"encoding/json"
 	"errors"
@@ -41,12 +42,13 @@ type ObjectReader interface {
 
 // Server owns HTTP routing without depending on the Found Footy public API.
 type Server struct {
-	repo        Repository
-	objects     ObjectReader
-	hub         *live.Hub
-	environment string
-	log         *slog.Logger
-	handler     http.Handler
+	repo         Repository
+	objects      ObjectReader
+	hub          *live.Hub
+	assetVersion string
+	indexHTML    []byte
+	log          *slog.Logger
+	handler      http.Handler
 }
 
 // New builds the complete operator HTTP surface.
@@ -55,7 +57,22 @@ func New(repo Repository, objects ObjectReader, hub *live.Hub, environment strin
 	if err != nil {
 		return nil, fmt.Errorf("open embedded assets: %w", err)
 	}
-	s := &Server{repo: repo, objects: objects, hub: hub, environment: environment, log: log}
+	assetVersion, err := embeddedAssetVersion(assets)
+	if err != nil {
+		return nil, err
+	}
+	indexHTML, err := fs.ReadFile(assets, "index.html")
+	if err != nil {
+		return nil, fmt.Errorf("read embedded index: %w", err)
+	}
+	indexHTML = []byte(strings.NewReplacer(
+		"{{ENVIRONMENT}}", environment,
+		"{{ASSET_VERSION}}", assetVersion,
+	).Replace(string(indexHTML)))
+	s := &Server{
+		repo: repo, objects: objects, hub: hub,
+		assetVersion: assetVersion, indexHTML: indexHTML, log: log,
+	}
 	mux := http.NewServeMux()
 	mux.Handle("GET /assets/", http.StripPrefix("/assets/", cacheAssets(http.FileServer(http.FS(assets)))))
 	mux.HandleFunc("GET /", s.index)
@@ -68,6 +85,21 @@ func New(repo Repository, objects ObjectReader, hub *live.Hub, environment strin
 	mux.HandleFunc("HEAD /media/{asset_id}", s.media)
 	s.handler = securityHeaders(requestLog(log, mux))
 	return s, nil
+}
+
+// embeddedAssetVersion hashes the browser code and stylesheet into one stable
+// cache key so an HTML refresh cannot combine files from different releases.
+func embeddedAssetVersion(assets fs.FS) (string, error) {
+	hash := sha256.New()
+	for _, name := range []string{"app.css", "app.js"} {
+		body, err := fs.ReadFile(assets, name)
+		if err != nil {
+			return "", fmt.Errorf("read embedded asset %s: %w", name, err)
+		}
+		_, _ = hash.Write([]byte(name))
+		_, _ = hash.Write(body)
+	}
+	return fmt.Sprintf("%x", hash.Sum(nil))[:12], nil
 }
 
 // listFixtures returns bounded fixture summaries with complete nested event
@@ -103,15 +135,9 @@ func (s *Server) index(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
-	body, err := staticFiles.ReadFile("static/index.html")
-	if err != nil {
-		http.Error(w, "embedded UI unavailable", http.StatusInternalServerError)
-		return
-	}
-	body = []byte(strings.ReplaceAll(string(body), "{{ENVIRONMENT}}", s.environment))
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.Header().Set("Cache-Control", "no-store")
-	_, _ = w.Write(body)
+	_, _ = w.Write(s.indexHTML)
 }
 
 // health reports process readiness; startup already proved DB and Garage access.
@@ -287,10 +313,10 @@ func writeError(w http.ResponseWriter, status int, message string) {
 	writeJSON(w, status, map[string]string{"error": message})
 }
 
-// cacheAssets marks content-addressed embedded assets as privately reusable.
+// cacheAssets marks content-versioned embedded assets as privately reusable.
 func cacheAssets(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Cache-Control", "private, max-age=300")
+		w.Header().Set("Cache-Control", "private, max-age=31536000, immutable")
 		next.ServeHTTP(w, r)
 	})
 }

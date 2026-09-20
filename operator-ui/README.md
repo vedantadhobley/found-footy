@@ -67,6 +67,10 @@ metadata, candidate provenance, retained validation, and the latest complete
 selection receipt. Rejected candidates remain visible as audit rows, but their staging
 bytes were never retained and therefore cannot be played.
 
+The no-store HTML document embeds a content-derived version on its JavaScript
+and CSS URLs. Those versioned assets are immutable. A deployment therefore
+cannot combine a new DOM contract with a cached bundle from the prior release.
+
 ## Deployment shape
 
 The two Compose files are independent of the application stack:

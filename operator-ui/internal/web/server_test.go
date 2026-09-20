@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -25,6 +26,34 @@ type fakeRepo struct {
 	detail   model.EventDetail
 	object   model.MediaObject
 	err      error
+}
+
+// TestIndexPinsOneEmbeddedAssetVersion prevents a refreshed document from
+// loading stale JavaScript or CSS left by an earlier deployment.
+func TestIndexPinsOneEmbeddedAssetVersion(t *testing.T) {
+	server := testServer(t, &fakeRepo{}, &fakeObjects{})
+	recorder := httptest.NewRecorder()
+	server.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/", nil))
+	body := recorder.Body.String()
+	for _, path := range []string{"/assets/app.css?v=" + server.assetVersion, "/assets/app.js?v=" + server.assetVersion} {
+		if !strings.Contains(body, path) {
+			t.Fatalf("index does not pin %q: %s", path, body)
+		}
+	}
+	if strings.Contains(body, "{{ASSET_VERSION}}") || recorder.Header().Get("Cache-Control") != "no-store" {
+		t.Fatalf("index cache contract = %q body=%s", recorder.Header().Get("Cache-Control"), body)
+	}
+}
+
+// TestVersionedAssetsAreImmutable permits long browser caching only because
+// the index changes the query key with embedded content.
+func TestVersionedAssetsAreImmutable(t *testing.T) {
+	server := testServer(t, &fakeRepo{}, &fakeObjects{})
+	recorder := httptest.NewRecorder()
+	server.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/assets/app.js?v="+server.assetVersion, nil))
+	if recorder.Code != http.StatusOK || recorder.Header().Get("Cache-Control") != "private, max-age=31536000, immutable" {
+		t.Fatalf("asset response = %d cache=%q", recorder.Code, recorder.Header().Get("Cache-Control"))
+	}
 }
 
 func (f *fakeRepo) ListFixtures(context.Context, model.ListOptions) (model.FixtureList, error) {
