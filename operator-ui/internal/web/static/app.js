@@ -12,7 +12,7 @@
     for (const [key, value] of Object.entries(attrs)) {
       if (key === 'class') out.className = value;
       else if (key === 'text') out.textContent = value;
-      else if (key.startsWith('on')) out.addEventListener(key.slice(2), value);
+      else if (key.startsWith('on')) out.addEventListener(key.slice(2).toLowerCase(), value);
       else out.setAttribute(key, value);
     }
     for (const child of children) out.append(child);
@@ -42,7 +42,7 @@
       const button = node('button', {
         class: `event ${state.selected === event.id ? 'active' : ''}`,
         type: 'button',
-        onClick: () => selectEvent(event.id),
+        onClick: () => selectEvent(event.id).catch(showDetailError),
       }, [
         node('div', { class: 'event-title' }, [node('span', { text: title }), node('span', { text: clock(event) })]),
         node('div', { class: 'event-meta', text: `${event.home_team} – ${event.away_team} · ${event.league_name}` }),
@@ -148,7 +148,9 @@
   async function selectEvent(id) {
     state.selected = id;
     renderEvents();
-    const response = await fetch(`/api/events/${id}`);
+    detailNode.className = 'detail empty';
+    detailNode.replaceChildren(node('p', { class: 'muted', text: 'Loading event evidence…' }));
+    const response = await fetch(`/api/events/${encodeURIComponent(id)}`);
     if (!response.ok) throw new Error(`event ${response.status}`);
     renderDetail(await response.json());
     state.detailDirty = false;
@@ -194,6 +196,10 @@
   moreNode.addEventListener('click', () => { state.offset += state.limit; loadEvents(false).catch(showError); });
   document.addEventListener('visibilitychange', () => { if (!document.hidden) scheduleRefresh(); });
   function showError(error) { eventsNode.replaceChildren(node('p', { class: 'error', text: error.message })); }
+  function showDetailError(error) {
+    detailNode.className = 'detail empty';
+    detailNode.replaceChildren(node('p', { class: 'error', text: `Unable to load event evidence: ${error.message}` }));
+  }
   loadEvents(true).catch(showError);
   connect();
 })();

@@ -81,6 +81,18 @@ func TestEventNotFound(t *testing.T) {
 	}
 }
 
+// TestBrowserNormalizesDOMEventNames prevents onClick from becoming the
+// case-sensitive, non-existent DOM event name "Click".
+func TestBrowserNormalizesDOMEventNames(t *testing.T) {
+	body, err := staticFiles.ReadFile("static/app.js")
+	if err != nil {
+		t.Fatalf("read app.js: %v", err)
+	}
+	if !bytes.Contains(body, []byte("key.slice(2).toLowerCase()")) {
+		t.Fatal("DOM event helper does not normalize event names")
+	}
+}
+
 // TestMediaForwardsRange verifies browser seeking remains inside the UI proxy.
 func TestMediaForwardsRange(t *testing.T) {
 	assetID := uuid.NewString()
