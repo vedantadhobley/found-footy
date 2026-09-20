@@ -282,6 +282,70 @@ docker run --rm -i --network none --memory 4g --cpus 4 \
 The mode is mutually exclusive with every other report mode. See the
 [September 19 evidence](../../docs/design/audits/video-presentation-planning-2026-09-19.md).
 
+## Exhaustive direct-coverage sweep
+
+`-coverage-sweep-json` tests the presentation planner against every independently
+qualifying direct offset under the existing 12/30/3 and 16/50/5 matcher routes.
+It does not weaken those routes, follow a transitive graph path, or infer that
+two clips are equivalent because they share a component. Each qualified offset
+is segmented with the aligned-section rules below, and section spans are merged
+on the candidate's own timeline.
+
+The report compares two populations at every tolerance:
+
+- all playable selected roots, which tests whether coverage could replace the
+  current support rule; and
+- roots already eligible under FF-078, which tests coverage as a later
+  redundancy decision.
+
+Quality remains a separate gate. A selected clip can cover a candidate only if
+it also retains every known technical signal within the existing 90% floor.
+This prevents a lower-quality presentation from hiding a sharper copy merely
+because their content aligns. Direct support still decides weak-singleton
+eligibility; it does not choose the first clip or prove redundancy.
+
+`full_section_span` means the complete candidate timeline is contained in
+qualified section spans. It does not mean every individual hash is identical:
+a section may contain the aligned-section report's explicit brief misses. The
+other sweep rows add bounded uncovered edge and interior allowances on top of
+that definition. Legacy hashes without an explicit sample cadence fail open.
+
+Run the corpus sweep with the same saved CSV used by `-presentation-json`:
+
+```bash
+docker run --rm -i --network none --memory 4g --cpus 4 \
+  -e GOMEMLIMIT=3GiB -e GOMAXPROCS=4 \
+  -e GOCACHE=/gocache -e GOMODCACHE=/gomodcache \
+  -v "$PWD:/src:ro" \
+  -v "$HOME/.cache/found-footy/gocache:/gocache" \
+  -v "$HOME/.cache/found-footy/gomodcache:/gomodcache" \
+  -w /src golang:1.25.11-bookworm \
+  go run -buildvcs=false ./scripts/audit_video_quality \
+  -coverage-sweep-json < /tmp/ff081-corpus.csv \
+  > /tmp/ff081-coverage-sweep.json
+```
+
+`-coverage-pair-json` applies the same pure content measurement in both
+directions to a checked-in pair corpus while preserving its human labels. It
+does not apply the presentation quality gate, because the output is evidence
+about content coverage rather than a keeper verdict:
+
+```bash
+docker run --rm -i --network none --memory 4g --cpus 4 \
+  -e GOMEMLIMIT=3GiB -e GOMAXPROCS=4 \
+  -e GOCACHE=/gocache -e GOMODCACHE=/gomodcache \
+  -v "$PWD:/src:ro" \
+  -v "$HOME/.cache/found-footy/gocache:/gocache" \
+  -v "$HOME/.cache/found-footy/gomodcache:/gomodcache" \
+  -w /src golang:1.25.11-bookworm \
+  go run -buildvcs=false ./scripts/audit_video_quality \
+  -coverage-pair-json \
+  < scripts/audit_video_quality/testdata/reviewed-pairs.json \
+  > /tmp/ff081-coverage-reviewed.json
+```
+
+See the [coverage findings](../../docs/design/audits/video-presentation-planning-2026-09-19.md#direct-coverage-sweep--september-20).
+
 ## Aligned-section report
 
 `-overlap-json` emits one NDJSON record per scoped direct pair from the saved

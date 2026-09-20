@@ -1193,11 +1193,22 @@ the current branch.
   playable hidden roots without a direct selected substitute, confirming that
   FF-078 support pruning is not a redundancy relation. Review evidence is
   recorded in the [quality-first report](./design/audits/video-presentation-planning-2026-09-19.md#september-20-refresh).
+- **Direct-coverage checkpoint (2026-09-20):** Exhaustive direct-offset section
+  mapping confirms that graph coverage belongs after FF-078 eligibility and
+  quality selection. Of 658 currently eligible roots, quality-gated full
+  section-span coverage suppresses seven; allowances through one second add
+  none, while a 1.5-second/10% rule adds only one clip with a 300-ms interior
+  gap. No saved event needs several selected clips to cover one candidate.
+  Human regressions keep both accepted distinct presentations and show Adams's
+  content containment does not decide its preferred presentation. Retain the
+  hard matcher routes, direct-support eligibility, and separation of content
+  coverage from keeper quality. Production remains unchanged. See the
+  [coverage evidence](./design/audits/video-presentation-planning-2026-09-19.md#direct-coverage-sweep--september-20).
 - **Next:** Review the eight bounded primary candidates, the two long Raphinha
-  clips, and representative ambiguous frontiers before accepting a runtime
-  presentation policy. Continue natural restoration and direct-count
-  validation. Do not apply simulated corpus changes as automatic historical
-  repairs.
+  clips, and representative eligibility-filtered ambiguous frontiers before
+  accepting quality-first runtime ordering. The bounded coverage candidate is
+  full direct section-span suppression after eligibility and quality gating;
+  do not add uncovered-footage tolerance or apply simulated historical repairs.
 
 ### FF-082 — retain cadence as independent keeper-quality evidence
 

@@ -42,9 +42,21 @@ func run() error {
 		"compare exclusive assigned support with non-exclusive direct support offline")
 	presentationJSON := flag.Bool("presentation-json", false,
 		"audit quality-first primary selection and graph-aware gap candidates offline")
+	coverageSweepJSON := flag.Bool("coverage-sweep-json", false,
+		"replay quality-first presentation with exhaustive direct-section coverage tolerances")
+	coveragePairJSON := flag.Bool("coverage-pair-json", false,
+		"measure exhaustive direct-section coverage for a reviewed-pair JSON corpus")
 	flag.Parse()
+	if err := validateCoverageSweepFlags(*coverageSweepJSON, *presentationJSON, *reviewCSV, *overlapJSON,
+		*pairCorpus, *restorationJSON, *popularityJSON, *directSupportJSON, *coveragePairJSON); err != nil {
+		return err
+	}
+	if err := validateCoveragePairFlags(*coveragePairJSON, *coverageSweepJSON, *presentationJSON, *reviewCSV,
+		*overlapJSON, *pairCorpus, *restorationJSON, *popularityJSON, *directSupportJSON); err != nil {
+		return err
+	}
 	if err := validatePresentationFlags(*presentationJSON, *reviewCSV, *overlapJSON, *pairCorpus,
-		*restorationJSON, *popularityJSON, *directSupportJSON); err != nil {
+		*restorationJSON, *popularityJSON, *directSupportJSON, *coverageSweepJSON); err != nil {
 		return err
 	}
 	if err := validateDirectSupportFlags(*directSupportJSON, *popularityJSON, *restorationJSON, *reviewCSV, *overlapJSON, *pairCorpus); err != nil {
@@ -61,6 +73,9 @@ func run() error {
 	}
 	if *pairCorpus {
 		return writePairCorpusOverlapJSON(os.Stdout, os.Stdin)
+	}
+	if *coveragePairJSON {
+		return writeCoveragePairJSON(os.Stdout, os.Stdin)
 	}
 	if *maxPermutations < 1 {
 		return fmt.Errorf("max-permutations must be positive")
@@ -81,6 +96,9 @@ func run() error {
 	}
 	if *presentationJSON {
 		return writePresentationJSON(os.Stdout, assets)
+	}
+	if *coverageSweepJSON {
+		return writeCoverageSweepJSON(os.Stdout, assets)
 	}
 	if *restorationJSON {
 		return writeRestorationJSON(os.Stdout, assets, *maxPermutations)

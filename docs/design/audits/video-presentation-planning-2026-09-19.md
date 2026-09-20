@@ -109,6 +109,59 @@ changes. Metadata does not detect every presentation defect. The 34 ambiguous
 cases prove why one weighted quality score would be misleading: a technically
 stronger short cut often competes with a longer contextual clip.
 
+## Direct coverage sweep — September 20
+
+The follow-up experiment exhaustively evaluated every direct offset that
+independently passes the existing production matcher. It then merged qualified
+aligned-section spans on each candidate's own 100-ms timeline. It never used a
+transitive path. Suppression also required the covering selected clip to retain
+the candidate's known technical quality within the existing 90% floor.
+
+This separates the final three decisions:
+
+1. FF-078 direct support establishes whether a weak singleton is eligible.
+2. Reliability and the technical-plus-context frontier choose a first clip
+   only when one candidate is unambiguous.
+3. A later eligible clip is redundant only when a technically sufficient
+   selected clip directly covers its complete section-span timeline.
+
+The refreshed snapshot produced:
+
+| Measure | Result |
+|---|---:|
+| Playable selected roots | 1,022 |
+| Current FF-078-eligible roots | 658 |
+| Clear primary events across all roots | 454 |
+| Ambiguous primary events across all roots | 64 |
+| Clear primary events after eligibility | 486 |
+| Ambiguous primary events after eligibility | 32 |
+| Eligible roots after full section-span coverage | 651 |
+| Eligible roots suppressed by full section-span coverage | 7 |
+| Extra suppressions through 1 s / 10% uncovered allowance | 0 |
+| Extra suppressions at 1.5 s / 10% allowance | 1 |
+| Suppressions requiring the union of several selected clips | 0 |
+
+The sole wider-tolerance addition left a 300-ms unsupported interior gap. The
+snapshot gives no reason to accept that risk. `full_section_span` is therefore
+the only supported coverage boundary today. It already allows the section
+segmenter's explicit brief misses—at most two consecutive 100-ms samples in a
+section with at least 80% similar hashes—but permits no uncovered timeline
+outside those section spans.
+
+The checked-in human corpora preserve the same boundary. Neither accepted
+`keep_both` case is covered. The accepted Adams short copy is fully covered by
+the longer copy in content terms, while the user prefers the shorter copy's
+presentation. That is direct evidence that coverage cannot choose quality.
+Most older accepted-collapse edits have no current dHash edge at all because
+crop, overlay, or presentation changes exceed the matcher; exhaustive section
+mapping cannot invent that missing relation.
+
+Consequently, the hard 12/30/3 and 16/50/5 routes remain the admission gate for
+graph edges. Exhaustive mapping belongs after that gate. It can safely remove a
+small number of proven redundant eligible roots, but it cannot replace FF-078
+or solve crop/overlay matching. Direct support remains recurrence/confidence,
+not a quality score or coverage proxy. Production remains unchanged.
+
 ## Raphinha 25′ case
 
 Event `ad17841a-04d4-4cfb-960c-34b0d47e350e` currently exposes one root:
@@ -155,7 +208,8 @@ stand in for a replacement edge.
 ## Next evidence
 
 Review the eight unique-frontier primary candidates and representative members
-of the 34 ambiguous cases. Review the two long Raphinha clips against the full
-720p sequence. Use those labels to decide whether the standalone frontier is a
-runtime gate, whether effective cadence is required, and what direct-cover
-condition may replace FF-078's event-global singleton suppression.
+of the 32 eligibility-filtered ambiguous cases. Review the two long Raphinha
+clips against the full 720p sequence. Use those labels to decide whether the
+standalone frontier is a runtime ordering gate. Keep FF-078 eligibility and the
+strict matcher routes; the next runtime candidate is quality-first ordering
+followed by quality-gated full section-span suppression.
