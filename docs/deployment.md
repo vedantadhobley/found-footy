@@ -41,7 +41,7 @@ joins the existing `found-footy-prod` and `proxy` networks to read PostgreSQL
 and Garage and serve `found-footy-prod-ui.<BASE_DOMAIN>`; it does not join NATS
 or `luv-prod`. Its dev twin uses `found-footy-dev` and `proxy`. Starting either
 UI is explicit and independent of application deployment. Production source
-commit `f558f62` is deployed at the internal-only
+commit `96cbc1f` is deployed at the internal-only
 `found-footy-prod-ui.<BASE_DOMAIN>` route. Its application container remains
 separate and can be replaced without recreating any Found Footy API, worker,
 Twitter, database, Garage, or Temporal container.

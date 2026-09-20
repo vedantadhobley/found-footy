@@ -126,3 +126,8 @@ health, and event-list routes returned HTTP 200 through
 `found-footy-prod-ui.luv`; the container reported healthy with zero restarts, a
 read-only root filesystem, and the 256 MiB cap. Existing Found Footy production
 containers were not recreated or restarted.
+
+The same day, commit `96cbc1f` corrected DOM event-name normalization and added
+detail loading/error states. A disposable Firefox loaded the live internal UI,
+clicked an event, and observed the event-detail header and asset projection.
+Only `found-footy-prod-ui` was replaced; application containers were unchanged.
