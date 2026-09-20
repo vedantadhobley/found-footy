@@ -79,6 +79,31 @@ shows that FF-078's event-global support threshold is not direct redundancy
 evidence. A stricter visibility policy needs an explicit substitute edge or a
 separate product choice to hide independent presentations.
 
+## September 20 refresh
+
+The same read-only experiment was rerun after the MLS recovery and ordinary
+retention. The playable snapshot now contains 518 events, including 242 with
+multiple selected roots. FF-078 hides 364 roots across 195 events; 360 of those
+hidden roots still have no direct selected substitute. Thirty-six current
+primaries are technically dominated, while eight have one standalone frontier
+candidate and remain the bounded review queue:
+
+- D. Lukebakio 16′, AC Milan–Benfica;
+- Fernando Niño Rodríguez 26′, Espanyol–Elche;
+- Natan Bernardo de Souza 43′, Villarreal–Real Betis;
+- L. Ugochukwu 87′, Trabzonspor–Galatasaray;
+- Jörgen Strand Larsen 37′, Crystal Palace–Middlesbrough;
+- Fabián Ruiz 87′, Paris Saint Germain–Slovan Bratislava;
+- F. Medina 74′, Bayer Leverkusen–Celje; and
+- Benjamin Šeško 45′, Manchester United–Sabah FA.
+
+The lower retained counts are not a longitudinal quality change: reclaimed
+objects leave SQL evidence but are outside this playable-media experiment. The
+eight-case result remains stable. No production selection or visibility policy
+changed. The independent operator UI now presents fixture → event → MD5
+evidence and distinguishes a selected graph root from a currently visible,
+ranked public clip so these labels can be collected without inspecting SQL.
+
 The eight unique-frontier cases are review candidates, not safe production
 changes. Metadata does not detect every presentation defect. The 34 ambiguous
 cases prove why one weighted quality score would be misleading: a technically

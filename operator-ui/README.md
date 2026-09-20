@@ -47,13 +47,21 @@ forced reads remain authoritative.
 ## Surfaces
 
 - `GET /` — embedded browser application
-- `GET /api/events` — paginated/filterable event summaries
+- `GET /api/fixtures` — paginated/filterable fixtures with complete nested event membership
+- `GET /api/events` — legacy paginated event summaries retained for diagnostics
 - `GET /api/events/{event_id}` — all retained event evidence
 - `GET /media/{asset_id}` — database-resolved Garage proxy with HTTP Range support
 - `GET /stream` — refresh-only SSE stream
 - `GET /healthz` — container readiness
 
-The event detail includes hidden/shareless variants, superseded variants,
+The browser follows a fixture → event → retained-variant hierarchy, matching
+the public product's match-level navigation without importing its code or
+presentation contract. Fixture pagination never splits one match across pages.
+The event detail distinguishes graph-selected roots from clips currently
+visible through FF-078 and shows their derived public rank. The module mirrors
+the producer's `3`/`1` visibility constants locally to preserve its removable
+dependency boundary; a policy change must update both values. It also includes
+hidden/shareless variants, superseded variants,
 reclaimed SQL evidence, direct support, exact and routed observations, video
 metadata, candidate provenance, retained validation, and the latest complete
 selection receipt. Rejected candidates remain visible as audit rows, but their staging

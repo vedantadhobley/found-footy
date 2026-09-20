@@ -28,6 +28,7 @@ var staticFiles embed.FS
 
 // Repository is the UI's read-only projection boundary.
 type Repository interface {
+	ListFixtures(context.Context, model.ListOptions) (model.FixtureList, error)
 	ListEvents(context.Context, model.ListOptions) (model.EventList, error)
 	EventDetail(context.Context, string) (model.EventDetail, error)
 	MediaObject(context.Context, string) (model.MediaObject, error)
@@ -59,6 +60,7 @@ func New(repo Repository, objects ObjectReader, hub *live.Hub, environment strin
 	mux.Handle("GET /assets/", http.StripPrefix("/assets/", cacheAssets(http.FileServer(http.FS(assets)))))
 	mux.HandleFunc("GET /", s.index)
 	mux.HandleFunc("GET /healthz", s.health)
+	mux.HandleFunc("GET /api/fixtures", s.listFixtures)
 	mux.HandleFunc("GET /api/events", s.listEvents)
 	mux.HandleFunc("GET /api/events/{event_id}", s.eventDetail)
 	mux.HandleFunc("GET /stream", s.stream)
@@ -66,6 +68,30 @@ func New(repo Repository, objects ObjectReader, hub *live.Hub, environment strin
 	mux.HandleFunc("HEAD /media/{asset_id}", s.media)
 	s.handler = securityHeaders(requestLog(log, mux))
 	return s, nil
+}
+
+// listFixtures returns bounded fixture summaries with complete nested event
+// membership. Filters choose fixtures; they never remove sibling events.
+func (s *Server) listFixtures(w http.ResponseWriter, r *http.Request) {
+	limit := boundedInt(r.URL.Query().Get("limit"), 50, 1, 100)
+	offset := boundedInt(r.URL.Query().Get("offset"), 0, 0, 100_000)
+	eventType := r.URL.Query().Get("type")
+	switch eventType {
+	case "", "goal", "card", "missed penalty":
+	default:
+		writeError(w, http.StatusBadRequest, "invalid event type")
+		return
+	}
+	result, err := s.repo.ListFixtures(r.Context(), model.ListOptions{
+		Query: strings.TrimSpace(r.URL.Query().Get("q")), EventType: eventType,
+		OnlyWithAssets: r.URL.Query().Get("with_assets") == "true", Limit: limit, Offset: offset,
+	})
+	if err != nil {
+		s.log.Error("list fixtures failed", "error", err)
+		writeError(w, http.StatusInternalServerError, "database query failed")
+		return
+	}
+	writeJSON(w, http.StatusOK, result)
 }
 
 // ServeHTTP implements http.Handler.

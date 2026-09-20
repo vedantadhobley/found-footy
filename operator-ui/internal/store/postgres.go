@@ -17,6 +17,14 @@ import (
 // ErrNotFound means the requested event or media asset does not exist.
 var ErrNotFound = errors.New("operator store: not found")
 
+const (
+	// These mirror the producer's current FF-078 public-read policy. The
+	// operator module cannot import the application domain package without
+	// violating its removable-module boundary.
+	publicVisibilityThreshold = 3
+	publicSingletonSupport    = 1
+)
+
 // Store owns a small read-only pool. It contains no mutating SQL methods.
 type Store struct {
 	pool *pgxpool.Pool
@@ -48,6 +56,79 @@ func New(ctx context.Context, dsn string, maxConns int32) (*Store, error) {
 
 // Close releases the operator pool.
 func (s *Store) Close() { s.pool.Close() }
+
+// ListFixtures returns fixture-level review rows. Filters decide which
+// fixtures qualify, then the result includes every event from each selected
+// fixture so the operator always retains match context.
+func (s *Store) ListFixtures(ctx context.Context, opts model.ListOptions) (model.FixtureList, error) {
+	rows, err := s.pool.Query(ctx, `
+		WITH matched AS (
+			SELECT f.id,count(*) OVER() AS total
+			FROM fixtures f
+			WHERE EXISTS (
+				SELECT 1 FROM events matched_event
+				WHERE matched_event.fixture_id=f.id
+				  AND ($1='' OR lower(concat_ws(' ',matched_event.player_name,matched_event.team_name,
+					  f.home_team_name,f.away_team_name,f.league_name,matched_event.detail)) LIKE '%'||lower($1)||'%')
+				  AND ($2='' OR matched_event.event_type::text=$2)
+				  AND (NOT $3 OR EXISTS(SELECT 1 FROM video_assets matched_asset WHERE matched_asset.event_id=matched_event.id))
+			)
+			ORDER BY COALESCE(f.last_activity_at,f.kickoff) DESC,f.id DESC
+			LIMIT $4 OFFSET $5
+		)
+		SELECT f.id,f.state::text,f.api_status_short,f.kickoff,
+			f.home_team_name,f.away_team_name,COALESCE(f.home_score,-1),COALESCE(f.away_score,-1),
+			f.league_name,f.league_country,f.league_round,f.last_activity_at,matched.total,
+			e.id::text,e.event_type::text,e.detail,COALESCE(e.player_name,''),e.team_name,
+			e.minute,COALESCE(e.extra,-1),e.first_seen_at,e.removed,
+			(SELECT count(*) FROM video_assets a WHERE a.event_id=e.id),
+			(SELECT count(*) FROM video_assets a WHERE a.event_id=e.id AND a.object_reclaimed_at IS NULL),
+			(SELECT count(*) FROM video_assets a WHERE a.event_id=e.id AND a.superseded_by IS NULL),
+			(SELECT count(*) FROM event_search_candidates c WHERE c.event_id=e.id)
+		FROM matched
+		JOIN fixtures f ON f.id=matched.id
+		JOIN events e ON e.fixture_id=f.id
+		ORDER BY COALESCE(f.last_activity_at,f.kickoff) DESC,f.id DESC,
+			e.minute DESC,e.extra DESC NULLS LAST,e.first_seen_at DESC,e.id DESC`,
+		opts.Query, opts.EventType, opts.OnlyWithAssets, opts.Limit, opts.Offset)
+	if err != nil {
+		return model.FixtureList{}, fmt.Errorf("list fixtures: %w", err)
+	}
+	defer rows.Close()
+	out := model.FixtureList{Fixtures: make([]model.FixtureSummary, 0), Limit: opts.Limit, Offset: opts.Offset}
+	var current *model.FixtureSummary
+	for rows.Next() {
+		var fixture model.FixtureSummary
+		var event model.EventSummary
+		if err := rows.Scan(
+			&fixture.ID, &fixture.State, &fixture.StatusShort, &fixture.Kickoff,
+			&fixture.HomeTeam, &fixture.AwayTeam, &fixture.HomeScore, &fixture.AwayScore,
+			&fixture.LeagueName, &fixture.LeagueCountry, &fixture.LeagueRound,
+			&fixture.LastActivityAt, &out.Total,
+			&event.ID, &event.EventType, &event.Detail, &event.PlayerName, &event.TeamName,
+			&event.Minute, &event.Extra, &event.FirstSeenAt, &event.Removed,
+			&event.AssetCount, &event.PlayableAssets, &event.RootCount, &event.CandidateCount,
+		); err != nil {
+			return model.FixtureList{}, fmt.Errorf("scan fixture list: %w", err)
+		}
+		if current == nil || current.ID != fixture.ID {
+			fixture.Events = make([]model.EventSummary, 0)
+			out.Fixtures = append(out.Fixtures, fixture)
+			current = &out.Fixtures[len(out.Fixtures)-1]
+		}
+		event.FixtureID, event.FixtureState, event.Kickoff = current.ID, current.State, current.Kickoff
+		event.HomeTeam, event.AwayTeam, event.LeagueName = current.HomeTeam, current.AwayTeam, current.LeagueName
+		current.Events = append(current.Events, event)
+		current.EventCount++
+		current.AssetCount += event.AssetCount
+		current.PlayableAssets += event.PlayableAssets
+		current.CandidateCount += event.CandidateCount
+	}
+	if err := rows.Err(); err != nil {
+		return model.FixtureList{}, fmt.Errorf("iterate fixture list: %w", err)
+	}
+	return out, nil
+}
 
 // ListEvents returns recent trackable events with retained-media counts.
 func (s *Store) ListEvents(ctx context.Context, opts model.ListOptions) (model.EventList, error) {
@@ -149,6 +230,29 @@ func (s *Store) EventDetail(ctx context.Context, eventID string) (model.EventDet
 // loadAssets reads every accepted variant, including shareless and superseded assets.
 func (s *Store) loadAssets(ctx context.Context, eventID string) ([]model.Asset, error) {
 	rows, err := s.pool.Query(ctx, `
+		WITH live AS (
+			SELECT s.event_id,s.asset_id,s.id AS share_id,s.timestamp_verified,
+				a.popularity,a.file_size_bytes,s.created_at
+			FROM video_shares s
+			JOIN video_assets a ON a.id=s.asset_id
+			WHERE s.event_id=$1 AND s.state='active' AND a.superseded_by IS NULL
+			  AND a.object_reclaimed_at IS NULL
+		), evidence AS (
+			SELECT event_id,
+				COALESCE(BOOL_OR(timestamp_verified AND popularity >= $2),FALSE) AS has_verified_threshold,
+				COALESCE(BOOL_OR(NOT timestamp_verified AND popularity >= $2),FALSE) AS has_unverified_threshold
+			FROM live GROUP BY event_id
+		), visible AS (
+			SELECT live.* FROM live JOIN evidence USING (event_id)
+			WHERE live.popularity <> $3
+			   OR NOT (evidence.has_verified_threshold OR (NOT live.timestamp_verified AND evidence.has_unverified_threshold))
+		), ranked AS (
+			SELECT asset_id,ROW_NUMBER() OVER (
+				PARTITION BY event_id ORDER BY timestamp_verified DESC,popularity DESC,
+					file_size_bytes DESC,created_at,share_id
+			)::int AS rank
+			FROM visible
+		)
 		SELECT a.id::text,encode(a.md5,'hex'),a.hash_version,octet_length(a.frame_hashes)/8,
 			a.width,a.height,a.duration_ms,a.file_size_bytes,COALESCE(a.bitrate,0),COALESCE(a.frame_rate,0),
 			a.popularity,
@@ -156,12 +260,15 @@ func (s *Store) loadAssets(ctx context.Context, eventID string) ([]model.Asset, 
 			(SELECT count(*) FROM event_search_candidates c WHERE c.credited_asset_id=a.id),
 			COALESCE(a.superseded_by::text,''),a.first_seen_at,a.object_reclaimed_at,
 			COALESCE(sh.id,''),COALESCE(sh.state::text,''),COALESCE(sh.timestamp_verified,false),
-			COALESCE(sh.extracted_minute,-1),
+			COALESCE(sh.extracted_minute,-1),COALESCE(ranked.rank,0),
 			COALESCE((SELECT v.evidence FROM video_asset_validations v WHERE v.asset_id=a.id ORDER BY v.recorded_at,v.id LIMIT 1),'{}'::jsonb)
 		FROM video_assets a
 		LEFT JOIN video_shares sh ON sh.asset_id=a.id AND sh.event_id=a.event_id
+		LEFT JOIN ranked ON ranked.asset_id=a.id
 		WHERE a.event_id=$1
-		ORDER BY (a.superseded_by IS NULL) DESC,a.popularity DESC,a.width*a.height DESC,a.duration_ms DESC,a.first_seen_at`, eventID)
+		ORDER BY (ranked.rank IS NOT NULL) DESC,ranked.rank,
+			(a.superseded_by IS NULL) DESC,a.popularity DESC,a.width*a.height DESC,a.duration_ms DESC,a.first_seen_at`,
+		eventID, publicVisibilityThreshold, publicSingletonSupport)
 	if err != nil {
 		return nil, fmt.Errorf("load assets: %w", err)
 	}
@@ -175,7 +282,7 @@ func (s *Store) loadAssets(ctx context.Context, eventID string) ([]model.Asset, 
 			&asset.Width, &asset.Height, &asset.DurationMS, &asset.FileSizeBytes, &asset.Bitrate, &asset.FrameRate,
 			&asset.Popularity, &asset.ExactObservations, &asset.RoutedObservations,
 			&asset.SupersededBy, &asset.FirstSeenAt, &asset.ReclaimedAt,
-			&asset.ShareID, &asset.ShareState, &asset.TimestampVerified, &asset.ExtractedMinute, &validation,
+			&asset.ShareID, &asset.ShareState, &asset.TimestampVerified, &asset.ExtractedMinute, &asset.CurrentRank, &validation,
 		); err != nil {
 			return nil, fmt.Errorf("scan asset: %w", err)
 		}
@@ -183,7 +290,8 @@ func (s *Store) loadAssets(ctx context.Context, eventID string) ([]model.Asset, 
 			asset.Validation = json.RawMessage(validation)
 		}
 		asset.Playable = asset.ReclaimedAt == nil
-		asset.PublicRoot = asset.SupersededBy == "" && asset.ShareState == "active"
+		asset.SelectedRoot = asset.SupersededBy == ""
+		asset.CurrentVisible = asset.CurrentRank > 0
 		assets = append(assets, asset)
 	}
 	if err := rows.Err(); err != nil {

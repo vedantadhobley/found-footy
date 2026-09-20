@@ -1186,6 +1186,13 @@ the current branch.
   dHash anchor and remain manual-review evidence. Support does not choose
   quality, direct containment never follows a transitive path, and no runtime
   behavior changes.
+- **Review-surface checkpoint (2026-09-20):** A fresh read-only corpus after
+  normal retention still yields eight bounded primary-change candidates. The
+  operator UI is now fixture-first and distinguishes selected roots, hidden
+  roots, current public visibility and derived rank. The refresh found 360
+  playable hidden roots without a direct selected substitute, confirming that
+  FF-078 support pruning is not a redundancy relation. Review evidence is
+  recorded in the [quality-first report](./design/audits/video-presentation-planning-2026-09-19.md#september-20-refresh).
 - **Next:** Review the eight bounded primary candidates, the two long Raphinha
   clips, and representative ambiguous frontiers before accepting a runtime
   presentation policy. Continue natural restoration and direct-count

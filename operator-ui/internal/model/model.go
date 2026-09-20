@@ -14,6 +14,36 @@ type EventList struct {
 	Offset int            `json:"offset"`
 }
 
+// FixtureList is one paginated fixture-level operator result. Every returned
+// fixture includes all of its events so pagination never splits one match.
+type FixtureList struct {
+	Fixtures []FixtureSummary `json:"fixtures"`
+	Total    int              `json:"total"`
+	Limit    int              `json:"limit"`
+	Offset   int              `json:"offset"`
+}
+
+// FixtureSummary supplies match context and the event evidence nested under it.
+type FixtureSummary struct {
+	ID             int64          `json:"id"`
+	State          string         `json:"state"`
+	StatusShort    string         `json:"status_short"`
+	Kickoff        time.Time      `json:"kickoff"`
+	HomeTeam       string         `json:"home_team"`
+	AwayTeam       string         `json:"away_team"`
+	HomeScore      int            `json:"home_score"`
+	AwayScore      int            `json:"away_score"`
+	LeagueName     string         `json:"league_name"`
+	LeagueCountry  string         `json:"league_country"`
+	LeagueRound    string         `json:"league_round"`
+	EventCount     int            `json:"event_count"`
+	AssetCount     int            `json:"asset_count"`
+	PlayableAssets int            `json:"playable_assets"`
+	CandidateCount int            `json:"candidate_count"`
+	LastActivityAt *time.Time     `json:"last_activity_at,omitempty"`
+	Events         []EventSummary `json:"events"`
+}
+
 // EventSummary supplies enough fixture and media state for the event browser.
 type EventSummary struct {
 	ID             string    `json:"id"`
@@ -86,11 +116,13 @@ type Asset struct {
 	ReclaimedAt        *time.Time      `json:"reclaimed_at,omitempty"`
 	ShareID            string          `json:"share_id,omitempty"`
 	ShareState         string          `json:"share_state,omitempty"`
+	CurrentRank        int             `json:"current_rank,omitempty"`
 	TimestampVerified  bool            `json:"timestamp_verified"`
 	ExtractedMinute    int             `json:"extracted_minute"`
 	Validation         json.RawMessage `json:"validation,omitempty"`
 	Playable           bool            `json:"playable"`
-	PublicRoot         bool            `json:"public_root"`
+	SelectedRoot       bool            `json:"selected_root"`
+	CurrentVisible     bool            `json:"current_visible"`
 }
 
 // Candidate records one searched tweet and its terminal result.

@@ -1,9 +1,9 @@
 // Found Footy operator browser: fetch authoritative reads and apply SSE invalidations.
 (() => {
-  const state = { events: [], total: 0, offset: 0, limit: 100, selected: null, refreshTimer: null, detailDirty: false };
-  const eventsNode = document.querySelector('#events');
+  const state = { fixtures: [], total: 0, offset: 0, limit: 50, selected: null, expandedFixture: null, refreshTimer: null, detailDirty: false };
+  const fixturesNode = document.querySelector('#fixtures');
   const detailNode = document.querySelector('#detail');
-  const countNode = document.querySelector('#event-count');
+  const countNode = document.querySelector('#fixture-count');
   const moreNode = document.querySelector('#load-more');
   const connectionNode = document.querySelector('#connection');
 
@@ -34,31 +34,73 @@
 
   function pill(text, kind = '') { return node('span', { class: `pill ${kind}`, text }); }
 
-  function renderEvents() {
-    eventsNode.replaceChildren();
-    countNode.textContent = `${state.total} events · ${state.events.length} loaded`;
-    for (const event of state.events) {
-      const title = event.player_name || event.detail || event.event_type;
-      const button = node('button', {
-        class: `event ${state.selected === event.id ? 'active' : ''}`,
-        type: 'button',
-        onClick: () => selectEvent(event.id).catch(showDetailError),
-      }, [
-        node('div', { class: 'event-title' }, [node('span', { text: title }), node('span', { text: clock(event) })]),
-        node('div', { class: 'event-meta', text: `${event.home_team} – ${event.away_team} · ${event.league_name}` }),
-        node('div', { class: 'pill-row' }, [
-          pill(`${event.asset_count} MD5`, event.asset_count ? 'good' : 'warn'),
-          pill(`${event.playable_assets} playable`),
-          pill(`${event.candidate_count} sources`),
-          ...(event.removed ? [pill('removed', 'bad')] : []),
-        ]),
-      ]);
-      eventsNode.append(button);
-    }
-    moreNode.classList.toggle('hidden', state.events.length >= state.total);
+  function fixtureScore(fixture) {
+    const home = fixture.home_score < 0 ? '–' : fixture.home_score;
+    const away = fixture.away_score < 0 ? '–' : fixture.away_score;
+    return `${home} : ${away}`;
   }
 
-  async function loadEvents(reset = true) {
+  function fixtureMeta(fixture) {
+    const kickoff = new Date(fixture.kickoff).toLocaleString([], { dateStyle: 'medium', timeStyle: 'short' });
+    return [fixture.league_name, fixture.league_round, kickoff].filter(Boolean).join(' · ');
+  }
+
+  function eventButton(event) {
+    const title = event.player_name || event.detail || event.event_type;
+    return node('button', {
+      class: `fixture-event ${state.selected === event.id ? 'active' : ''}`,
+      type: 'button',
+      onClick: () => selectEvent(event.id).catch(showDetailError),
+    }, [
+      node('div', { class: 'event-title' }, [node('span', { text: title }), node('span', { text: clock(event) })]),
+      node('div', { class: 'pill-row' }, [
+        pill(`${event.asset_count} MD5`, event.asset_count ? 'good' : 'warn'),
+        pill(`${event.playable_assets} playable`),
+        pill(`${event.candidate_count} sources`),
+        ...(event.removed ? [pill('removed', 'bad')] : []),
+      ]),
+    ]);
+  }
+
+  function renderFixtures() {
+    fixturesNode.replaceChildren();
+    countNode.textContent = `${state.total} fixtures · ${state.fixtures.length} loaded`;
+    for (const fixture of state.fixtures) {
+      const expanded = state.expandedFixture === fixture.id;
+      const selectedHere = fixture.events.some(event => event.id === state.selected);
+      const header = node('button', {
+        class: `fixture-head ${selectedHere ? 'selected' : ''}`,
+        type: 'button',
+        'aria-expanded': String(expanded),
+        onClick: () => {
+          state.expandedFixture = expanded ? null : fixture.id;
+          renderFixtures();
+        },
+      }, [
+        node('div', { class: 'fixture-chevron', text: expanded ? '▾' : '▸' }),
+        node('div', { class: 'fixture-main' }, [
+          node('div', { class: 'fixture-teams' }, [
+            node('span', { text: fixture.home_team }),
+            node('span', { text: fixture.away_team }),
+          ]),
+          node('div', { class: 'fixture-meta', text: fixtureMeta(fixture) }),
+          node('div', { class: 'pill-row' }, [
+            pill(fixture.status_short || fixture.state, fixture.state === 'active' ? 'good' : ''),
+            pill(`${fixture.event_count} events`),
+            pill(`${fixture.asset_count} MD5`),
+            pill(`${fixture.candidate_count} sources`),
+          ]),
+        ]),
+        node('div', { class: 'fixture-score', text: fixtureScore(fixture) }),
+      ]);
+      const events = node('div', { class: `fixture-events ${expanded ? '' : 'hidden'}` });
+      for (const event of fixture.events) events.append(eventButton(event));
+      fixturesNode.append(node('article', { class: `fixture ${selectedHere ? 'active' : ''}` }, [header, events]));
+    }
+    moreNode.classList.toggle('hidden', state.fixtures.length >= state.total);
+  }
+
+  async function loadFixtures(reset = true) {
     if (reset) state.offset = 0;
     const params = new URLSearchParams({ limit: String(state.limit), offset: String(state.offset) });
     const query = document.querySelector('#query').value.trim();
@@ -66,12 +108,12 @@
     if (query) params.set('q', query);
     if (eventType) params.set('type', eventType);
     if (document.querySelector('#with-assets').checked) params.set('with_assets', 'true');
-    const response = await fetch(`/api/events?${params}`);
-    if (!response.ok) throw new Error(`events ${response.status}`);
+    const response = await fetch(`/api/fixtures?${params}`);
+    if (!response.ok) throw new Error(`fixtures ${response.status}`);
     const body = await response.json();
-    state.events = reset ? body.events : state.events.concat(body.events);
+    state.fixtures = reset ? body.fixtures : state.fixtures.concat(body.fixtures);
     state.total = body.total;
-    renderEvents();
+    renderFixtures();
   }
 
   function stat(label, value) {
@@ -80,7 +122,7 @@
 
   function renderAsset(asset, index) {
     const badges = [
-      pill(asset.public_root ? 'public root' : (asset.superseded_by ? 'superseded' : 'hidden root'), asset.public_root ? 'good' : 'warn'),
+      pill(asset.current_visible ? `public rank ${asset.current_rank}` : (asset.superseded_by ? 'superseded' : (asset.selected_root ? 'hidden selected root' : 'hidden variant')), asset.current_visible ? 'good' : 'warn'),
       pill(`support ${asset.direct_support}`), pill(`exact ${asset.exact_observations}`),
       ...(asset.timestamp_verified ? [pill(`clock ${asset.extracted_minute}`, 'good')] : [pill('clock unverified', 'warn')]),
       ...(asset.reclaimed_at ? [pill('reclaimed', 'bad')] : []),
@@ -109,7 +151,7 @@
       body.append(node('details', {}, [node('summary', { text: 'Validation evidence' }), node('pre', { text: JSON.stringify(asset.validation, null, 2) })]));
     }
     children.push(body);
-    return node('article', { class: `asset ${asset.public_root ? 'public' : ''}` }, children);
+    return node('article', { class: `asset ${asset.current_visible ? 'public' : ''}` }, children);
   }
 
   function renderCandidate(candidate) {
@@ -147,7 +189,10 @@
 
   async function selectEvent(id) {
     state.selected = id;
-    renderEvents();
+    for (const fixture of state.fixtures) {
+      if (fixture.events.some(event => event.id === id)) state.expandedFixture = fixture.id;
+    }
+    renderFixtures();
     detailNode.className = 'detail empty';
     detailNode.replaceChildren(node('p', { class: 'muted', text: 'Loading event evidence…' }));
     const response = await fetch(`/api/events/${encodeURIComponent(id)}`);
@@ -168,7 +213,7 @@
     clearTimeout(state.refreshTimer);
     state.refreshTimer = setTimeout(async () => {
       try {
-        await loadEvents(true);
+        await loadFixtures(true);
         if (state.selected && videoIsPlaying()) {
           state.detailDirty = true;
           connectionNode.textContent = 'live · update pending while video plays';
@@ -191,15 +236,15 @@
 
   document.querySelector('#filters').addEventListener('input', () => {
     clearTimeout(state.refreshTimer);
-    state.refreshTimer = setTimeout(() => loadEvents(true).catch(showError), 200);
+    state.refreshTimer = setTimeout(() => loadFixtures(true).catch(showError), 200);
   });
-  moreNode.addEventListener('click', () => { state.offset += state.limit; loadEvents(false).catch(showError); });
+  moreNode.addEventListener('click', () => { state.offset += state.limit; loadFixtures(false).catch(showError); });
   document.addEventListener('visibilitychange', () => { if (!document.hidden) scheduleRefresh(); });
-  function showError(error) { eventsNode.replaceChildren(node('p', { class: 'error', text: error.message })); }
+  function showError(error) { fixturesNode.replaceChildren(node('p', { class: 'error', text: error.message })); }
   function showDetailError(error) {
     detailNode.className = 'detail empty';
     detailNode.replaceChildren(node('p', { class: 'error', text: `Unable to load event evidence: ${error.message}` }));
   }
-  loadEvents(true).catch(showError);
+  loadFixtures(true).catch(showError);
   connect();
 })();

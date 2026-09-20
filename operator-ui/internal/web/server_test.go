@@ -20,10 +20,15 @@ import (
 )
 
 type fakeRepo struct {
-	list   model.EventList
-	detail model.EventDetail
-	object model.MediaObject
-	err    error
+	fixtures model.FixtureList
+	list     model.EventList
+	detail   model.EventDetail
+	object   model.MediaObject
+	err      error
+}
+
+func (f *fakeRepo) ListFixtures(context.Context, model.ListOptions) (model.FixtureList, error) {
+	return f.fixtures, f.err
 }
 
 func (f *fakeRepo) ListEvents(context.Context, model.ListOptions) (model.EventList, error) {
@@ -70,6 +75,16 @@ func TestListEvents(t *testing.T) {
 	}
 }
 
+// TestListFixtures returns complete fixture-level navigation rows.
+func TestListFixtures(t *testing.T) {
+	repo := &fakeRepo{fixtures: model.FixtureList{Fixtures: []model.FixtureSummary{{ID: 123}}, Total: 1, Limit: 50}}
+	recorder := httptest.NewRecorder()
+	testServer(t, repo, &fakeObjects{}).ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/api/fixtures", nil))
+	if recorder.Code != http.StatusOK || !bytes.Contains(recorder.Body.Bytes(), []byte(`"fixtures":[{"id":123`)) {
+		t.Fatalf("response = %d %s", recorder.Code, recorder.Body.String())
+	}
+}
+
 // TestEventNotFound preserves a real 404 instead of returning an empty shell.
 func TestEventNotFound(t *testing.T) {
 	repo := &fakeRepo{err: store.ErrNotFound}
@@ -90,6 +105,24 @@ func TestBrowserNormalizesDOMEventNames(t *testing.T) {
 	}
 	if !bytes.Contains(body, []byte("key.slice(2).toLowerCase()")) {
 		t.Fatal("DOM event helper does not normalize event names")
+	}
+}
+
+// TestBrowserUsesFixtureHierarchy keeps the review surface fixture-first and
+// prevents event pagination from splitting one match across browser pages.
+func TestBrowserUsesFixtureHierarchy(t *testing.T) {
+	body, err := staticFiles.ReadFile("static/app.js")
+	if err != nil {
+		t.Fatalf("read app.js: %v", err)
+	}
+	for _, required := range [][]byte{
+		[]byte("fetch(`/api/fixtures?${params}`)"),
+		[]byte("fixture.events"),
+		[]byte("state.expandedFixture"),
+	} {
+		if !bytes.Contains(body, required) {
+			t.Fatalf("fixture-first browser contract missing %q", required)
+		}
 	}
 }
 

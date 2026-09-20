@@ -21,7 +21,7 @@ h1, h2, h3, p { margin-top: 0; }
 h1 { margin-bottom: 0; font-size: 24px; }
 .connection { color: var(--warn); font-size: 13px; }
 .connection.live { color: var(--accent); }
-.layout { display: grid; grid-template-columns: minmax(290px, 360px) 1fr; min-height: calc(100vh - 87px); }
+.layout { display: grid; grid-template-columns: minmax(340px, 430px) 1fr; min-height: calc(100vh - 87px); }
 .sidebar { border-right: 1px solid var(--line); padding: 16px; overflow: auto; max-height: calc(100vh - 87px); }
 .filters { display: grid; gap: 10px; margin-bottom: 14px; }
 label { color: var(--muted); font-size: 12px; display: grid; gap: 5px; }
@@ -29,9 +29,19 @@ input, select { color: var(--text); background: var(--panel); border: 1px solid 
 .check { display: flex; align-items: center; gap: 8px; }
 .check input { margin: 0; }
 .muted { color: var(--muted); font-size: 12px; }
-.events { display: grid; gap: 7px; margin-top: 10px; }
-.event { width: 100%; text-align: left; color: inherit; background: var(--panel); border: 1px solid transparent; border-radius: 9px; padding: 11px; cursor: pointer; }
-.event:hover, .event.active { border-color: var(--accent); background: var(--panel-2); }
+.fixtures { display: grid; gap: 8px; margin-top: 10px; }
+.fixture { color: inherit; background: var(--panel); border: 1px solid transparent; border-radius: 9px; overflow: hidden; }
+.fixture:hover, .fixture.active { border-color: var(--accent); }
+.fixture-head { width: 100%; display: grid; grid-template-columns: 14px minmax(0, 1fr) auto; gap: 9px; align-items: start; text-align: left; color: inherit; background: transparent; border: 0; padding: 11px; cursor: pointer; }
+.fixture-head:hover, .fixture-head.selected { background: var(--panel-2); }
+.fixture-chevron { color: var(--accent); padding-top: 2px; }
+.fixture-main { min-width: 0; }
+.fixture-teams { display: grid; gap: 2px; font-weight: 650; }
+.fixture-meta { color: var(--muted); font-size: 11px; margin-top: 5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.fixture-score { font-size: 18px; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.fixture-events { border-top: 1px solid var(--line); padding: 6px; display: grid; gap: 5px; }
+.fixture-event { width: 100%; text-align: left; color: inherit; background: #0f1311; border: 1px solid transparent; border-radius: 7px; padding: 9px 10px 9px 32px; cursor: pointer; }
+.fixture-event:hover, .fixture-event.active { border-color: var(--accent); background: var(--panel-2); }
 .event-title { display: flex; justify-content: space-between; gap: 8px; font-weight: 650; }
 .event-meta { color: var(--muted); font-size: 12px; margin-top: 5px; }
 .pill-row { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 8px; }
