@@ -1,4 +1,4 @@
-// Package web serves the removable operator UI, its read API, SSE, and media proxy.
+// Package web serves the removable operator UI, its read API, and media proxy.
 package web
 
 import (
@@ -18,7 +18,6 @@ import (
 
 	"github.com/google/uuid"
 
-	"github.com/vedantadhobley/found-footy-operator-ui/internal/live"
 	"github.com/vedantadhobley/found-footy-operator-ui/internal/media"
 	"github.com/vedantadhobley/found-footy-operator-ui/internal/model"
 	"github.com/vedantadhobley/found-footy-operator-ui/internal/store"
@@ -44,7 +43,6 @@ type ObjectReader interface {
 type Server struct {
 	repo         Repository
 	objects      ObjectReader
-	hub          *live.Hub
 	assetVersion string
 	indexHTML    []byte
 	log          *slog.Logger
@@ -52,7 +50,7 @@ type Server struct {
 }
 
 // New builds the complete operator HTTP surface.
-func New(repo Repository, objects ObjectReader, hub *live.Hub, environment string, log *slog.Logger) (*Server, error) {
+func New(repo Repository, objects ObjectReader, environment string, log *slog.Logger) (*Server, error) {
 	assets, err := fs.Sub(staticFiles, "static")
 	if err != nil {
 		return nil, fmt.Errorf("open embedded assets: %w", err)
@@ -70,7 +68,7 @@ func New(repo Repository, objects ObjectReader, hub *live.Hub, environment strin
 		"{{ASSET_VERSION}}", assetVersion,
 	).Replace(string(indexHTML)))
 	s := &Server{
-		repo: repo, objects: objects, hub: hub,
+		repo: repo, objects: objects,
 		assetVersion: assetVersion, indexHTML: indexHTML, log: log,
 	}
 	mux := http.NewServeMux()
@@ -80,7 +78,6 @@ func New(repo Repository, objects ObjectReader, hub *live.Hub, environment strin
 	mux.HandleFunc("GET /api/fixtures", s.listFixtures)
 	mux.HandleFunc("GET /api/events", s.listEvents)
 	mux.HandleFunc("GET /api/events/{event_id}", s.eventDetail)
-	mux.HandleFunc("GET /stream", s.stream)
 	mux.HandleFunc("GET /media/{asset_id}", s.media)
 	mux.HandleFunc("HEAD /media/{asset_id}", s.media)
 	s.handler = securityHeaders(requestLog(log, mux))
@@ -187,39 +184,6 @@ func (s *Server) eventDetail(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, detail)
-}
-
-// stream pushes refresh invalidations; the browser always refetches authoritative state.
-func (s *Server) stream(w http.ResponseWriter, r *http.Request) {
-	flusher, ok := w.(http.Flusher)
-	if !ok {
-		writeError(w, http.StatusInternalServerError, "streaming unsupported")
-		return
-	}
-	w.Header().Set("Content-Type", "text/event-stream")
-	w.Header().Set("Cache-Control", "no-cache")
-	w.Header().Set("X-Accel-Buffering", "no")
-	updates, unsubscribe := s.hub.Subscribe()
-	defer unsubscribe()
-	_, _ = io.WriteString(w, "event: refresh\ndata: initial\n\n")
-	flusher.Flush()
-	heartbeat := time.NewTicker(20 * time.Second)
-	defer heartbeat.Stop()
-	for {
-		select {
-		case <-r.Context().Done():
-			return
-		case _, open := <-updates:
-			if !open {
-				return
-			}
-			_, _ = io.WriteString(w, "event: refresh\ndata: changed\n\n")
-			flusher.Flush()
-		case <-heartbeat.C:
-			_, _ = io.WriteString(w, ": heartbeat\n\n")
-			flusher.Flush()
-		}
-	}
 }
 
 // media proxies a database-resolved Garage object and supports browser byte ranges.

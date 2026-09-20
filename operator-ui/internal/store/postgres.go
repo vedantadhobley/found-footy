@@ -364,22 +364,3 @@ func (s *Store) MediaObject(ctx context.Context, assetID string) (model.MediaObj
 	}
 	return object, nil
 }
-
-// ChangeToken reads PostgreSQL's cumulative mutation counters for the seven
-// operator-visible tables. This avoids repeatedly scanning application data.
-// Statistics may flush late or reset at server restart; either changes the
-// token, while the watcher's forced authoritative resync covers delayed stats.
-func (s *Store) ChangeToken(ctx context.Context) (string, error) {
-	var token string
-	err := s.pool.QueryRow(ctx, `SELECT COALESCE(string_agg(
-		relname||':'||n_tup_ins||':'||n_tup_upd||':'||n_tup_del,'|' ORDER BY relname),'')
-		FROM pg_stat_user_tables
-		WHERE relname=ANY(ARRAY[
-			'fixtures','events','video_assets','video_asset_validations',
-			'video_selection_commits','video_shares','event_search_candidates'
-		])`).Scan(&token)
-	if err != nil {
-		return "", fmt.Errorf("load change token: %w", err)
-	}
-	return token, nil
-}

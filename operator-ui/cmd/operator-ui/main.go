@@ -13,7 +13,6 @@ import (
 	"time"
 
 	"github.com/vedantadhobley/found-footy-operator-ui/internal/config"
-	"github.com/vedantadhobley/found-footy-operator-ui/internal/live"
 	"github.com/vedantadhobley/found-footy-operator-ui/internal/media"
 	"github.com/vedantadhobley/found-footy-operator-ui/internal/store"
 	"github.com/vedantadhobley/found-footy-operator-ui/internal/web"
@@ -34,7 +33,7 @@ func main() {
 	}
 }
 
-// run wires the independent read stores, change watcher, and HTTP server.
+// run wires the independent read stores and HTTP server.
 func run(log *slog.Logger) error {
 	cfg, err := config.Load()
 	if err != nil {
@@ -52,13 +51,7 @@ func run(log *slog.Logger) error {
 	if err != nil {
 		return err
 	}
-	hub := live.NewHub()
-	watcher := live.Watcher{
-		Source: repo, Hub: hub, PollInterval: cfg.PollInterval, ResyncInterval: cfg.ResyncInterval,
-		OnError: func(err error) { log.Error("database change poll failed", "error", err) },
-	}
-	go watcher.Run(ctx)
-	handler, err := web.New(repo, objects, hub, cfg.Environment, log)
+	handler, err := web.New(repo, objects, cfg.Environment, log)
 	if err != nil {
 		return err
 	}

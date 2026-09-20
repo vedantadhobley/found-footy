@@ -7,49 +7,38 @@ import (
 	"os"
 	"strconv"
 	"strings"
-	"time"
 )
 
 // Config contains only the database, object-store, and HTTP settings used by
 // the operator UI. It intentionally does not load the Found Footy app config.
 type Config struct {
-	Environment    string
-	HTTPAddr       string
-	PollInterval   time.Duration
-	ResyncInterval time.Duration
-	PGDSN          string
-	PGMaxConns     int32
-	S3Endpoint     string
-	S3Bucket       string
-	S3Region       string
-	S3AccessKey    string
-	S3SecretKey    string
-	S3PathStyle    bool
+	Environment string
+	HTTPAddr    string
+	PGDSN       string
+	PGMaxConns  int32
+	S3Endpoint  string
+	S3Bucket    string
+	S3Region    string
+	S3AccessKey string
+	S3SecretKey string
+	S3PathStyle bool
 }
 
 // Load reads and validates the independent operator UI environment.
 func Load() (Config, error) {
 	c := Config{
-		Environment:    envOr("OPERATOR_UI_ENV", "unknown"),
-		HTTPAddr:       envOr("OPERATOR_UI_HTTP_ADDR", ":8080"),
-		PollInterval:   2 * time.Second,
-		ResyncInterval: 30 * time.Second,
-		PGDSN:          os.Getenv("PG_DSN"),
-		PGMaxConns:     4,
-		S3Endpoint:     os.Getenv("S3_ENDPOINT"),
-		S3Bucket:       os.Getenv("S3_BUCKET"),
-		S3Region:       envOr("S3_REGION", "garage"),
-		S3AccessKey:    os.Getenv("S3_ACCESS_KEY_ID"),
-		S3SecretKey:    os.Getenv("S3_SECRET_ACCESS_KEY"),
-		S3PathStyle:    true,
+		Environment: envOr("OPERATOR_UI_ENV", "unknown"),
+		HTTPAddr:    envOr("OPERATOR_UI_HTTP_ADDR", ":8080"),
+		PGDSN:       os.Getenv("PG_DSN"),
+		PGMaxConns:  4,
+		S3Endpoint:  os.Getenv("S3_ENDPOINT"),
+		S3Bucket:    os.Getenv("S3_BUCKET"),
+		S3Region:    envOr("S3_REGION", "garage"),
+		S3AccessKey: os.Getenv("S3_ACCESS_KEY_ID"),
+		S3SecretKey: os.Getenv("S3_SECRET_ACCESS_KEY"),
+		S3PathStyle: true,
 	}
 	var err error
-	if c.PollInterval, err = durationEnv("OPERATOR_UI_POLL_INTERVAL", c.PollInterval); err != nil {
-		return Config{}, err
-	}
-	if c.ResyncInterval, err = durationEnv("OPERATOR_UI_RESYNC_INTERVAL", c.ResyncInterval); err != nil {
-		return Config{}, err
-	}
 	if c.PGMaxConns, err = int32Env("OPERATOR_UI_PG_MAX_CONNS", c.PGMaxConns); err != nil {
 		return Config{}, err
 	}
@@ -78,12 +67,6 @@ func (c Config) Validate() error {
 	if _, err := url.ParseRequestURI(c.S3Endpoint); err != nil {
 		return fmt.Errorf("S3_ENDPOINT: %w", err)
 	}
-	if c.PollInterval < 250*time.Millisecond || c.PollInterval > time.Minute {
-		return fmt.Errorf("OPERATOR_UI_POLL_INTERVAL must be between 250ms and 1m")
-	}
-	if c.ResyncInterval < c.PollInterval || c.ResyncInterval > 10*time.Minute {
-		return fmt.Errorf("OPERATOR_UI_RESYNC_INTERVAL must be between poll interval and 10m")
-	}
 	if c.PGMaxConns < 1 || c.PGMaxConns > 16 {
 		return fmt.Errorf("OPERATOR_UI_PG_MAX_CONNS must be between 1 and 16")
 	}
@@ -96,19 +79,6 @@ func envOr(name, fallback string) string {
 		return value
 	}
 	return fallback
-}
-
-// durationEnv parses an optional duration value.
-func durationEnv(name string, fallback time.Duration) (time.Duration, error) {
-	raw := os.Getenv(name)
-	if raw == "" {
-		return fallback, nil
-	}
-	value, err := time.ParseDuration(raw)
-	if err != nil {
-		return 0, fmt.Errorf("%s: %w", name, err)
-	}
-	return value, nil
 }
 
 // int32Env parses an optional positive connection limit.

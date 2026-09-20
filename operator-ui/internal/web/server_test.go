@@ -14,7 +14,6 @@ import (
 
 	"github.com/google/uuid"
 
-	"github.com/vedantadhobley/found-footy-operator-ui/internal/live"
 	"github.com/vedantadhobley/found-footy-operator-ui/internal/media"
 	"github.com/vedantadhobley/found-footy-operator-ui/internal/model"
 	"github.com/vedantadhobley/found-footy-operator-ui/internal/store"
@@ -87,7 +86,7 @@ func (f *fakeObjects) Open(_ context.Context, _, _, byteRange string) (media.Obj
 
 func testServer(t *testing.T, repo *fakeRepo, objects *fakeObjects) *Server {
 	t.Helper()
-	server, err := New(repo, objects, live.NewHub(), "test", slog.New(slog.NewTextHandler(io.Discard, nil)))
+	server, err := New(repo, objects, "test", slog.New(slog.NewTextHandler(io.Discard, nil)))
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
@@ -155,29 +154,32 @@ func TestBrowserUsesFixtureHierarchy(t *testing.T) {
 	}
 }
 
-// TestBrowserInvalidationPreservesSelectedEvidence prevents live database
-// invalidations from replacing video elements during operator review.
-func TestBrowserInvalidationPreservesSelectedEvidence(t *testing.T) {
+// TestBrowserRefreshPreservesSelectedEvidence prevents a manual refresh from
+// replacing video elements or changing the selected event during review.
+func TestBrowserRefreshPreservesSelectedEvidence(t *testing.T) {
 	body, err := staticFiles.ReadFile("static/app.js")
 	if err != nil {
 		t.Fatalf("read app.js: %v", err)
 	}
-	start := bytes.Index(body, []byte("function scheduleRefresh()"))
-	end := bytes.Index(body, []byte("function connect()"))
+	start := bytes.Index(body, []byte("async function manualRefresh()"))
+	end := bytes.Index(body, []byte("document.querySelector('#filters')"))
 	if start < 0 || end <= start {
 		t.Fatal("cannot locate refresh implementation")
 	}
 	refresh := body[start:end]
-	if bytes.Contains(refresh, []byte("selectEvent(")) {
-		t.Fatal("database invalidation replaces selected event evidence")
+	if bytes.Contains(refresh, []byte("selectEvent(")) || !bytes.Contains(refresh, []byte("await loadFixtures(true)")) {
+		t.Fatal("manual refresh does not preserve the selected event evidence")
 	}
 	for _, required := range [][]byte{
-		[]byte("markDetailDirty()"),
-		[]byte("refreshDetailNode.addEventListener('click'"),
+		[]byte("refreshNode.addEventListener('click', manualRefresh)"),
+		[]byte("const refreshNode = document.querySelector('#refresh')"),
 	} {
 		if !bytes.Contains(body, required) {
 			t.Fatalf("explicit detail-refresh contract missing %q", required)
 		}
+	}
+	if bytes.Contains(body, []byte("EventSource")) {
+		t.Fatal("manual browser still opens an automatic refresh stream")
 	}
 }
 

@@ -13,7 +13,7 @@ The UI reads the existing contracts directly:
   validation evidence, shares, supersession edges, and selection receipts.
 - Garage supplies retained bytes through a GET-only adapter. Browsers never see
   Garage credentials, internal object keys, or the `garage:3900` hostname.
-- The UI exposes its own private JSON, SSE, and byte-range media routes. These are
+- The UI exposes its own private JSON and byte-range media routes. These are
   operator routes, not additions to Found Footy's public API.
 
 The PostgreSQL pool sets `default_transaction_read_only=on` for every session.
@@ -22,30 +22,14 @@ behavior. The current deployment reuses the application's Garage key because a
 dedicated read-only key has not been provisioned; that is an infrastructure
 hardening option, not an application requirement.
 
-## Live updates
+## Refresh model
 
-There is no NATS dependency. A single Go watcher runs only while at least one
-browser is connected. Every two seconds it reads PostgreSQL's cumulative
-insert/update/delete counters for:
-
-- fixtures and events;
-- assets and accepted validations;
-- immutable selection commits and shares; and
-- candidate discovery/outcomes.
-
-A changed seven-row statistics token produces one coalesced SSE invalidation
-without scanning application tables. Browsers then refetch the authoritative
-fixture list. A selected event is marked stale but its panel is not replaced:
-the operator explicitly refreshes or reselects it after finishing video review.
-This preserves playback position across database changes, pauses, seeking, and
-clip completion. A forced 30-second resync covers delayed/reset PostgreSQL
-statistics, SSE reconnects, and any future mutation source omitted from the
-fast token.
-No polling occurs without a connected browser.
-
-The counters detect updates to fields such as `popularity` and `superseded_by`
-without requiring those tables to grow UI-specific timestamps. Initial and
-forced reads remain authoritative.
+There is no NATS, SSE, watcher, or background-polling dependency. The browser
+loads once and refreshes only when the operator presses the top-bar Refresh
+button or changes a list filter. Refreshing re-runs the fixture query with the
+current search and filter values. It never replaces the selected event panel,
+so the chosen asset, playback position, and play/pause state remain intact.
+Reselecting an event is the explicit action that reloads its detailed evidence.
 
 ## Surfaces
 
@@ -54,7 +38,6 @@ forced reads remain authoritative.
 - `GET /api/events` — legacy paginated event summaries retained for diagnostics
 - `GET /api/events/{event_id}` — all retained event evidence
 - `GET /media/{asset_id}` — database-resolved Garage proxy with HTTP Range support
-- `GET /stream` — refresh-only SSE stream
 - `GET /healthz` — container readiness
 
 The browser follows a fixture → event → retained-variant hierarchy, matching

@@ -1,12 +1,12 @@
-// Found Footy operator browser: fetch authoritative reads and apply SSE invalidations.
+// Found Footy operator browser: fetch authoritative reads without disturbing review state.
 (() => {
-  const state = { fixtures: [], total: 0, offset: 0, limit: 50, selected: null, expandedFixture: null, refreshTimer: null, detailDirty: false };
+  const state = { fixtures: [], total: 0, offset: 0, limit: 50, selected: null, expandedFixture: null, filterTimer: null };
   const fixturesNode = document.querySelector('#fixtures');
   const detailNode = document.querySelector('#detail');
   const countNode = document.querySelector('#fixture-count');
   const moreNode = document.querySelector('#load-more');
   const connectionNode = document.querySelector('#connection');
-  const refreshDetailNode = document.querySelector('#refresh-detail');
+  const refreshNode = document.querySelector('#refresh');
 
   function node(tag, attrs = {}, children = []) {
     const out = document.createElement(tag);
@@ -197,51 +197,34 @@
     const response = await fetch(`/api/events/${encodeURIComponent(id)}`);
     if (!response.ok) throw new Error(`event ${response.status}`);
     renderDetail(await response.json());
-    state.detailDirty = false;
-    refreshDetailNode.classList.add('hidden');
   }
 
-  function markDetailDirty() {
-    if (!state.selected) return;
-    state.detailDirty = true;
-    refreshDetailNode.classList.remove('hidden');
-  }
-
-  function scheduleRefresh() {
-    clearTimeout(state.refreshTimer);
-    state.refreshTimer = setTimeout(async () => {
-      try {
-        await loadFixtures(true);
-        markDetailDirty();
-        if (state.selected) connectionNode.textContent = 'live · selected evidence may have changed';
-      } catch (error) {
-        connectionNode.textContent = `refresh failed: ${error.message}`;
-        connectionNode.classList.remove('live');
-      }
-    }, 150);
-  }
-
-  function connect() {
-    const stream = new EventSource('/stream');
-    stream.addEventListener('open', () => { connectionNode.textContent = 'live · PostgreSQL'; connectionNode.classList.add('live'); });
-    stream.addEventListener('refresh', scheduleRefresh);
-    stream.addEventListener('error', () => { connectionNode.textContent = 'reconnecting'; connectionNode.classList.remove('live'); });
+  async function manualRefresh() {
+    refreshNode.disabled = true;
+    connectionNode.textContent = 'refreshing';
+    connectionNode.classList.remove('live');
+    try {
+      await loadFixtures(true);
+      connectionNode.textContent = `updated ${new Date().toLocaleTimeString([], { hour: 'numeric', minute: '2-digit', second: '2-digit' })}`;
+      connectionNode.classList.add('live');
+    } catch (error) {
+      connectionNode.textContent = `refresh failed: ${error.message}`;
+      connectionNode.classList.remove('live');
+    } finally {
+      refreshNode.disabled = false;
+    }
   }
 
   document.querySelector('#filters').addEventListener('input', () => {
-    clearTimeout(state.refreshTimer);
-    state.refreshTimer = setTimeout(() => loadFixtures(true).catch(showError), 200);
+    clearTimeout(state.filterTimer);
+    state.filterTimer = setTimeout(() => loadFixtures(true).catch(showError), 200);
   });
   moreNode.addEventListener('click', () => { state.offset += state.limit; loadFixtures(false).catch(showError); });
-  refreshDetailNode.addEventListener('click', () => {
-    if (state.selected) selectEvent(state.selected).catch(showDetailError);
-  });
-  document.addEventListener('visibilitychange', () => { if (!document.hidden) scheduleRefresh(); });
+  refreshNode.addEventListener('click', manualRefresh);
   function showError(error) { fixturesNode.replaceChildren(node('p', { class: 'error', text: error.message })); }
   function showDetailError(error) {
     detailNode.className = 'detail empty';
     detailNode.replaceChildren(node('p', { class: 'error', text: `Unable to load event evidence: ${error.message}` }));
   }
-  loadFixtures(true).catch(showError);
-  connect();
+  manualRefresh();
 })();
