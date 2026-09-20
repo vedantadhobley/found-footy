@@ -34,10 +34,13 @@ insert/update/delete counters for:
 - candidate discovery/outcomes.
 
 A changed seven-row statistics token produces one coalesced SSE invalidation
-without scanning application tables. Browsers then
-refetch the authoritative event list and currently open event. A forced 30-second
-resync covers delayed/reset PostgreSQL statistics, SSE reconnects, and any future
-mutation source omitted from the fast token.
+without scanning application tables. Browsers then refetch the authoritative
+fixture list. A selected event is marked stale but its panel is not replaced:
+the operator explicitly refreshes or reselects it after finishing video review.
+This preserves playback position across database changes, pauses, seeking, and
+clip completion. A forced 30-second resync covers delayed/reset PostgreSQL
+statistics, SSE reconnects, and any future mutation source omitted from the
+fast token.
 No polling occurs without a connected browser.
 
 The counters detect updates to fields such as `popularity` and `superseded_by`

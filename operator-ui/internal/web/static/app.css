@@ -21,6 +21,8 @@ h1, h2, h3, p { margin-top: 0; }
 h1 { margin-bottom: 0; font-size: 24px; }
 .connection { color: var(--warn); font-size: 13px; }
 .connection.live { color: var(--accent); }
+.live-controls { display: grid; justify-items: end; gap: 7px; }
+.refresh-detail { border: 1px solid #5b4a2b; background: var(--panel-2); color: var(--warn); border-radius: 7px; padding: 6px 9px; cursor: pointer; }
 .layout { display: grid; grid-template-columns: minmax(340px, 430px) 1fr; min-height: calc(100vh - 87px); }
 .sidebar { border-right: 1px solid var(--line); padding: 16px; overflow: auto; max-height: calc(100vh - 87px); }
 .filters { display: grid; gap: 10px; margin-bottom: 14px; }
@@ -76,6 +78,7 @@ pre { max-height: 340px; overflow: auto; background: #080a09; padding: 10px; bor
 .hidden { display: none; }
 .error { color: var(--bad); }
 @media (max-width: 850px) {
+  .topbar { align-items: flex-start; }
   .layout { display: block; }
   .sidebar, .detail { max-height: none; border-right: 0; }
   .sidebar { border-bottom: 1px solid var(--line); }

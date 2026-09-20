@@ -155,6 +155,32 @@ func TestBrowserUsesFixtureHierarchy(t *testing.T) {
 	}
 }
 
+// TestBrowserInvalidationPreservesSelectedEvidence prevents live database
+// invalidations from replacing video elements during operator review.
+func TestBrowserInvalidationPreservesSelectedEvidence(t *testing.T) {
+	body, err := staticFiles.ReadFile("static/app.js")
+	if err != nil {
+		t.Fatalf("read app.js: %v", err)
+	}
+	start := bytes.Index(body, []byte("function scheduleRefresh()"))
+	end := bytes.Index(body, []byte("function connect()"))
+	if start < 0 || end <= start {
+		t.Fatal("cannot locate refresh implementation")
+	}
+	refresh := body[start:end]
+	if bytes.Contains(refresh, []byte("selectEvent(")) {
+		t.Fatal("database invalidation replaces selected event evidence")
+	}
+	for _, required := range [][]byte{
+		[]byte("markDetailDirty()"),
+		[]byte("refreshDetailNode.addEventListener('click'"),
+	} {
+		if !bytes.Contains(body, required) {
+			t.Fatalf("explicit detail-refresh contract missing %q", required)
+		}
+	}
+}
+
 // TestMediaForwardsRange verifies browser seeking remains inside the UI proxy.
 func TestMediaForwardsRange(t *testing.T) {
 	assetID := uuid.NewString()

@@ -6,6 +6,7 @@
   const countNode = document.querySelector('#fixture-count');
   const moreNode = document.querySelector('#load-more');
   const connectionNode = document.querySelector('#connection');
+  const refreshDetailNode = document.querySelector('#refresh-detail');
 
   function node(tag, attrs = {}, children = []) {
     const out = document.createElement(tag);
@@ -130,8 +131,6 @@
     const children = [];
     if (asset.playable) {
       const video = node('video', { controls: '', preload: 'none', src: `/media/${asset.id}` });
-      video.addEventListener('pause', refreshDirtyDetail);
-      video.addEventListener('ended', refreshDirtyDetail);
       children.push(video);
     } else {
       children.push(node('div', { class: 'empty-state', text: 'Media reclaimed; SQL evidence remains.' }));
@@ -199,14 +198,13 @@
     if (!response.ok) throw new Error(`event ${response.status}`);
     renderDetail(await response.json());
     state.detailDirty = false;
+    refreshDetailNode.classList.add('hidden');
   }
 
-  function videoIsPlaying() {
-    return [...detailNode.querySelectorAll('video')].some(video => !video.paused && !video.ended);
-  }
-
-  function refreshDirtyDetail() {
-    if (state.detailDirty && state.selected && !videoIsPlaying()) selectEvent(state.selected).catch(showError);
+  function markDetailDirty() {
+    if (!state.selected) return;
+    state.detailDirty = true;
+    refreshDetailNode.classList.remove('hidden');
   }
 
   function scheduleRefresh() {
@@ -214,12 +212,8 @@
     state.refreshTimer = setTimeout(async () => {
       try {
         await loadFixtures(true);
-        if (state.selected && videoIsPlaying()) {
-          state.detailDirty = true;
-          connectionNode.textContent = 'live · update pending while video plays';
-        } else if (state.selected) {
-          await selectEvent(state.selected);
-        }
+        markDetailDirty();
+        if (state.selected) connectionNode.textContent = 'live · selected evidence may have changed';
       } catch (error) {
         connectionNode.textContent = `refresh failed: ${error.message}`;
         connectionNode.classList.remove('live');
@@ -239,6 +233,9 @@
     state.refreshTimer = setTimeout(() => loadFixtures(true).catch(showError), 200);
   });
   moreNode.addEventListener('click', () => { state.offset += state.limit; loadFixtures(false).catch(showError); });
+  refreshDetailNode.addEventListener('click', () => {
+    if (state.selected) selectEvent(state.selected).catch(showDetailError);
+  });
   document.addEventListener('visibilitychange', () => { if (!document.hidden) scheduleRefresh(); });
   function showError(error) { fixturesNode.replaceChildren(node('p', { class: 'error', text: error.message })); }
   function showDetailError(error) {
