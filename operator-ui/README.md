@@ -129,3 +129,11 @@ The same day, commit `96cbc1f` corrected DOM event-name normalization and added
 detail loading/error states. A disposable Firefox loaded the live internal UI,
 clicked an event, and observed the event-detail header and asset projection.
 Only `found-footy-prod-ui` was replaced; application containers were unchanged.
+
+On 2026-09-20, commit `1420b93` replaced automatic SSE invalidation with the
+manual top-bar refresh contract after live review showed that background detail
+replacement interrupted clip comparison. The served content-versioned bundle
+contained the manual refresh handler and no `EventSource`; root and health
+requests passed. The UI remained healthy with zero restarts, a read-only root
+filesystem, and its 256 MiB cap. Found Footy's API, workers, Twitter service,
+databases, Garage, and Temporal containers were not recreated.
