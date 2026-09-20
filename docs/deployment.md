@@ -33,6 +33,17 @@ targeting prod. Every command must pass `-f docker-compose.{prod,dev}.yml`.
   fleet's image builder + single fallback, with per-event instances carrying
   the search load.
 
+The read-only [operator video-evidence UI](../operator-ui/README.md) is a
+deliberately separate nested module and companion Compose project under
+`operator-ui/`. It does not add a service to either application Compose file,
+import application Go packages, or alter the public API. Its prod container
+joins the existing `found-footy-prod` and `proxy` networks to read PostgreSQL
+and Garage and serve `found-footy-prod-ui.<BASE_DOMAIN>`; it does not join NATS
+or `luv-prod`. Its dev twin uses `found-footy-dev` and `proxy`. Starting either
+UI is explicit and independent of application deployment. The image and
+read-only live-data smoke test pass, but no persistent UI container or Caddy
+route is deployed yet.
+
 ### Configuration contract
 
 Compose remains the deployment owner: both stacks inject the repository's

@@ -1,0 +1,4 @@
+# Keep the standalone image context limited to source and embedded web assets.
+.git
+coverage.out
+operator-ui

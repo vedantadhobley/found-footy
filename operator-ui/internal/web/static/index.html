@@ -1,0 +1,47 @@
+<!doctype html>
+<!-- Found Footy operator video-evidence browser. -->
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Found Footy · Video Evidence</title>
+  <link rel="stylesheet" href="/assets/app.css">
+</head>
+<body>
+  <header class="topbar">
+    <div>
+      <p class="eyebrow">Found Footy · {{ENVIRONMENT}}</p>
+      <h1>Video evidence</h1>
+    </div>
+    <div id="connection" class="connection">connecting</div>
+  </header>
+
+  <main class="layout">
+    <aside class="sidebar">
+      <form id="filters" class="filters">
+        <label>Search<input id="query" type="search" placeholder="player, team, league"></label>
+        <label>Event
+          <select id="event-type">
+            <option value="">All tracked</option>
+            <option value="goal">Goals</option>
+            <option value="card">Red cards</option>
+            <option value="missed penalty">Missed penalties</option>
+          </select>
+        </label>
+        <label class="check"><input id="with-assets" type="checkbox"> Retained video only</label>
+      </form>
+      <div id="event-count" class="muted"></div>
+      <div id="events" class="events" aria-live="polite"></div>
+      <button id="load-more" class="button hidden" type="button">Load more</button>
+    </aside>
+
+    <section id="detail" class="detail empty">
+      <div class="empty-state">
+        <h2>Select an event</h2>
+        <p>Every retained MD5 variant, including hidden and superseded assets, appears here.</p>
+      </div>
+    </section>
+  </main>
+  <script src="/assets/app.js" defer></script>
+</body>
+</html>

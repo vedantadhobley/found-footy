@@ -45,6 +45,8 @@ decision supersedes an older target design).
 - [`twitter-service.md`](./twitter-service.md) — Playwright search, raw-Firefox login, maintenance, and shared-cookie fleet contract
 - [`testing.md`](./testing.md) — test tiers and git test gates
 - [`deployment.md`](./deployment.md) — compose files + Caddy + first-time bootstrap
+- [Operator video-evidence UI](../operator-ui/README.md) — removable, read-only
+  companion module for retained MD5 review; not part of the public application
 - [`operations.md`](./operations.md) — environment lifecycle, production diagnostics, recovery boundaries, cookie re-auth, and rollout gates
 - [`todo.md`](./todo.md) — canonical active issue register and deferred work
 - [`decisions/`](./decisions/) — **the "why" authority**; individual new records plus the frozen pre-normalization archive
