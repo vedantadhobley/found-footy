@@ -92,6 +92,13 @@ the current branch.
   three active public shares, closed with zero pending candidates, and released
   its scoped Firefox instance. The match-day report now excludes pending work
   while any discovery checklist still owns the event.
+- **Batch recovery evidence:** The approved `mls-recovery-20260919` operation
+  completed sixteen event replays with all 15 usable searches and zero pending
+  candidates per event. Fifteen events surfaced assets; one ended with only
+  deterministic media-shape rejects. The batch selected 158 typed transient
+  candidates, finished with 20 active shares, preserved attempts across twelve
+  unavailable probes, and released every scoped container. See the
+  [production record](./history/mls-recovery-2026-09-20.md).
 
 ### FF-100 — public event presentation still passes through the legacy adapter
 

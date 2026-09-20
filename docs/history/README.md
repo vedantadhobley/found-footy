@@ -5,6 +5,9 @@ preserve sequence and rationale but do not define current behavior or work.
 Use the [`docs` routing index](../README.md) for current ledgers and
 [`todo.md`](../todo.md) for active issues.
 
+- [MLS discovery recovery — September 20 UTC](./mls-recovery-2026-09-20.md)
+  — the approved sixteen-event FF-101 batch, exact clip outcomes, bounded X
+  degradation and staggered model-retry evidence.
 - [Vision V5 rollout — September 18 UTC](./vision-v5-rollout-2026-09-18.md)
   — `e2aa4a9` literal-period/exact-zero deployment, complete release gates,
   healthy startup and the remaining natural-candidate validation boundary.
