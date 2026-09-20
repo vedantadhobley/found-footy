@@ -40,9 +40,11 @@ import application Go packages, or alter the public API. Its prod container
 joins the existing `found-footy-prod` and `proxy` networks to read PostgreSQL
 and Garage and serve `found-footy-prod-ui.<BASE_DOMAIN>`; it does not join NATS
 or `luv-prod`. Its dev twin uses `found-footy-dev` and `proxy`. Starting either
-UI is explicit and independent of application deployment. The image and
-read-only live-data smoke test pass, but no persistent UI container or Caddy
-route is deployed yet.
+UI is explicit and independent of application deployment. Production source
+commit `f558f62` is deployed at the internal-only
+`found-footy-prod-ui.<BASE_DOMAIN>` route. Its application container remains
+separate and can be replaced without recreating any Found Footy API, worker,
+Twitter, database, Garage, or Temporal container.
 
 ### Configuration contract
 
@@ -204,8 +206,9 @@ Caddy routes live centrally at `~/workspace/proxy/caddy/caddy.d/found-footy.cadd
 until the workspace-owned migration changes that contract. The Go read API
 is fronted at `found-footy-<env>-api.<BASE_DOMAIN>` → `reverse_proxy
 found-footy-<env>-api:8081` — the Chi read surface; `:8080` is internal
-metrics/healthz, never exposed. The in-repo `caddy/found-footy.caddy` is the
-documentation copy (not read by Caddy).
+metrics/healthz, never exposed. The production operator surface is fronted at
+`found-footy-prod-ui.<BASE_DOMAIN>` → `found-footy-prod-ui:8080`. The in-repo
+`caddy/found-footy.caddy` is the documentation copy (not read by Caddy).
 
 Every Go binary must bind its configured internal metrics/health address
 before it starts application work (FF-026). Port conflicts fail the container

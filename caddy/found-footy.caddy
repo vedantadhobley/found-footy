@@ -25,6 +25,12 @@
 #     reverse_proxy found-footy-prod-api:8081
 # }
 
+## Read-only internal operator evidence browser. Separate companion Compose
+## project; not part of the public product or application deployment.
+# http://found-footy-prod-ui.{$BASE_DOMAIN} {
+#     reverse_proxy found-footy-prod-ui:8080
+# }
+
 ## Temporal UI.
 # http://found-footy-prod-temporal-ui.{$BASE_DOMAIN} {
 #     reverse_proxy found-footy-prod-temporal-ui:8080

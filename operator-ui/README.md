@@ -3,7 +3,7 @@
 This directory is a removable, internal-only evidence browser. It is a separate
 Go module and container. It imports no Found Footy application package, adds no
 public API route, changes no worker contract, and adds no database object. Delete
-this directory and its external Caddy route to remove the feature.
+this directory and its internal Caddy route to remove the feature.
 
 ## Boundary
 
@@ -79,14 +79,19 @@ docker compose --env-file ../.env -f compose.prod.yml config
 docker compose --env-file ../.env -f compose.prod.yml build
 ```
 
-Starting production remains a separately approved live action. Before rollout:
+Production is deployed at `http://found-footy-prod-ui.<BASE_DOMAIN>`. Its image
+uses the source commit as the tag; deploy a new source revision explicitly:
 
-1. Add `found-footy-prod-ui.<BASE_DOMAIN>` →
-   `reverse_proxy found-footy-prod-ui:8080` to the workspace-owned Caddy config.
-2. Record the 256 MiB cap in dhobley's host memory budget.
-3. Build and validate the exact source commit.
-4. Start this companion Compose project and verify `/healthz`, list reads, SSE,
-   reclaimed media, and byte-range playback.
+```bash
+cd operator-ui
+IMAGE_TAG=<source-commit> docker compose --env-file ../.env -f compose.prod.yml build ui
+IMAGE_TAG=<source-commit> docker compose --env-file ../.env -f compose.prod.yml up -d --no-deps ui
+```
+
+This is a separately approved production action. The companion project must not
+be folded into the application deployment command: creating or replacing the UI
+must never recreate an API, worker, Twitter, database, Garage, or Temporal
+container.
 
 The dev stack is currently down. Its named volumes remain, but its external
 `found-footy-dev` network must exist before starting `compose.dev.yml`.
@@ -114,3 +119,10 @@ evidence, a Garage request returned a correct `206` 1 KiB byte range, and an SSE
 client received natural database-change refreshes. The temporary container was
 then removed. The replacement `pg_stat_user_tables` token query was separately
 verified read-only against production after the smoke run.
+
+On 2026-09-19, source commit `f558f62` was deployed persistently as
+`found-footy-prod-ui` and the workspace Caddy route was hot-reloaded. The root,
+health, and event-list routes returned HTTP 200 through
+`found-footy-prod-ui.luv`; the container reported healthy with zero restarts, a
+read-only root filesystem, and the 256 MiB cap. Existing Found Footy production
+containers were not recreated or restarted.
