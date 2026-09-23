@@ -9,6 +9,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 
@@ -124,6 +125,38 @@ func TestAssetRepo_InsertIdempotentAndBump(t *testing.T) {
 
 	if err := assets.AddPopularity(ctx, uuid.New(), 1); err != video.ErrNotFound {
 		t.Errorf("AddPopularity on missing = %v, want ErrNotFound", err)
+	}
+}
+
+func TestAssetRepo_MediaIdentityIsUniqueOnlyWithinEvent(t *testing.T) {
+	pool, _, assets, _, fixtureID, eventID := setupPlacementRepo(t)
+	fingerprint := video.MediaFingerprintVersion + ":" + strings.Repeat("a", 64)
+	a := newAsset(eventID, fixtureID, "media-one", []uint64{1}, 1000)
+	a.MediaFingerprint = fingerprint
+	if inserted, err := assets.InsertAsset(t.Context(), a); err != nil || !inserted {
+		t.Fatalf("first media asset inserted=%v err=%v", inserted, err)
+	}
+	got, err := assets.Get(t.Context(), a.ID)
+	if err != nil || got.MediaFingerprint != fingerprint {
+		t.Fatalf("fingerprint round-trip asset=%+v err=%v", got, err)
+	}
+	b := newAsset(eventID, fixtureID, "media-two", []uint64{2}, 1000)
+	b.MediaFingerprint = fingerprint
+	if _, err := assets.InsertAsset(t.Context(), b); err == nil {
+		t.Fatal("same event stored two assets for one media fingerprint")
+	}
+
+	otherEvent := uuid.New()
+	if _, err := pool.Exec(t.Context(), `
+		INSERT INTO events (id, fixture_id, natural_key, event_type, detail, team_id, team_name, minute)
+		VALUES ($1,$2,'placement_goal_2','goal','Normal Goal',40,'Liverpool',72)
+	`, otherEvent, fixtureID); err != nil {
+		t.Fatal(err)
+	}
+	c := newAsset(otherEvent, fixtureID, "media-three", []uint64{3}, 1000)
+	c.MediaFingerprint = fingerprint
+	if inserted, err := assets.InsertAsset(t.Context(), c); err != nil || !inserted {
+		t.Fatalf("other event must keep its own asset: inserted=%v err=%v", inserted, err)
 	}
 }
 

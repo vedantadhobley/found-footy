@@ -65,10 +65,11 @@ type PlacementCandidateInput struct {
 	Evidence discoverycontract.CandidateEvidence
 	Outcome  discoverycontract.CandidateOutcome
 	Detail   json.RawMessage
+	RawMD5   string `json:"RawMD5,omitempty"`
 }
 
 // CommitClipPlacementInput is one complete post-dedup placement. CaptureVariant
-// retains the accepted distinct MD5 even when it loses to WinnerAssetID.
+// retains the accepted distinct media variant even when it loses to WinnerAssetID.
 // NewWinner selects that observed variant as the public root. Losers consolidate
 // within the same transaction.
 type CommitClipPlacementInput struct {
@@ -80,19 +81,21 @@ type CommitClipPlacementInput struct {
 	LoserAssetIDs  []uuid.UUID
 	Candidates     []PlacementCandidateInput
 
-	StagingKey      string
-	MD5             string
-	HashVersion     dvideo.FrameHashVersion
-	FrameHashes     []uint64
-	Width, Height   int
-	DurationMS      int
-	FileSizeBytes   int64
-	Bitrate         *int
-	FrameRate       *float64
-	Verified        bool
-	ExtractedMinute *int
-	Validation      *dvision.Evidence        `json:"Validation,omitempty"`
-	Selection       *PlacementSelectionInput `json:"Selection,omitempty"`
+	StagingKey           string
+	MD5                  string
+	MediaFingerprint     string    `json:"MediaFingerprint,omitempty"`
+	ReuseObservedAssetID uuid.UUID `json:"ReuseObservedAssetID,omitempty"`
+	HashVersion          dvideo.FrameHashVersion
+	FrameHashes          []uint64
+	Width, Height        int
+	DurationMS           int
+	FileSizeBytes        int64
+	Bitrate              *int
+	FrameRate            *float64
+	Verified             bool
+	ExtractedMinute      *int
+	Validation           *dvision.Evidence        `json:"Validation,omitempty"`
+	Selection            *PlacementSelectionInput `json:"Selection,omitempty"`
 }
 
 // CommitClipPlacementOutput identifies either the canonical public winner or a
@@ -145,6 +148,7 @@ func (a *PersistActivities) CommitClipPlacement(ctx context.Context, in CommitCl
 	for _, candidate := range in.Candidates {
 		placement.Candidates = append(placement.Candidates, dvideo.PlacementCandidate{
 			Evidence: candidate.Evidence, Outcome: candidate.Outcome, Detail: candidate.Detail,
+			RawMD5: candidate.RawMD5,
 		})
 	}
 	var selectionSnapshot *dvideo.SelectionSnapshot
@@ -157,7 +161,20 @@ func (a *PersistActivities) CommitClipPlacement(ctx context.Context, in CommitCl
 	}
 
 	var destinationKey string
-	if in.NewWinner || in.CaptureVariant {
+	if in.ReuseObservedAssetID != uuid.Nil {
+		if !in.CaptureVariant || in.NewWinner || in.WinnerAssetID == uuid.Nil || in.MediaFingerprint == "" {
+			return out, fmt.Errorf("video.CommitClipPlacement: invalid media asset reuse")
+		}
+		observed, err := a.Assets.Get(ctx, in.ReuseObservedAssetID)
+		if err != nil {
+			return out, fmt.Errorf("video.CommitClipPlacement: read reused media asset: %w", err)
+		}
+		if observed.EventID != in.EventID || observed.FixtureID != in.FixtureID ||
+			observed.MediaFingerprint != in.MediaFingerprint {
+			return out, fmt.Errorf("video.CommitClipPlacement: reused media asset differs from event or fingerprint")
+		}
+		placement.ObservedAssetID = observed.ID
+	} else if in.NewWinner || in.CaptureVariant {
 		md5Bytes, err := hex.DecodeString(in.MD5)
 		if err != nil {
 			return out, fmt.Errorf("video.CommitClipPlacement: bad md5 %q: %w", in.MD5, err)
@@ -196,6 +213,7 @@ func (a *PersistActivities) CommitClipPlacement(ctx context.Context, in CommitCl
 			asset.ID = assetID
 			asset.Bitrate = in.Bitrate
 			asset.FrameRate = in.FrameRate
+			asset.MediaFingerprint = in.MediaFingerprint
 			if in.NewWinner {
 				placement.Winner = asset
 				placement.WinnerAssetID = uuid.Nil
@@ -277,6 +295,9 @@ func validateObservedAsset(
 		existing.S3Key != key || !bytes.Equal(existing.MD5, md5Bytes) {
 		return fmt.Errorf("observed variant identity mismatch")
 	}
+	if existing.MediaFingerprint != "" && in.MediaFingerprint != "" && existing.MediaFingerprint != in.MediaFingerprint {
+		return fmt.Errorf("observed variant media fingerprint mismatch")
+	}
 	if len(in.FrameHashes) == 0 {
 		return nil
 	}
@@ -322,30 +343,33 @@ type LoadEventAssetsInput struct {
 // its live asset. It contains exactly the fields the in-memory dedup
 // pipeline needs after an abnormal EventWorkflow restart.
 type RestoredEventAsset struct {
-	AssetID       uuid.UUID
-	MD5           string
-	HashVersion   dvideo.FrameHashVersion
-	FrameHashes   []uint64
-	Width         int
-	Height        int
-	DurationMS    int
-	FileSizeBytes int64
-	Bitrate       *int
-	FrameRate     *float64
-	Popularity    int
-	Verified      bool
+	AssetID          uuid.UUID
+	MD5              string
+	MediaFingerprint string `json:"MediaFingerprint,omitempty"`
+	HashVersion      dvideo.FrameHashVersion
+	FrameHashes      []uint64
+	Width            int
+	Height           int
+	DurationMS       int
+	FileSizeBytes    int64
+	Bitrate          *int
+	FrameRate        *float64
+	Popularity       int
+	Verified         bool
 }
 
-// RestoredExactAlias maps a persisted exact-byte variant to the live asset
+// RestoredExactAlias maps a persisted exact-media variant to the live asset
 // that currently represents it. Superseded variants remain useful dedup
 // evidence after their own asset leaves the public set.
 type RestoredExactAlias struct {
-	MD5     string
-	AssetID uuid.UUID
+	MD5              string
+	MediaFingerprint string `json:"MediaFingerprint,omitempty"`
+	AssetID          uuid.UUID
+	ObservedAssetID  uuid.UUID `json:"ObservedAssetID,omitempty"`
 }
 
 // LoadEventAssetsOutput returns the event's live durable dedup state and the
-// exact-byte aliases needed to resolve retired variants to that state.
+// exact-media aliases needed to resolve retired variants to that state.
 type LoadEventAssetsOutput struct {
 	Assets       []RestoredEventAsset
 	ExactAliases []RestoredExactAlias
@@ -353,9 +377,9 @@ type LoadEventAssetsOutput struct {
 
 // LoadEventAssets restores the durable portion of EventWorkflow's in-memory
 // state. Shares arrive in current-evidence order; assets include every accepted
-// MD5 variant. Only active, unsuperseded assets re-enter the perceptual matcher;
+// media variant. Only active, unsuperseded assets re-enter the perceptual matcher;
 // every accepted asset whose supersession chain terminates at one of those live
-// assets contributes an exact-byte alias. A corrupt supersession cycle fails
+// assets contributes an exact-media alias. A corrupt supersession cycle fails
 // closed instead of hanging recovery.
 func (a *PersistActivities) LoadEventAssets(ctx context.Context, in LoadEventAssetsInput) (LoadEventAssetsOutput, error) {
 	var out LoadEventAssetsOutput
@@ -416,7 +440,8 @@ func (a *PersistActivities) LoadEventAssets(ctx context.Context, in LoadEventAss
 		live[asset.ID] = struct{}{}
 		out.Assets = append(out.Assets, RestoredEventAsset{
 			AssetID: asset.ID, MD5: hex.EncodeToString(asset.MD5),
-			HashVersion: asset.FrameHashVersion, FrameHashes: asset.FrameHashes,
+			MediaFingerprint: asset.MediaFingerprint,
+			HashVersion:      asset.FrameHashVersion, FrameHashes: asset.FrameHashes,
 			Width: asset.Width, Height: asset.Height, DurationMS: asset.DurationMS,
 			FileSizeBytes: asset.FileSizeBytes, Bitrate: asset.Bitrate, FrameRate: asset.FrameRate,
 			Popularity: asset.Popularity, Verified: share.TimestampVerified,
@@ -446,7 +471,8 @@ func (a *PersistActivities) LoadEventAssets(ctx context.Context, in LoadEventAss
 		}
 		seenMD5[md5Hex] = struct{}{}
 		out.ExactAliases = append(out.ExactAliases, RestoredExactAlias{
-			MD5: md5Hex, AssetID: root.ID,
+			MD5: md5Hex, MediaFingerprint: asset.MediaFingerprint,
+			AssetID: root.ID, ObservedAssetID: asset.ID,
 		})
 	}
 	return out, nil

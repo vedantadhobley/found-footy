@@ -111,6 +111,8 @@ const (
 	ff093AcceptedValidationVersion    = workflow.Version(1)
 	ff081ReversibleSelectionChangeID  = "ff-081-reversible-selection"
 	ff081ReversibleSelectionVersion   = workflow.Version(1)
+	mediaIdentityChangeID             = "event-scoped-media-identity-v1"
+	mediaIdentityVersion              = workflow.Version(1)
 
 	// Pre-FF-061 histories retain FF-017's roughly 0/10/30/60 activity retry
 	// chain for replay compatibility. New histories use one activity attempt
@@ -317,6 +319,8 @@ func EventWorkflow(ctx workflow.Context, in EventWorkflowInput) (EventWorkflowOu
 		workflow.DefaultVersion, ff093AcceptedValidationVersion) != workflow.DefaultVersion
 	reversibleSelection := workflow.GetVersion(ctx, ff081ReversibleSelectionChangeID,
 		workflow.DefaultVersion, ff081ReversibleSelectionVersion) != workflow.DefaultVersion
+	mediaIdentity := workflow.GetVersion(ctx, mediaIdentityChangeID,
+		workflow.DefaultVersion, mediaIdentityVersion) != workflow.DefaultVersion
 	p := newPipeline(ctx, in, pipelineConfig{
 		maxHamming: cfgOut.MaxHamming, minRun: cfgOut.MinRunFrames, maxGaps: cfgOut.MaxGapFrames,
 		longMaxHamming: cfgOut.LongMaxHamming, longMinRun: cfgOut.LongMinRunFrames, longMaxGaps: cfgOut.LongMaxGapFrames,
@@ -334,6 +338,7 @@ func EventWorkflow(ctx workflow.Context, in EventWorkflowInput) (EventWorkflowOu
 		durableValidation:          durableValidation && atomicPlacement && variantEvidence,
 		reversibleSelection:        reversibleSelection && atomicPlacement && variantEvidence && durableValidation && canonicalExactAliases && preserveIncumbentsOnLoss,
 		eventUpdateContract:        eventUpdateContract,
+		mediaIdentity:              mediaIdentity && atomicPlacement && variantEvidence && canonicalExactAliases,
 		startedAt:                  startedAt,
 	}, log)
 

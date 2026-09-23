@@ -1,4 +1,4 @@
-// Candidate intake, exact-byte ownership, and dense-hash callbacks for EventWorkflow.
+// Candidate intake, event-scoped exact-media ownership, and dense-hash callbacks for EventWorkflow.
 package workflow
 
 import (
@@ -46,6 +46,7 @@ func (p *pipeline) spawnCandidate(gctx workflow.Context, evidence discoverycontr
 			(*videoactivity.Activities).DownloadAndStage,
 			videoactivity.DownloadAndStageInput{
 				EventID: p.in.EventID, FixtureID: p.in.FixtureID, TweetURL: tweetURL,
+				ComputeMediaFingerprint: p.mediaIdentity,
 			})
 		p.inFlight++
 		p.selector.AddFuture(fut, p.onDownloadDone(tweetURL))
@@ -135,17 +136,28 @@ func (p *pipeline) onDownloadDone(tweetURL string) func(workflow.Future) {
 			"size_bytes", out.SizeBytes, "duration_media_ms", out.DurationMS)
 
 		c := clipFromDownload(tweetURL, out)
-		if idx, isAsset, matched := p.matchMD5(c); matched {
+		if ownership, exists := p.candidates[tweetURL]; exists {
+			ownership.rawMD5 = c.md5
+			p.candidates[tweetURL] = ownership
+		}
+		if idx, isAsset, matched := p.matchExact(c); matched {
 			p.collapseExact(c, idx, isAsset)
 			return
 		}
-		if claim, exists := p.hashing[c.md5]; exists {
+		for _, claim := range p.hashing {
+			if claim.primary.md5 == c.md5 {
+				claim.waiting = append(claim.waiting, c)
+				return
+			}
+		}
+		key := c.exactKey()
+		if claim, exists := p.hashing[key]; exists {
 			claim.waiting = append(claim.waiting, c)
 			return
 		}
 
-		p.hashing[c.md5] = &hashClaim{primary: c}
-		p.fireHash(c.md5)
+		p.hashing[key] = &hashClaim{primary: c}
+		p.fireHash(key)
 	}
 }
 
@@ -175,12 +187,12 @@ func downloadFailureDetail(err error) videoactivity.DownloadFailureDetail {
 	}
 }
 
-// fireHash schedules the one active dense extraction for an exact-byte claim.
-func (p *pipeline) fireHash(md5 string) {
+// fireHash schedules the one active dense extraction for an exact-media claim.
+func (p *pipeline) fireHash(identity string) {
 	if p.canceled() {
 		return
 	}
-	claim, ok := p.hashing[md5]
+	claim, ok := p.hashing[identity]
 	if !ok {
 		return
 	}
@@ -189,21 +201,21 @@ func (p *pipeline) fireHash(md5 string) {
 		(*videoactivity.Activities).HashVideo,
 		videoactivity.HashVideoInput{StagingKey: claim.primary.stagingKey})
 	p.inFlight++
-	p.selector.AddFuture(fut, p.onHashDone(md5))
+	p.selector.AddFuture(fut, p.onHashDone(identity))
 }
 
 // onHashDone releases a successful claim to vision, closes every identical
 // claimant on a deterministic content reject, or transfers an infrastructure-
-// failed claim to the next exact-byte staging object. Only a candidate whose
+// failed claim to the next independently downloaded staging object. Only a candidate whose
 // own hash attempt errors receives hash_error; untried waiters remain
 // recoverable.
-func (p *pipeline) onHashDone(md5 string) func(workflow.Future) {
+func (p *pipeline) onHashDone(identity string) func(workflow.Future) {
 	return func(f workflow.Future) {
 		p.inFlight--
 		if p.canceled() {
 			return
 		}
-		claim, ok := p.hashing[md5]
+		claim, ok := p.hashing[identity]
 		if !ok {
 			return
 		}
@@ -218,27 +230,27 @@ func (p *pipeline) onHashDone(md5 string) func(workflow.Future) {
 			p.recordOutcome(failed.tweetURL, discoveryactivity.OutcomeFailed, string(VideoFailureHash), nil)
 			p.deleteStaging(failed.stagingKey)
 			if len(claim.waiting) == 0 {
-				delete(p.hashing, md5)
+				delete(p.hashing, identity)
 				return
 			}
 			claim.primary = claim.waiting[0]
 			claim.waiting = claim.waiting[1:]
-			p.fireHash(md5)
+			p.fireHash(identity)
 			return
 		}
 		if out.Outcome == videoactivity.OutcomeRejected {
-			p.rejectHashClaim(md5, out.RejectReason, claim)
+			p.rejectHashClaim(identity, out.RejectReason, claim)
 			return
 		}
 		if out.Outcome != "" && out.Outcome != videoactivity.OutcomePassed {
-			p.failHashClaim(md5, string(VideoFailureInvalidChildOutput), claim)
+			p.failHashClaim(identity, string(VideoFailureInvalidChildOutput), claim)
 			return
 		}
 		// A non-empty outcome is produced by the versioned FF-041 activity.
 		// Enforce the workflow-side invariant too, while blank legacy activity
 		// results retain their replay behavior.
 		if out.Outcome == videoactivity.OutcomePassed && len(out.FrameHashes) < p.minRun {
-			p.rejectHashClaim(md5, videoactivity.RejectInsufficientHashFrames, claim)
+			p.rejectHashClaim(identity, videoactivity.RejectInsufficientHashFrames, claim)
 			return
 		}
 
@@ -258,16 +270,16 @@ func (p *pipeline) onHashDone(md5 string) func(workflow.Future) {
 			}
 			p.deleteStaging(duplicate.stagingKey)
 		}
-		delete(p.hashing, md5)
+		delete(p.hashing, identity)
 		p.pending = append(p.pending, winner)
 		p.fireVision(winner)
 	}
 }
 
-// rejectHashClaim closes every byte-identical claimant on one deterministic
+// rejectHashClaim closes every exact-media claimant on one deterministic
 // hash rejection. Retrying another staging object cannot change the result for
-// identical bytes, so no ffmpeg slot is spent on guaranteed duplicate work.
-func (p *pipeline) rejectHashClaim(md5, reason string, claim *hashClaim) {
+// identical media, so no ffmpeg slot is spent on guaranteed duplicate work.
+func (p *pipeline) rejectHashClaim(identity, reason string, claim *hashClaim) {
 	clips := append([]clip{claim.primary}, claim.waiting...)
 	for _, c := range clips {
 		p.logCandidatePhase(c.tweetURL, "hash", "rejected", claim.startedAt,
@@ -276,13 +288,13 @@ func (p *pipeline) rejectHashClaim(md5, reason string, claim *hashClaim) {
 		p.recordOutcome(c.tweetURL, discoveryactivity.OutcomeRejected, reason, nil)
 		p.deleteStaging(c.stagingKey)
 	}
-	delete(p.hashing, md5)
+	delete(p.hashing, identity)
 }
 
 // failHashClaim closes every claimant when a successful activity response is
 // structurally invalid. This is an infrastructure/code failure, not a content
 // verdict, and another copy of identical bytes cannot repair the response.
-func (p *pipeline) failHashClaim(md5, reason string, claim *hashClaim) {
+func (p *pipeline) failHashClaim(identity, reason string, claim *hashClaim) {
 	clips := append([]clip{claim.primary}, claim.waiting...)
 	for _, c := range clips {
 		p.logCandidatePhase(c.tweetURL, "hash", "failed", claim.startedAt,
@@ -291,15 +303,16 @@ func (p *pipeline) failHashClaim(md5, reason string, claim *hashClaim) {
 		p.recordOutcome(c.tweetURL, discoveryactivity.OutcomeFailed, reason, nil)
 		p.deleteStaging(c.stagingKey)
 	}
-	delete(p.hashing, md5)
+	delete(p.hashing, identity)
 }
 
 // clipFromDownload converts the staged activity result into workflow-owned
 // state without carrying activity structs through later callbacks.
 func clipFromDownload(tweetURL string, out videoactivity.DownloadAndStageOutput) clip {
 	c := clip{
-		tweetURL: tweetURL, md5: out.MD5, stagingKey: out.StagingKey,
-		width: out.Width, height: out.Height, durationMS: out.DurationMS,
+		tweetURL: tweetURL, md5: out.MD5, mediaFingerprint: out.MediaFingerprint,
+		stagingKey: out.StagingKey,
+		width:      out.Width, height: out.Height, durationMS: out.DurationMS,
 		fileSizeBytes: out.SizeBytes, popularity: 1,
 	}
 	if out.Bitrate != 0 {

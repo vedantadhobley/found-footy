@@ -292,7 +292,8 @@ CREATE TABLE video_assets (
     object_reclaimed_at TIMESTAMPTZ,                        -- successful idempotent Garage delete; NULL means bytes may remain
 
     -- Content identity
-    md5 BYTEA NOT NULL,                                     -- 16-byte whole-file digest — the exact-dup layer
+    md5 BYTEA NOT NULL,                                     -- 16-byte whole-file digest of retained representative bytes
+    media_fingerprint TEXT,                                 -- versioned encoded-media identity; NULL for legacy/unsupported inputs
     hash_version TEXT NOT NULL DEFAULT 'dhash-v1-unversioned'
         CHECK (hash_version <> ''),                          -- algorithm + preprocessing + sample interval. Default keeps rolling migration safe for the old binary.
     frame_hashes BYTEA NOT NULL,                            -- per-frame dHash sequence: 8 bytes (big-endian uint64) each. Record only — dedup is in workflow code.
@@ -319,6 +320,9 @@ CREATE TABLE video_assets (
     first_seen_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
 
     UNIQUE (event_id, md5),                                 -- exact-byte dedup + insert idempotency within an event
+    CONSTRAINT video_assets_media_fingerprint_format CHECK (
+        media_fingerprint IS NULL OR media_fingerprint ~ '^media-v1:[0-9a-f]{64}$'
+    ),
     CONSTRAINT video_assets_identity_event_unique UNIQUE (id, event_id),
     CONSTRAINT video_assets_identity_event_fixture_unique UNIQUE (id, event_id, fixture_id),
     CONSTRAINT video_assets_event_fixture_fkey
@@ -345,6 +349,9 @@ CREATE TABLE video_assets (
 
 CREATE INDEX video_assets_event_popularity ON video_assets (event_id, popularity DESC)
     WHERE superseded_by IS NULL;
+CREATE UNIQUE INDEX video_assets_event_media_fingerprint
+    ON video_assets (event_id, media_fingerprint)
+    WHERE media_fingerprint IS NOT NULL;
 CREATE INDEX video_assets_unreclaimed_event ON video_assets (event_id)
     WHERE object_reclaimed_at IS NULL;
 CREATE INDEX video_assets_unreclaimed_fixture_event ON video_assets (fixture_id, event_id)
@@ -504,10 +511,11 @@ CREATE TABLE event_search_candidates (
     outcome_detail JSONB,                                   -- specifics: {aspect} / {soccer_votes, screen_votes, frame_count} / {asset_id, verified}
     outcome_at TIMESTAMPTZ,                                 -- when the terminal outcome was recorded; NULL while pending
 
-    -- Accepted byte variant actually observed for this source sighting. FF-083
-    -- keeps this stable when its canonical winner changes. NULL remains valid
-    -- for rejected/failed and pre-migration audit rows.
+    -- Accepted media asset represented by this sighting. The raw download's
+    -- MD5 is separate because metadata-only MP4 variants may share one asset.
+    -- NULL remains valid for rejected/failed and pre-migration audit rows.
     observed_asset_id UUID,
+    raw_md5 BYTEA CHECK (raw_md5 IS NULL OR octet_length(raw_md5) = 16),
 
     -- One canonical routing destination, also used for legacy assigned credit.
     -- Selection-enabled popularity derives from observed_asset_id and direct
@@ -547,7 +555,7 @@ CREATE INDEX event_search_candidates_observed_asset
 COMMENT ON COLUMN video_assets.popularity IS
     'Selected-clip direct accepted-source support for selection-enabled histories; older histories retain assigned credit. Scores overlap across clips and are not an event source total.';
 COMMENT ON COLUMN event_search_candidates.credited_asset_id IS
-    'Canonical routing destination and legacy credit owner, not exclusive ownership of direct support. observed_asset_id retains the source byte identity.';
+    'Canonical routing destination and legacy credit owner, not exclusive ownership of direct support. observed_asset_id identifies the accepted media asset; raw_md5 retains source-byte identity when known.';
 
 -- 9. team_aliases — deterministic Wikidata alias cache.
 --

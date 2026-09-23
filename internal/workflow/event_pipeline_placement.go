@@ -144,8 +144,9 @@ func (p *pipeline) commitClipPlacement(
 			CaptureVariant: p.variantEvidence,
 			NewWinner:      newWinner, WinnerAssetID: winnerID,
 			LoserAssetIDs: loserIDs, Candidates: candidates,
-			StagingKey: c.stagingKey, MD5: c.md5,
-			HashVersion: c.hashVersion, FrameHashes: c.frameHashes,
+			StagingKey: c.stagingKey, MD5: c.md5, MediaFingerprint: c.mediaFingerprint,
+			ReuseObservedAssetID: c.reuseObservedAssetID,
+			HashVersion:          c.hashVersion, FrameHashes: c.frameHashes,
 			Width: c.width, Height: c.height, DurationMS: c.durationMS,
 			FileSizeBytes: c.fileSizeBytes, Bitrate: c.bitrate,
 			FrameRate: p.persistedFrameRate(c),
@@ -184,6 +185,7 @@ func (p *pipeline) commitClipPlacement(
 		if p.reversibleSelection {
 			p.assets = nil
 			p.exactRoots = make(map[string]uuid.UUID)
+			p.mediaObserved = make(map[string]uuid.UUID)
 		}
 		return out, false
 	}
@@ -201,6 +203,10 @@ func (p *pipeline) commitClipPlacement(
 		}
 	} else {
 		p.rememberExactRoot(c.md5, out.WinnerAssetID)
+		p.rememberExactRoot(c.mediaFingerprint, out.WinnerAssetID)
+		if c.mediaFingerprint != "" && c.reuseObservedAssetID == uuid.Nil {
+			p.mediaObserved[c.mediaFingerprint] = uuid.NewSHA1(uuid.NameSpaceOID, []byte(p.in.EventID.String()+":"+c.md5))
+		}
 		p.redirectExactRoots(loserIDs, out.WinnerAssetID)
 	}
 	if out.Announce {
@@ -245,6 +251,7 @@ func (p *pipeline) placementCandidates(c clip, newWinner bool, winnerID uuid.UUI
 		}
 		out = append(out, videoactivity.PlacementCandidateInput{
 			Evidence: ownership.evidence, Outcome: outcome, Detail: detail,
+			RawMD5: ownership.rawMD5,
 		})
 	}
 	return out, true

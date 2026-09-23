@@ -2299,6 +2299,30 @@ the current branch.
   durability, FF-037 owns work-lane isolation, and FF-046 owns selector-blocking
   durable effects.
 
+### FF-102 — metadata-only MP4 copies consume distinct exact-variant work
+
+- **Status:** implemented locally on `feat/event-media-identity`; not deployed.
+- **Observed:** Barcelona retained uploads can have different raw MD5s while
+  encoded video, audio, packet timing, and playback metadata are identical.
+  Container creation/modification tags alone caused separate dense hashes,
+  model calls, and accepted objects. Identical sampled dHashes alone are not
+  proof: four reviewed pairs had real media differences.
+- **Invariant:** One accepted encoded-media asset per event and versioned
+  fingerprint; never share an asset across events. Preserve each tweet's raw
+  MD5 and support vote. Missing fingerprint evidence falls back to raw MD5;
+  existing histories and retained objects are not rewritten.
+- **Implementation:** FFmpeg adapter probes every audio/video packet and
+  playback-relevant stream metadata; EventWorkflow gates exact claims and
+  legacy replay; accepted metadata-only followers reuse the original asset;
+  Postgres enforces the event-scoped unique identity and stores candidate
+  `raw_md5`. See the [decision](./decisions/2026-09-23-event-scoped-media-identity.md).
+- **Validation:** Full test suite (including disposable Postgres migration and
+  event-scope checks), fast formatting/vet/lint gates, and the reviewed local
+  MP4 corpus passed. No production state was touched.
+- **Remaining:** Review the release plan and obtain separate approval before
+  any production migration or deploy; then verify natural match-day behavior.
+  After rollout, measure additional probe time and exact-media join counts.
+
 ## Deferred decisions and validation
 
 These are not accepted correctness bugs. They stay visible until measurement or

@@ -115,14 +115,14 @@ func TestSelectionPipelineRestoresBeforePublication(t *testing.T) {
 		}
 		repeat := clip{md5: items[0].md5, tweetURL: "recurrence", popularity: 1, stagingKey: "staging/recurrence"}
 		own(&repeat)
-		index, isAsset, found := p.matchMD5(repeat)
+		index, isAsset, found := p.matchExact(repeat)
 		require.True(t, found)
 		require.True(t, isAsset)
 		p.collapseExact(repeat, index, isAsset)
 		require.Equal(t, 8, p.assets[1].popularity, "returned durable count must not be incremented a second time")
 		bridge := clip{md5: items[1].md5, tweetURL: "bridge-recurrence", popularity: 1, stagingKey: "staging/bridge-recurrence"}
 		own(&bridge)
-		index, isAsset, found = p.matchMD5(bridge)
+		index, isAsset, found = p.matchExact(bridge)
 		require.True(t, found)
 		require.True(t, isAsset)
 		p.collapseExact(bridge, index, isAsset)

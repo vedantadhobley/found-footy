@@ -19,6 +19,7 @@ type PlacementCandidate struct {
 	Evidence discoverycontract.CandidateEvidence
 	Outcome  discoverycontract.CandidateOutcome
 	Detail   json.RawMessage
+	RawMD5   string `json:"RawMD5,omitempty"` // individual source bytes, even when media identity joins uploads
 }
 
 // ClipPlacement describes the complete database-side result of one accepted

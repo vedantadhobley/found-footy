@@ -87,7 +87,7 @@ func (p *pipeline) onVideoDone(fallbackTweetURL string) func(workflow.Future) {
 		// POST-vision (a clip's verified/unverified category is unknown until vision;
 		// decisions.md 2026-08-09). md5-identical bytes are the same clip in every
 		// respect — same category — so collapsing them here is always safe.
-		if idx, isAsset, matched := p.matchMD5(c); matched {
+		if idx, isAsset, matched := p.matchExact(c); matched {
 			p.collapseExact(c, idx, isAsset)
 			return
 		}
@@ -99,21 +99,26 @@ func (p *pipeline) onVideoDone(fallbackTweetURL string) func(workflow.Future) {
 	}
 }
 
-// matchMD5 reports whether c is byte-identical to a kept or in-flight clip, or
-// is a persisted exact variant already consolidated onto a kept asset. The
-// latter has already passed vision in a prior placement, so it is safe to
+// matchExact reports whether c has the same raw bytes or encoded media as a
+// kept or in-flight clip, or is a persisted exact variant consolidated onto a
+// kept asset. The latter has already passed vision in a prior placement, so it is safe to
 // credit the live canonical asset without repeating hash or vision. Returns
 // the matched index into the relevant list and isAsset — true for a promoted
 // asset (has a DB row), false for a still-pending clip (votes accumulate in
 // memory, #180).
-func (p *pipeline) matchMD5(c clip) (idx int, isAsset, matched bool) {
+func (p *pipeline) matchExact(c clip) (idx int, isAsset, matched bool) {
 	for i := range p.assets {
-		if p.assets[i].md5 == c.md5 {
+		if p.assets[i].md5 == c.md5 ||
+			(c.mediaFingerprint != "" && p.assets[i].mediaFingerprint == c.mediaFingerprint) {
 			return i, true, true
 		}
 	}
 	if p.canonicalExactAliases {
-		if rootID, known := p.exactRoots[c.md5]; known {
+		rootID, known := p.exactRoots[c.exactKey()]
+		if !known {
+			rootID, known = p.exactRoots[c.md5]
+		}
+		if known {
 			for i := range p.assets {
 				if p.assets[i].assetID == rootID {
 					return i, true, true
@@ -122,7 +127,8 @@ func (p *pipeline) matchMD5(c clip) (idx int, isAsset, matched bool) {
 		}
 	}
 	for i := range p.pending {
-		if p.pending[i].md5 == c.md5 {
+		if p.pending[i].md5 == c.md5 ||
+			(c.mediaFingerprint != "" && p.pending[i].mediaFingerprint == c.mediaFingerprint) {
 			return i, false, true // matched a not-yet-promoted (pending) clip
 		}
 	}
@@ -168,7 +174,7 @@ func (c clip) quality() dvideo.ClipQuality {
 	}
 }
 
-// collapseExact merges a byte-identical candidate onto a promoted or pending
+// collapseExact merges an exact-media candidate onto a promoted or pending
 // representative. A promoted representative is already a winner, so the
 // follower can become duplicate immediately. A pending representative has no
 // winner yet: FF-065 retains the follower URL until the shared validation path
@@ -180,6 +186,21 @@ func (p *pipeline) collapseExact(loser clip, idx int, isAsset bool) {
 	}
 	if isAsset {
 		winnerID := p.assets[idx].assetID
+		if _, rawKnown := p.exactRoots[loser.md5]; rawKnown || loser.md5 == p.assets[idx].md5 {
+			// The raw bytes already have durable attribution. Reuse that stable
+			// identity even if a future ffprobe build describes them differently.
+			loser.mediaFingerprint = ""
+		}
+		if loser.mediaFingerprint != "" && loser.md5 != p.assets[idx].md5 {
+			if observedID := p.mediaObserved[loser.mediaFingerprint]; observedID != uuid.Nil {
+				loser.reuseObservedAssetID = observedID
+			}
+		}
+		if loser.mediaFingerprint != "" && loser.md5 != p.assets[idx].md5 && loser.reuseObservedAssetID == uuid.Nil &&
+			loser.mediaFingerprint == p.assets[idx].mediaFingerprint {
+			p.setTerminalError(fmt.Errorf("media-identical asset %s lacks observed representative", winnerID))
+			return
+		}
 		if p.atomicPlacement {
 			if _, ok := p.commitClipPlacement(loser, visionactivity.ValidateClipOutput{}, false, winnerID, nil); ok {
 				if !p.reversibleSelection {

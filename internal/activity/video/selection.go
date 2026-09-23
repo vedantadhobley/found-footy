@@ -131,7 +131,8 @@ func projectSelection(snapshot dvideo.SelectionSnapshot) (LoadEventAssetsOutput,
 		asset := node.Asset
 		selected[asset.ID] = true
 		out.Assets = append(out.Assets, RestoredEventAsset{AssetID: asset.ID, MD5: hex.EncodeToString(asset.MD5),
-			HashVersion: asset.FrameHashVersion, FrameHashes: asset.FrameHashes, Width: asset.Width, Height: asset.Height,
+			MediaFingerprint: asset.MediaFingerprint,
+			HashVersion:      asset.FrameHashVersion, FrameHashes: asset.FrameHashes, Width: asset.Width, Height: asset.Height,
 			DurationMS: asset.DurationMS, FileSizeBytes: asset.FileSizeBytes, Bitrate: asset.Bitrate, FrameRate: asset.FrameRate,
 			Popularity: asset.Popularity, Verified: node.Share.TimestampVerified})
 	}
@@ -150,7 +151,9 @@ func projectSelection(snapshot dvideo.SelectionSnapshot) (LoadEventAssetsOutput,
 			root = next.Asset
 		}
 		if selected[root.ID] {
-			out.ExactAliases = append(out.ExactAliases, RestoredExactAlias{MD5: hex.EncodeToString(node.Asset.MD5), AssetID: root.ID})
+			out.ExactAliases = append(out.ExactAliases, RestoredExactAlias{
+				MD5: hex.EncodeToString(node.Asset.MD5), MediaFingerprint: node.Asset.MediaFingerprint,
+				AssetID: root.ID, ObservedAssetID: node.Asset.ID})
 		}
 	}
 	return out, nil

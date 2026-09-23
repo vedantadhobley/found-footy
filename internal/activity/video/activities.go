@@ -43,6 +43,7 @@ type syndicationClient interface {
 
 type ffmpegClient interface {
 	ProbeMetadata(ctx context.Context, path string) (*ffmpeg.VideoMetadata, error)
+	MediaFingerprint(ctx context.Context, path string) (string, error)
 	ExtractDenseFrames(ctx context.Context, path string, intervalSecs float64, workingWidth int, onFrame func(ffmpeg.Frame) error) error
 }
 
@@ -128,6 +129,14 @@ func (a *Activities) DownloadAndStage(ctx context.Context, in DownloadAndStageIn
 
 	if reason, ok := dvideo.HardFilter(meta.Width, meta.Height, meta.DurationSecs, meta.FrameRate, a.Thresholds); !ok {
 		return rejectedMeta(out, reason), nil
+	}
+	if in.ComputeMediaFingerprint {
+		// Incomplete/unsupported probe evidence does not reject a playable
+		// clip. Empty identity safely retains the old raw-MD5 path.
+		fingerprint, err := a.FFmpeg.MediaFingerprint(ctx, srcPath)
+		if err == nil {
+			out.MediaFingerprint = fingerprint
+		}
 	}
 
 	key := a.stagingKey(in.FixtureID, in.EventID, rv.TweetID)

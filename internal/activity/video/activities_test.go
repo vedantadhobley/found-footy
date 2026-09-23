@@ -46,15 +46,22 @@ func (f *fakeSynd) Download(_ context.Context, _ string, w io.Writer) (int64, er
 }
 
 type fakeFFmpeg struct {
-	md        *ffmpeg.VideoMetadata
-	mdErr     error
-	frames    []ffmpeg.Frame
-	framesErr error
-	workWidth int
+	md                *ffmpeg.VideoMetadata
+	mdErr             error
+	fingerprint       string
+	fingerprintErr    error
+	fingerprintCalled bool
+	frames            []ffmpeg.Frame
+	framesErr         error
+	workWidth         int
 }
 
 func (f *fakeFFmpeg) ProbeMetadata(context.Context, string) (*ffmpeg.VideoMetadata, error) {
 	return f.md, f.mdErr
+}
+func (f *fakeFFmpeg) MediaFingerprint(context.Context, string) (string, error) {
+	f.fingerprintCalled = true
+	return f.fingerprint, f.fingerprintErr
 }
 func (f *fakeFFmpeg) ExtractDenseFrames(_ context.Context, _ string, _ float64, workingWidth int, onFrame func(ffmpeg.Frame) error) error {
 	f.workWidth = workingWidth
@@ -175,6 +182,25 @@ func TestDownloadAndStage_Passed(t *testing.T) {
 	}
 	if want := fmt.Sprintf("%x", md5.Sum(body)); out.MD5 != want {
 		t.Errorf("md5=%s, want %s", out.MD5, want)
+	}
+	if ff.fingerprintCalled {
+		t.Fatal("legacy activity input unexpectedly computed media identity")
+	}
+}
+
+func TestDownloadAndStage_MediaIdentityOptInAndSafeFallback(t *testing.T) {
+	s := &fakeSynd{rv: &syndication.ResolvedVideo{TweetID: "123", VariantURL: "https://v/hi.mp4", Width: 1280, Height: 720, DurationMS: 11500}, dlBytes: []byte("mp4")}
+	ff := &fakeFFmpeg{md: &ffmpeg.VideoMetadata{Width: 1280, Height: 720, DurationSecs: 11.5, FrameRate: 25}, fingerprint: "media-v1:" + strings.Repeat("a", 64)}
+	in := input()
+	in.ComputeMediaFingerprint = true
+	out, err := newActs(t, s, ff, &fakeS3{}).DownloadAndStage(context.Background(), in)
+	if err != nil || !ff.fingerprintCalled || out.MediaFingerprint != ff.fingerprint {
+		t.Fatalf("fingerprint opt-in = %+v, called=%v, err=%v", out, ff.fingerprintCalled, err)
+	}
+	ff.fingerprintErr = errors.New("unsupported media evidence")
+	out, err = newActs(t, s, ff, &fakeS3{}).DownloadAndStage(context.Background(), in)
+	if err != nil || out.Outcome != OutcomePassed || out.MediaFingerprint != "" || out.MD5 == "" {
+		t.Fatalf("safe raw-MD5 fallback = %+v, err=%v", out, err)
 	}
 }
 

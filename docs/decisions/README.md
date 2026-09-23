@@ -14,6 +14,9 @@ its historical heading anchors valid.
 
 New decisions after the frozen archive:
 
+- [Encoded-media identity is scoped to an event](./2026-09-23-event-scoped-media-identity.md)
+  — preserves raw MD5 evidence while joining MP4 metadata-only copies before
+  dense hashing, with no cross-event asset sharing or historical rewrite.
 - [Engineering gates follow Git and Go module boundaries](./2026-09-19-engineering-gates-follow-git-and-go-modules.md)
   — excludes ignored forensic programs while dynamically validating every
   tracked or ordinary-untracked Go module as independent source.

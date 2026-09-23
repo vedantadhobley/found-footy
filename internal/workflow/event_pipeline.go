@@ -1,6 +1,6 @@
 // event_pipeline.go — the EventWorkflow consumer engine (#164c-b): the
 // serialized Selector queue that drains download, dense-hash, and vision
-// activities, running exact-byte ownership → hash → vision → category-scoped
+// activities, running exact-media ownership → hash → vision → category-scoped
 // perceptual dedup → atomic placement per unique clip. The legacy VideoWorkflow
 // child remains replayable.
 //
@@ -36,25 +36,36 @@ import (
 // the event's lifetime. assets holds kept unique clips; pending holds
 // deduped-new clips whose vision is still in flight (closes the dedup race).
 type clip struct {
-	tweetURL        string
-	md5             string
-	hashVersion     dvideo.FrameHashVersion
-	frameHashes     []uint64
-	stagingKey      string
-	width, height   int
-	durationMS      int
-	fileSizeBytes   int64
-	bitrate         *int
-	frameRate       *float64
-	popularity      int       // accumulated sightings: own (1) + md5-dups collapsed while pending (#180)
-	exactFollowers  []string  // byte-identical candidate URLs awaiting the representative's terminal result
-	verified        bool      // vision verdict; set at promote — the dedup category (verified↔verified only)
-	assetID         uuid.UUID // set once promoted
-	visionStartedAt time.Time // workflow-observed start of the vision activity
+	tweetURL             string
+	md5                  string
+	mediaFingerprint     string    // exact encoded media; event scope is supplied by this workflow
+	reuseObservedAssetID uuid.UUID // retained representative for a metadata-only follower
+	hashVersion          dvideo.FrameHashVersion
+	frameHashes          []uint64
+	stagingKey           string
+	width, height        int
+	durationMS           int
+	fileSizeBytes        int64
+	bitrate              *int
+	frameRate            *float64
+	popularity           int       // accumulated sightings: own (1) + exact-media followers while pending
+	exactFollowers       []string  // exact-media candidate URLs awaiting the representative's terminal result
+	verified             bool      // vision verdict; set at promote — the dedup category (verified↔verified only)
+	assetID              uuid.UUID // set once promoted
+	visionStartedAt      time.Time // workflow-observed start of the vision activity
 }
 
-// hashClaim serializes dense hashing for one exact MD5. The primary owns the
-// active HashVideo call; waiting candidates are byte-identical fallbacks. A
+// exactKey keeps legacy histories on raw MD5 while new candidates with
+// complete media evidence share a claim despite harmless MP4 tag differences.
+func (c clip) exactKey() string {
+	if c.mediaFingerprint != "" {
+		return c.mediaFingerprint
+	}
+	return c.md5
+}
+
+// hashClaim serializes dense hashing for one exact-media identity. The primary
+// owns the active HashVideo call; waiting candidates are media-identical fallbacks. A
 // failed primary hands ownership to the next candidate instead of losing the
 // cluster or reusing a potentially bad staging object.
 type hashClaim struct {
@@ -89,6 +100,7 @@ type pipeline struct {
 	durableValidation                       bool
 	reversibleSelection                     bool
 	eventUpdateContract                     bool
+	mediaIdentity                           bool
 
 	// activity option ctxs
 	downloadCtx workflow.Context
@@ -97,17 +109,18 @@ type pipeline struct {
 	persistCtx  workflow.Context
 
 	// state — mutated only in callbacks / spawnCandidate (single-threaded)
-	assets      []clip
-	exactRoots  map[string]uuid.UUID
-	pending     []clip
-	hashing     map[string]*hashClaim
-	inFlight    int
-	searchDone  bool
-	searchErr   error
-	terminalErr error
-	childSeq    int
-	candidates  map[string]candidateOwnership
-	timings     map[string]candidateTiming
+	assets        []clip
+	exactRoots    map[string]uuid.UUID
+	mediaObserved map[string]uuid.UUID // fingerprint -> retained representative, including retired variants
+	pending       []clip
+	hashing       map[string]*hashClaim
+	inFlight      int
+	searchDone    bool
+	searchErr     error
+	terminalErr   error
+	childSeq      int
+	candidates    map[string]candidateOwnership
+	timings       map[string]candidateTiming
 
 	// outcome counters (for the workflow output / logs)
 	spawned, passed, rejectedClips, duplicates, verified, unverified, superseded, failed int
@@ -136,6 +149,7 @@ func newPipeline(ctx workflow.Context, in EventWorkflowInput, cfg pipelineConfig
 		durableValidation:          cfg.durableValidation,
 		reversibleSelection:        cfg.reversibleSelection,
 		eventUpdateContract:        cfg.eventUpdateContract,
+		mediaIdentity:              cfg.mediaIdentity,
 		downloadCtx:                videoDownloadActivityContext(ctx),
 		hashCtx:                    videoHashActivityContext(ctx),
 		visionCtx: workflow.WithActivityOptions(ctx, workflow.ActivityOptions{
@@ -147,10 +161,11 @@ func newPipeline(ctx workflow.Context, in EventWorkflowInput, cfg pipelineConfig
 			StartToCloseTimeout: 2 * time.Minute, // S3 copy + pg writes
 			RetryPolicy:         &temporal.RetryPolicy{InitialInterval: time.Second, BackoffCoefficient: 2, MaximumAttempts: 5},
 		}),
-		hashing:    make(map[string]*hashClaim),
-		exactRoots: make(map[string]uuid.UUID),
-		candidates: make(map[string]candidateOwnership),
-		timings:    make(map[string]candidateTiming),
+		hashing:       make(map[string]*hashClaim),
+		exactRoots:    make(map[string]uuid.UUID),
+		mediaObserved: make(map[string]uuid.UUID),
+		candidates:    make(map[string]candidateOwnership),
+		timings:       make(map[string]candidateTiming),
 	}
 }
 
@@ -171,6 +186,7 @@ type pipelineConfig struct {
 	durableValidation                       bool
 	reversibleSelection                     bool
 	eventUpdateContract                     bool
+	mediaIdentity                           bool
 	startedAt                               time.Time
 }
 
@@ -180,6 +196,7 @@ type pipelineConfig struct {
 type candidateOwnership struct {
 	evidence discoverycontract.CandidateEvidence
 	state    ddiscovery.CandidateState
+	rawMD5   string // source-byte evidence, independent of its selected media asset
 }
 
 // candidateTiming is workflow-local measurement state. It is never persisted
@@ -205,16 +222,25 @@ func (p *pipeline) restoreAssets(
 			popularity = 1
 		}
 		p.assets = append(p.assets, clip{
-			md5: asset.MD5, hashVersion: dvideo.NormalizeFrameHashVersion(asset.HashVersion),
+			md5: asset.MD5, mediaFingerprint: asset.MediaFingerprint,
+			hashVersion: dvideo.NormalizeFrameHashVersion(asset.HashVersion),
 			frameHashes: asset.FrameHashes,
 			width:       asset.Width, height: asset.Height, durationMS: asset.DurationMS,
 			fileSizeBytes: asset.FileSizeBytes, bitrate: asset.Bitrate, frameRate: asset.FrameRate,
 			popularity: popularity, verified: asset.Verified, assetID: asset.AssetID,
 		})
 		p.rememberExactRoot(asset.MD5, asset.AssetID)
+		p.rememberExactRoot(asset.MediaFingerprint, asset.AssetID)
+		if asset.MediaFingerprint != "" {
+			p.mediaObserved[asset.MediaFingerprint] = asset.AssetID
+		}
 	}
 	for _, alias := range aliases {
 		p.rememberExactRoot(alias.MD5, alias.AssetID)
+		p.rememberExactRoot(alias.MediaFingerprint, alias.AssetID)
+		if alias.MediaFingerprint != "" && alias.ObservedAssetID != uuid.Nil {
+			p.mediaObserved[alias.MediaFingerprint] = alias.ObservedAssetID
+		}
 	}
 }
 

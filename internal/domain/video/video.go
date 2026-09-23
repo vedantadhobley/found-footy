@@ -4,11 +4,11 @@
 //
 // Two related concepts:
 //
-//	Asset — one accepted exact-byte variant per MD5 per event.
-//	        Dedup is scoped to the event, never across
-//	        events (cross-event/per-fixture dedup is dead — see
-//	        decisions.md 2026-07-25). Popularity counts within-event
-//	        dedup hits.
+//	Asset — one accepted encoded-media variant per event on new histories,
+//	        or one accepted raw-MD5 variant on legacy histories. Dedup is scoped
+//	        to the event, never across events (cross-event/per-fixture dedup is
+//	        retired — see decisions.md 2026-07-25). Popularity is derived from
+//	        accepted within-event source support on new histories.
 //	Share — a public link (id: "s_<12-hex>") that grants a browser
 //	        access to one Asset in the context of one Event. Ranked
 //	        within event.
@@ -23,6 +23,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -66,15 +67,17 @@ func (r RemovalReason) Valid() bool {
 	return false
 }
 
-// Asset is one accepted byte variant in the video_assets lineage. Active
+// Asset is one accepted media variant in the video_assets lineage. Active
 // unsuperseded rows are canonical public roots; superseded rows preserve exact
 // source evidence and current ownership. Reselection receipts preserve old decisions.
 //
-// Dedup model (2026-08-03, #166): the ONLY storage-enforced dedup is
+// Dedup model (2026-09-23, FF-102): storage enforces
 //
-//	UNIQUE (event_id, md5) — exact-byte, and it doubles as insert
+//	UNIQUE (event_id, md5) — exact representative bytes, and
+//	UNIQUE (event_id, media_fingerprint) WHERE media_fingerprint IS NOT NULL.
 //
-// idempotency. Perceptual dedup is FUZZY (a sliding-window match over the
+// Both are scoped to one event. The raw-MD5 constraint also makes insertion
+// idempotent. Perceptual dedup is FUZZY (a sliding-window match over the
 // FrameHashes sequence). The workflow and domain selection planner evaluate
 // it — no SQL constraint can express it. Persisted FrameHashes support both
 // diagnostics and reselection without decoding the media again.
@@ -93,6 +96,7 @@ type Asset struct {
 	ObjectReclaimedAt *time.Time
 
 	MD5              []byte           // 16-byte whole-file digest — the exact-dup layer
+	MediaFingerprint string           `json:"MediaFingerprint,omitempty"` // versioned encoded-media identity; empty on legacy or unsupported evidence
 	FrameHashVersion FrameHashVersion // algorithm + preprocessing + sample interval; only equal versions compare
 	FrameHashes      []uint64         // per-frame dHash sequence; the perceptual-dedup signal, kept opaque
 
@@ -181,6 +185,15 @@ func (a *Asset) ValidateInvariants() error {
 	}
 	if len(a.MD5) != 16 {
 		return fmt.Errorf("video.Asset.ValidateInvariants: md5 is %d bytes, must be 16", len(a.MD5))
+	}
+	if a.MediaFingerprint != "" {
+		version, digest, ok := strings.Cut(a.MediaFingerprint, ":")
+		if !ok || version != MediaFingerprintVersion || len(digest) != 64 {
+			return fmt.Errorf("video.Asset.ValidateInvariants: invalid media fingerprint")
+		}
+		if _, err := hex.DecodeString(digest); err != nil {
+			return fmt.Errorf("video.Asset.ValidateInvariants: invalid media fingerprint: %w", err)
+		}
 	}
 	if NormalizeFrameHashVersion(a.FrameHashVersion) == "" || len(a.FrameHashes) == 0 {
 		return fmt.Errorf("video.Asset.ValidateInvariants: frame-hash contract is empty")

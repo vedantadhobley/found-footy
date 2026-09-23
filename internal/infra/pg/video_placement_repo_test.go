@@ -4,7 +4,9 @@ package pg_test
 
 import (
 	"context"
+	"encoding/hex"
 	"encoding/json"
+	"strings"
 	"testing"
 	"time"
 
@@ -71,6 +73,41 @@ func insertPlacementShare(t *testing.T, shares *pg.ShareRepo, asset *video.Asset
 		t.Fatalf("insert share: %v", err)
 	}
 	return share
+}
+
+func TestPlacementRepo_RetainsEachCandidateRawMD5ForSharedMedia(t *testing.T) {
+	pool, placements, assets, shares, fixtureID, eventID := setupPlacementRepo(t)
+	winner := insertPlacementAsset(t, assets, eventID, fixtureID, "media-root", 1)
+	insertPlacementShare(t, shares, winner, 1)
+	md5Hex := strings.Repeat("ab", 16)
+	in := video.ClipPlacement{
+		EventID: eventID, FixtureID: fixtureID,
+		ObservedAssetID: winner.ID, WinnerAssetID: winner.ID, Verified: true,
+		Candidates: []video.PlacementCandidate{{
+			Evidence: placementEvidence(eventID, fixtureID, "metadata-follower"),
+			Outcome:  discoverycontract.OutcomeDuplicate, RawMD5: md5Hex,
+		}},
+	}
+	if _, err := placements.CommitClipPlacement(t.Context(), in); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := placements.CommitClipPlacement(t.Context(), in); err != nil {
+		t.Fatalf("retry changed source identity: %v", err)
+	}
+	var stored []byte
+	if err := pool.QueryRow(t.Context(), `SELECT raw_md5 FROM event_search_candidates WHERE event_id=$1 AND tweet_url=$2`,
+		eventID, in.Candidates[0].Evidence.TweetURL).Scan(&stored); err != nil {
+		t.Fatal(err)
+	}
+	if hex.EncodeToString(stored) != md5Hex {
+		t.Fatalf("candidate raw MD5 = %x, want %s", stored, md5Hex)
+	}
+	changed := in
+	changed.Candidates = append([]video.PlacementCandidate(nil), in.Candidates...)
+	changed.Candidates[0].RawMD5 = strings.Repeat("cd", 16)
+	if _, err := placements.CommitClipPlacement(t.Context(), changed); err == nil {
+		t.Fatal("candidate raw-byte identity changed without rejection")
+	}
 }
 
 func TestPlacementRepo_RetryCreditsPopularityOnceAndReadDerivesRank(t *testing.T) {

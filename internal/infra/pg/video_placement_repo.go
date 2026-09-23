@@ -5,6 +5,7 @@ package pg
 import (
 	"bytes"
 	"context"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -286,12 +287,12 @@ func insertPlacementAsset(ctx context.Context, tx pgx.Tx, item *video.Asset) (bo
 	tag, err := tx.Exec(ctx, `
 		INSERT INTO video_assets (
 			id, event_id, fixture_id, s3_bucket, s3_key,
-			md5, hash_version, frame_hashes,
+			md5, media_fingerprint, hash_version, frame_hashes,
 			width, height, duration_ms, file_size_bytes, bitrate, frame_rate,
 			popularity, superseded_by, first_seen_at
-		) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,1,$15,$16)
+		) VALUES ($1,$2,$3,$4,$5,$6,NULLIF($7,''),$8,$9,$10,$11,$12,$13,$14,$15,1,$16,$17)
 		ON CONFLICT (event_id, md5) DO NOTHING
-	`, item.ID, item.EventID, item.FixtureID, item.S3Bucket, item.S3Key, item.MD5,
+	`, item.ID, item.EventID, item.FixtureID, item.S3Bucket, item.S3Key, item.MD5, item.MediaFingerprint,
 		video.NormalizeFrameHashVersion(item.FrameHashVersion), encodeFrameHashes(item.FrameHashes),
 		item.Width, item.Height, item.DurationMS, item.FileSizeBytes, item.Bitrate, item.FrameRate,
 		item.SupersededBy, item.FirstSeenAt)
@@ -342,6 +343,7 @@ func requireObservedRoot(
 func samePlacementAsset(got, want *video.Asset) bool {
 	return got.ID == want.ID && got.EventID == want.EventID && got.FixtureID == want.FixtureID &&
 		got.S3Bucket == want.S3Bucket && got.S3Key == want.S3Key && bytes.Equal(got.MD5, want.MD5) &&
+		got.MediaFingerprint == want.MediaFingerprint &&
 		got.FrameHashVersion == video.NormalizeFrameHashVersion(want.FrameHashVersion) &&
 		bytes.Equal(encodeFrameHashes(got.FrameHashes), encodeFrameHashes(want.FrameHashes)) &&
 		got.Width == want.Width && got.Height == want.Height && got.DurationMS == want.DurationMS &&
@@ -420,12 +422,21 @@ func creditPlacementCandidate(
 	var priorOutcome string
 	var priorObserved *uuid.UUID
 	var priorCredit *uuid.UUID
+	var priorRawMD5 []byte
+	var rawMD5 []byte
+	if candidate.RawMD5 != "" {
+		var decodeErr error
+		rawMD5, decodeErr = hex.DecodeString(candidate.RawMD5)
+		if decodeErr != nil || len(rawMD5) != 16 {
+			return false, fmt.Errorf("pg.PlacementRepo.CommitClipPlacement: invalid raw MD5 for %s", e.TweetURL)
+		}
+	}
 	err := tx.QueryRow(ctx, `
-		SELECT fixture_id, outcome_class, observed_asset_id, credited_asset_id
+		SELECT fixture_id, outcome_class, observed_asset_id, credited_asset_id, raw_md5
 		FROM event_search_candidates
 		WHERE event_id = $1 AND tweet_url = $2
 		FOR UPDATE
-	`, in.EventID, e.TweetURL).Scan(&priorFixtureID, &priorOutcome, &priorObserved, &priorCredit)
+	`, in.EventID, e.TweetURL).Scan(&priorFixtureID, &priorOutcome, &priorObserved, &priorCredit, &priorRawMD5)
 
 	var age *float64
 	if e.AgeMinutesAtDiscovery > 0 {
@@ -443,11 +454,11 @@ func creditPlacementCandidate(
 				tweet_url, tweet_text, video_page_url, duration_seconds,
 				username, age_minutes_at_discovery,
 				outcome_class, reject_reason, outcome_detail, outcome_at,
-				observed_asset_id, credited_asset_id
-			) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,NULL,$12,NOW(),$13,$14)
+				observed_asset_id, credited_asset_id, raw_md5
+			) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,NULL,$12,NOW(),$13,$14,$15)
 		`, e.EventID, e.FixtureID, e.SearchAttempt, e.Query, e.TweetURL,
 			e.TweetText, e.VideoPageURL, e.DurationSeconds, e.Username, age,
-			string(candidate.Outcome), detail, nullableUUID(in.ObservedAssetID), winnerID); err != nil {
+			string(candidate.Outcome), detail, nullableUUID(in.ObservedAssetID), winnerID, rawMD5); err != nil {
 			return false, fmt.Errorf("pg.PlacementRepo.CommitClipPlacement: insert candidate %s: %w", e.TweetURL, err)
 		}
 		return true, nil
@@ -460,6 +471,9 @@ func creditPlacementCandidate(
 	}
 	if priorObserved != nil && in.ObservedAssetID != uuid.Nil && *priorObserved != in.ObservedAssetID {
 		return false, fmt.Errorf("pg.PlacementRepo.CommitClipPlacement: candidate %s already observed asset %s", e.TweetURL, *priorObserved)
+	}
+	if len(priorRawMD5) != 0 && len(rawMD5) != 0 && !bytes.Equal(priorRawMD5, rawMD5) {
+		return false, fmt.Errorf("pg.PlacementRepo.CommitClipPlacement: candidate %s changed raw bytes", e.TweetURL)
 	}
 
 	added := false
@@ -487,10 +501,11 @@ func creditPlacementCandidate(
 		        ELSE NOW()
 		    END,
 		    credited_asset_id = $5,
-		    observed_asset_id = COALESCE(observed_asset_id, $6)
+		    observed_asset_id = COALESCE(observed_asset_id, $6),
+		    raw_md5 = COALESCE(raw_md5, $7)
 		WHERE event_id = $1 AND tweet_url = $2
 	`, in.EventID, e.TweetURL, string(candidate.Outcome), detail, winnerID,
-		nullableUUID(in.ObservedAssetID)); err != nil {
+		nullableUUID(in.ObservedAssetID), rawMD5); err != nil {
 		return false, fmt.Errorf("pg.PlacementRepo.CommitClipPlacement: update candidate %s: %w", e.TweetURL, err)
 	}
 	return added, nil

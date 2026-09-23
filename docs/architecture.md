@@ -63,7 +63,7 @@ found-footy/
 │   │   ├── twitter_maintenance.go       ✓ FF-058: six-hour static-session persistence + search-DOM canary
 │   │   ├── event.go                     ✓ #164c + FF-022 + FF-034 + FF-061: per-goal producer, classified usable/outage budgets, immediate candidate launch, durable recovery
 │   │   ├── event_pipeline.go            ✓ shared Selector state, deterministic contexts, live-asset/canonical-exact restoration, and construction
-│   │   ├── event_pipeline_intake.go     ✓ candidate launch, exact-MD5 ownership, hash claimant failover, and consumer loop
+│   │   ├── event_pipeline_intake.go     ✓ candidate launch, event-scoped exact-media ownership, hash claimant failover, and consumer loop
 │   │   ├── event_pipeline_validation.go ✓ vision, category-scoped perceptual dedup, winner selection, and legacy replay dispatch
 │   │   ├── event_vision_failure.go      ✓ bounded failure decoding; final Temporal timeout overrides prior-attempt detail
 │   │   ├── event_pipeline_placement.go  ✓ FF-066/FF-067 atomic accepted-candidate placement, removal gate, attribution, supersession, and invalidation
@@ -293,8 +293,12 @@ Core types `video.Asset` and `video.Share` — the split from Python's single
 (`rebuild-plan.md` §3/§4). Post-#166 `Asset` is `event_id`-scoped and carries a
 versioned per-frame `frame_hashes` dHash sequence. `FrameHashVersion` includes
 algorithm, preprocessing, and sample interval; only equal versions compare.
-Storage still enforces only md5 exact-match through `UNIQUE(event_id, md5)`;
-the old whole-clip `perceptual_hash` UNIQUE is retired.
+Storage enforces raw-byte identity through `UNIQUE(event_id, md5)`. New
+versioned media-identity histories also use a partial
+`UNIQUE(event_id, media_fingerprint)` index: MP4 metadata-only copies share one
+accepted asset inside an event while separate events retain separate assets.
+The original MP4 and its raw MD5 remain unchanged. The old whole-clip
+`perceptual_hash` UNIQUE is retired.
 
 Beyond the model, the package owns the dedup + quality logic (pure, table-
 tested): `hash.go` (`DHash`/`DHashPNG`), `match.go` (`Match` plus
@@ -355,14 +359,18 @@ candidates before it closes the parent checklist; late observations become
 keeps Temporal cancellation outside the persistence invariant while preserving
 terminal evidence that committed before removal.
 
-FF-083 makes that boundary retain every accepted distinct MD5, including a
-variant that loses its first keeper comparison. `video_assets.superseded_by`
+FF-083 originally made that boundary retain every accepted distinct MD5,
+including a variant that loses its first keeper comparison. New media-identity
+histories retain every distinct accepted encoded-media presentation; a source
+whose MP4 differs only in descriptive metadata reuses that asset and stores its
+own `raw_md5` on the candidate. Legacy rows stay nullable and are not
+retroactively consolidated. `video_assets.superseded_by`
 initially records direct placement and supplies current alias ownership, not a
 transitive perceptual-cluster claim. Reselection may rewrite that ownership while
 retaining the prior topology in its receipt.
-Candidate `observed_asset_id` identifies immutable source bytes while
+Candidate `observed_asset_id` identifies the accepted media asset while
 `credited_asset_id` follows the current live root. Superseded nodes retain
-their evidence; exact-MD5 frequency derives from candidate observations.
+their evidence; per-source byte identity derives from `raw_md5` when present.
 Legacy roots retain assigned popularity; selection-enabled roots use direct
 source support as described below. `AssetRepo` loads the complete
 event lineage for exact-alias recovery, while public reads

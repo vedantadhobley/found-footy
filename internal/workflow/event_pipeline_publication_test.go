@@ -9,6 +9,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/stretchr/testify/mock"
 	"go.temporal.io/sdk/testsuite"
+	sdkworkflow "go.temporal.io/sdk/workflow"
 
 	discoveryactivity "github.com/vedantadhobley/found-footy/internal/activity/discovery"
 	videoactivity "github.com/vedantadhobley/found-footy/internal/activity/video"
@@ -81,6 +82,60 @@ func TestEventWorkflow_RecurringSupersededMD5CreditsLiveCanonicalAsset(t *testin
 	env.AssertNumberOfCalls(t, "ValidateClip", 0)
 	env.AssertNumberOfCalls(t, "BumpAssetPopularity", 0)
 	env.AssertNumberOfCalls(t, "UpsertCandidateOutcome", 0)
+}
+
+func TestEventWorkflow_MediaEquivalentFollowerReusesEventAsset(t *testing.T) {
+	var s testsuite.WorkflowTestSuite
+	assetID := uuid.New()
+	fingerprint := dvideo.MediaFingerprintVersion + ":" + "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	env := baseEventEnvWithOptions(&s,
+		discoveryactivity.LoadEventRecoveryStateOutput{},
+		videoactivity.LoadEventAssetsOutput{Assets: []videoactivity.RestoredEventAsset{{
+			AssetID: assetID, MD5: "0123456789abcdef0123456789abcdef", MediaFingerprint: fingerprint,
+			HashVersion: dvideo.CurrentFrameHashVersion(0.1), FrameHashes: []uint64{1, 2, 3},
+			Width: 1280, Height: 720, DurationMS: 7000, FileSizeBytes: 900_000,
+			Popularity: 1, Verified: true,
+		}}},
+		true, true, true, true, true, true,
+		discoveryactivity.GetDiscoveryConfigOutput{
+			MaxAttempts: 1, AttemptSpacing: time.Minute, MaxAgeMinutes: 3,
+			QueryTimeout: 2 * time.Minute,
+		},
+	)
+	env.OnGetVersion("event-scoped-media-identity-v1", sdkworkflow.DefaultVersion, sdkworkflow.Version(1)).
+		Return(sdkworkflow.Version(1)).Maybe()
+	const tweetURL = "https://x.com/u/status/3333333333333333333"
+	const rawMD5 = "fedcba9876543210fedcba9876543210"
+	env.OnActivity("SearchTweets", mock.Anything, mock.Anything).
+		Return(discoveryactivity.SearchTweetsOutput{
+			Videos: []twitter.VideoRef{{TweetURL: tweetURL, VideoPageURL: "vp", DurationSeconds: 7}},
+			Count:  1, StopReason: "age",
+		}, nil)
+	env.OnActivity("StoreCandidate", mock.Anything, mock.Anything).
+		Return(discoveryactivity.StoreCandidateOutput{Inserted: true}, nil)
+	env.OnActivity("DownloadAndStage", mock.Anything, mock.Anything).
+		Return(videoactivity.DownloadAndStageOutput{
+			Outcome: videoactivity.OutcomePassed, MD5: rawMD5,
+			MediaFingerprint: fingerprint, StagingKey: "staging/equivalent.mp4",
+			Width: 1280, Height: 720, DurationMS: 7000, SizeBytes: 900_000,
+		}, nil)
+	var committed videoactivity.CommitClipPlacementInput
+	env.OnActivity("CommitClipPlacement", mock.Anything, mock.Anything).
+		Return(func(_ context.Context, in videoactivity.CommitClipPlacementInput) (videoactivity.CommitClipPlacementOutput, error) {
+			committed = in
+			return videoactivity.CommitClipPlacementOutput{WinnerAssetID: assetID, ShareID: "s_atomic", Announce: true}, nil
+		}).Once()
+
+	env.ExecuteWorkflow(workflow.EventWorkflow, stdDiscoveryInput())
+	requireDone(t, env)
+	if !committed.CaptureVariant || committed.NewWinner || committed.ReuseObservedAssetID != assetID ||
+		committed.MediaFingerprint != fingerprint || committed.MD5 != rawMD5 || len(committed.Candidates) != 1 ||
+		committed.Candidates[0].RawMD5 != rawMD5 {
+		t.Fatalf("metadata-only follower lost event asset/source evidence: %+v", committed)
+	}
+	env.AssertNumberOfCalls(t, "HashVideo", 0)
+	env.AssertNumberOfCalls(t, "ValidateClip", 0)
+	env.AssertNumberOfCalls(t, "CommitClipPlacement", 1)
 }
 
 func TestEventWorkflow_RemovedPlacementPublishesOnlyCompletion(t *testing.T) {

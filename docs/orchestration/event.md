@@ -29,11 +29,16 @@ spacing (`config.DiscoveryConfig`, default 15 × 60s) of
 candidate becomes workflow-owned as `CandidateEvidence`. The producer submits
 all new candidates to `DownloadAndStage` before awaiting their concurrent
 `StoreCandidate` observation inserts, so Postgres does not gate clip launch.
-The activity returns
-the exact MD5, staging key, and media metadata. New FF-082 histories carry the
-already-probed frame rate through atomic placement into the asset row; older
-histories omit it through their Temporal version marker. The consumer claims that MD5
-before scheduling dense `HashVideo`; simultaneous byte-identical candidates
+The activity returns the raw-file MD5, staging key, and media metadata. New
+versioned media-identity histories also request a `media-v1` fingerprint of
+encoded audio/video packets, playback timing, and stream configuration.
+Descriptive MP4 tags and audio/video packet interleaving do not affect it;
+incomplete probe evidence falls back to raw MD5. The probe runs before staging
+but does not avoid the initial download or staging upload. New FF-082 histories
+carry the already-probed frame rate through atomic placement; older histories
+omit it through their Temporal version marker. The consumer claims the media
+fingerprint when available, otherwise raw MD5, before dense `HashVideo`;
+simultaneous equivalent candidates within the same event
 wait behind one claimant instead of repeating ffmpeg work. After a successful
 hash, new histories retain those follower URLs until the shared validation path
 has a real terminal result (FF-065). Histories started before FF-022 retain the
@@ -255,16 +260,18 @@ that. Inspection and termination errors are included in ReconcileFixture's
 error output while the next poll retains ownership and retries. See the
 [stale-run recovery decision](../decisions/2026-08-17-stale-event-recovery-requires-progress-proof.md).
 
-**Consumer** (`event_pipeline*.go`, serialized). Exact-byte ownership precedes
+**Consumer** (`event_pipeline*.go`, serialized). Exact-media ownership precedes
 dense hashing, then two dedup stages straddle vision (#171 shipped 2026-08-09):
 
 - **Exact claim + gate** (`onDownloadDone`, `onHashDone`; `onVideoDone` for old
-  histories): the first staged candidate for an MD5 owns dense hashing. Later
+  histories): the first staged candidate for one raw MD5 or complete `media-v1`
+  identity owns dense hashing. Later
   arrivals wait; success drops their staging objects and credits every vote to
   the representative without hashing them. Their terminal outcomes wait for
   that representative under FF-065. Claimant failure transfers ownership to
-  the next independent staging object. An MD5 already present in a kept asset,
-  or restored as a retired variant of that asset under FF-080, collapses
+  the next independent staging object. A raw MD5 or media identity already
+  present in a kept asset, or restored as a retired variant under FF-080,
+  collapses
   immediately. A match against a vision-pending clip accumulates its
   vote and follower URL in memory (#180). FF-005 bounds dense
   extraction to 640-pixel-wide grayscale PNGs before Go equalizes and reduces
@@ -325,15 +332,17 @@ dense hashing, then two dedup stages straddle vision (#171 shipped 2026-08-09):
   still supersedes its direct matches under the current quality policy; this
   is not a whole-graph coverage guarantee. See the
   [losing-candidate decision](../decisions/2026-09-11-losing-candidates-preserve-existing-keepers.md).
-  New histories send the entire accepted exact-byte cluster to
+  New histories send the entire accepted exact-media cluster to
   `CommitClipPlacement`: candidate outcome and asset attribution, newly
   credited popularity, conflict-safe asset/share creation, and selected-loser
   supersession commit under one event-locked Postgres transaction. A unique or
   better cluster winner uses a deterministic asset UUID and S3 key; the
   activity copies staging before the transaction. An existing winner receives
   only previously uncredited source votes. FF-083 histories also retain the
-  accepted candidate's exact MD5 as a deterministic asset when it loses that
-  comparison. The observed node points directly to the selected root;
+  accepted candidate's representative raw MD5 as a deterministic asset when it
+  loses that comparison. A metadata-only follower reuses that accepted media
+  asset rather than creating a second node; its own raw MD5 remains on its
+  candidate record. The observed node points directly to the selected root;
   `observed_asset_id` remains stable while `credited_asset_id` follows later
   supersession. Supersession moves all loser candidate credits to the winner,
   merges loser popularity exactly once, and retires loser shares. It does not
@@ -428,10 +437,13 @@ and direct duplicate credit retry-idempotent (FF-011/FF-066). FF-078 visibility
 is recalculated rather than latched, so a singleton becomes public again if
 the threshold clip leaves the active set.
 
-FF-083 separates evidence identity from public credit. Every accepted MD5 is a
-node, each committed supersession is a directed edge, and only graph roots are
-eligible for public shares. Exact-byte frequency is the count of candidate
-observations for a node; legacy root popularity remains aggregate public credit.
+FF-083 separates evidence identity from public credit. Older histories retain
+one node per accepted MD5. New media-identity histories retain one node per
+accepted encoded-media fingerprint within an event; an unsupported probe keeps
+the raw-MD5 fallback. Each candidate retains its raw MD5 when known. Each
+committed supersession is a directed edge, and only graph roots are eligible
+for public shares. Exact-media source frequency counts candidate observations
+for a node; legacy root popularity remains aggregate public credit.
 Neither recovery nor the audit treats a connected dHash graph as one identity.
 
 FF-081's planner now runs within new-history `CommitClipPlacement`, not through

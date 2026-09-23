@@ -48,6 +48,7 @@ func (p *pipeline) replaceSelection(out *videoactivity.PlacementSelectionOutput,
 	}
 	p.assets = nil
 	p.exactRoots = make(map[string]uuid.UUID)
+	p.mediaObserved = make(map[string]uuid.UUID)
 	p.restoreAssets(ordered, out.State.ExactAliases)
 	return nil
 }

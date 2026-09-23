@@ -309,7 +309,7 @@ func (c *Client) observe(ctx context.Context, okAction vocabulary.Action, op str
 // execRun is the production runner: exec.CommandContext (SIGKILL on ctx
 // cancel), stdout captured, stderr bounded to guard against OOM.
 func execRun(ctx context.Context, name string, args []string) ([]byte, []byte, error) {
-	cmd := exec.CommandContext(ctx, name, args...)
+	cmd := exec.CommandContext(ctx, name, args...) //nolint:gosec // Executable path comes from operator config; argv is passed without a shell.
 	var out bytes.Buffer
 	errBuf := &capBuf{max: 16 << 10}
 	cmd.Stdout = &out
@@ -327,7 +327,7 @@ func execRun(ctx context.Context, name string, args []string) ([]byte, []byte, e
 // stderr is bounded (capBuf) to guard against an OOM from a runaway error
 // stream, matching execRun.
 func execStreamRun(ctx context.Context, name string, args []string, consume func(io.Reader) error) ([]byte, error) {
-	cmd := exec.CommandContext(ctx, name, args...)
+	cmd := exec.CommandContext(ctx, name, args...) //nolint:gosec // Executable path comes from operator config; argv is passed without a shell.
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
 		return nil, err
@@ -512,7 +512,7 @@ func classify(ctx context.Context, isProbe bool, err error, stderr []byte) error
 }
 
 func statInput(path string) error {
-	if _, err := os.Stat(path); err != nil {
+	if _, err := os.Stat(path); err != nil { //nolint:gosec // Input is a worker-created scratch path, not an HTTP path parameter.
 		if os.IsNotExist(err) {
 			return fmt.Errorf("%w: %s", ErrInputNotFound, path)
 		}

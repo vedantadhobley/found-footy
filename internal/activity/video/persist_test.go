@@ -368,6 +368,47 @@ func TestCommitClipPlacement_RetainsLosingVariantUntilOrdinaryRetention(t *testi
 	}
 }
 
+func TestCommitClipPlacement_ReusesEventMediaWithoutCopyingAnotherAsset(t *testing.T) {
+	a, s3, assets, _ := newPersist()
+	eventID := uuid.New()
+	assetID := uuid.New()
+	fingerprint := "media-v1:" + strings.Repeat("a", 64)
+	assets.byID[assetID] = &dvideo.Asset{
+		ID: assetID, EventID: eventID, FixtureID: 1583467,
+		MediaFingerprint: fingerprint,
+	}
+	placements := &fakePlacementStore{assets: assets}
+	a.Placements = placements
+	in := stdPlacementInput(eventID)
+	in.NewWinner = false
+	in.WinnerAssetID = assetID
+	in.ReuseObservedAssetID = assetID
+	in.MediaFingerprint = fingerprint
+	in.FrameHashes = nil // no second hash or vision call for exact media
+	in.Candidates[0].Outcome = discoverycontract.OutcomeDuplicate
+	in.Candidates[0].RawMD5 = in.MD5
+
+	out, err := a.CommitClipPlacement(context.Background(), in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out.ObservedAssetCreated || len(assets.byID) != 1 || len(s3.copies) != 0 || len(s3.deletes) != 1 {
+		t.Fatalf("reuse stored second asset or copied media: out=%+v assets=%d copies=%v deletes=%v", out, len(assets.byID), s3.copies, s3.deletes)
+	}
+	got := placements.inputs[0]
+	if got.ObservedAssetID != assetID || got.Candidates[0].RawMD5 != in.MD5 {
+		t.Fatalf("lost observed asset or source MD5: %+v", got)
+	}
+
+	// The same content in another event cannot reuse this event's asset.
+	other := stdPlacementInput(uuid.New())
+	other.NewWinner, other.WinnerAssetID = false, assetID
+	other.ReuseObservedAssetID, other.MediaFingerprint = assetID, fingerprint
+	if _, err := a.CommitClipPlacement(context.Background(), other); err == nil {
+		t.Fatal("cross-event media reuse must fail")
+	}
+}
+
 func TestCommitClipPlacement_RemovedEventReclaimsBothObjectKeys(t *testing.T) {
 	a, s3, assets, _ := newPersist()
 	a.Placements = &fakePlacementStore{assets: assets, eventRemoved: true}

@@ -504,6 +504,17 @@ FF-079 extends the manifest and migration chain with
 `object_reclaimed_at`, its timestamp bound, and the completed/unreclaimed
 indexes; the newest-file hash contract covers the resulting schema snapshot.
 
+FF-102 tests keep media identity separate from raw-byte MD5. Fake-backed
+ffprobe cases ignore descriptive tags and interleave while retaining packet,
+timing, audio, and rotation differences. An opt-in real-media harness
+(`FF_MEDIA_FINGERPRINT_CORPUS` plus `FF_MEDIA_FFPROBE`) checks local MP4 copies
+without adding copyrighted clips to the repository. Workflow tests require a
+metadata-only follower to skip hash/vision and reuse its event's observed
+asset; activity and Postgres tests require no second Garage copy, each
+candidate's raw MD5, and an event-scoped uniqueness constraint. Missing probe
+evidence falls back to the legacy raw-MD5 path. The migration chain must also
+adopt the fresh schema snapshot idempotently.
+
 FF-034 workflow tests require candidate processing to launch even when every
 observation-insert retry fails, while the failed attempt remains uncheckpointed
 and the downstream checklist stays open. A separate case exhausts the terminal
