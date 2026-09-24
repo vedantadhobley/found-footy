@@ -27,6 +27,8 @@ see [`../../archive/docs/`](../../archive/docs/).
 [`audits/`](./audits/) contains the routed archive from the pre-rebuild analysis
 through the 2026-08-15 cutover audit. Audits preserve evidence; they are not
 backlogs. Surviving findings resolve through [`../todo.md`](../todo.md).
+The [Raphinha/Cancelo media inventory](./audits/event-media-identity-inventory-2026-09-23.md)
+records FF-102's event-scoped production evidence and early-reclamation boundary.
 
 ## Proposal disposition
 

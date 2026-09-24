@@ -2318,7 +2318,13 @@ the current branch.
   `raw_md5`. See the [decision](./decisions/2026-09-23-event-scoped-media-identity.md).
 - **Validation:** Full test suite (including disposable Postgres migration and
   event-scope checks), fast formatting/vet/lint gates, and the reviewed local
-  MP4 corpus passed. No production state was touched.
+  MP4 corpus passed. No production mutation was made.
+- **Historical inventory:** A separately approved read-only
+  [Raphinha/Cancelo inventory](./design/audits/event-media-identity-inventory-2026-09-23.md)
+  verified four exact-media groups, sixteen retained objects, and at most
+  53.51 MiB of early-reclaim opportunity in three events. It changed no
+  production state. Legacy SQL evidence and share IDs cannot be hard-deleted;
+  ordinary FF-079 retention will reclaim their media after the public window.
 - **Remaining:** Review the release plan and obtain separate approval before
   any production migration or deploy; then verify natural match-day behavior.
   After rollout, measure additional probe time and exact-media join counts.
