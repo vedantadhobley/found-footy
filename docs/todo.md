@@ -705,6 +705,25 @@ the current branch.
   `populated_field_cleared` for retained zero scores versus provider null scores
   with no clock/events. The current exception is `PST`-only. Review this possible
   false restriction without coupling it to FF-088's polling-policy repair.
+- **Kane missed-penalty loss (2026-09-26):** England–Spain fixture `1528891`
+  first reported Harry Kane's 54′ missed penalty at 20:00:30 UTC; it stabilized
+  at 20:01:30 and briefly had public clips. The provider then omitted that
+  event. At 20:02:00, 20:02:30, and 20:03:00 the shadow policy recommended
+  `positive_only` and explicitly listed its absence vote for suppression, but
+  the applied `trusted` writes drove debounce to zero. At 20:03:00 the event
+  and four shares were marked removed and all four Garage objects were
+  reclaimed. The same provider event reappeared at 20:14:00 as a new immutable
+  event `ae07e84d-dc51-4ceb-84bd-40a9766844b0`. Its search workflow started
+  at 20:15:00 with a fixed earliest-tweet boundary of 20:11:00, excluding the
+  original near-20:00 clip posts; it had no public share after its first search.
+  Fixture health still recorded `confirmed_events_missing` at 20:15:00 because
+  the original missing key remains unresolved. The persisted
+  `removed_reason=var` is our generic absence label, not evidence of an
+  explicit VAR ruling. Accepted candidate posts describe a real missed kick;
+  confirm any later official correction before treating this as a settled false
+  removal. This natural case demonstrates both the cost of shadow-only
+  enforcement and the search-window consequence of reinsertion; retain it in
+  the pre-enforcement and recovery review corpus.
 - **Next:** Review at least one complete match window, including natural
   active/staging/ingest observations, restriction scope, false restrictions,
   and cause-specific recovery. A quiet window alone does not validate recovery;
@@ -2318,7 +2337,10 @@ the current branch.
   `raw_md5`. See the [decision](./decisions/2026-09-23-event-scoped-media-identity.md).
 - **Validation:** Full test suite (including disposable Postgres migration and
   event-scope checks), fast formatting/vet/lint gates, and the reviewed local
-  MP4 corpus passed. No production mutation was made.
+  MP4 corpus passed. The opt-in real-media regression now asserts all sixteen
+  reviewed files form exactly four fingerprint groups despite different raw
+  bytes; normal unit tests assert metadata-only equivalence and playback
+  differences with fake ffprobe evidence. No production mutation was made.
 - **Historical inventory:** A separately approved read-only
   [Raphinha/Cancelo inventory](./design/audits/event-media-identity-inventory-2026-09-23.md)
   verified four exact-media groups, sixteen retained objects, and at most
