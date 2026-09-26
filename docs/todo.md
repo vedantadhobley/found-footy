@@ -716,6 +716,8 @@ the current branch.
   event `ae07e84d-dc51-4ceb-84bd-40a9766844b0`. Its search workflow started
   at 20:15:00 with a fixed earliest-tweet boundary of 20:11:00, excluding the
   original near-20:00 clip posts; it had no public share after its first search.
+  By 20:18:30, four usable searches had produced five new public shares from
+  later candidates, but the original event and share links remained tombstoned.
   Fixture health still recorded `confirmed_events_missing` at 20:15:00 because
   the original missing key remains unresolved. The persisted
   `removed_reason=var` is our generic absence label, not evidence of an
