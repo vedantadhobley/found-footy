@@ -508,7 +508,13 @@ FF-102 tests keep media identity separate from raw-byte MD5. Fake-backed
 ffprobe cases ignore descriptive tags and interleave while retaining packet,
 timing, audio, and rotation differences. An opt-in real-media harness
 (`FF_MEDIA_FINGERPRINT_CORPUS` plus `FF_MEDIA_FFPROBE`) checks local MP4 copies
-without adding copyrighted clips to the repository. Workflow tests require a
+without adding copyrighted clips to the repository. The separate
+`FF_MEDIA_FINGERPRINT_HISTORICAL_DIRS` harness requires all sixteen reviewed
+Raphinha/Cancelo MP4s, asserts four distinct encoded-media groups, and proves
+each group's files have different raw bytes. It fails on missing members or
+unexpected fingerprint splits/merges instead of merely logging results. It
+is opt-in because the real clips and ffprobe binary are not in the CI image;
+fake-backed invariants remain in the normal suite. Workflow tests require a
 metadata-only follower to skip hash/vision and reuse its event's observed
 asset; activity and Postgres tests require no second Garage copy, each
 candidate's raw MD5, and an event-scoped uniqueness constraint. Missing probe

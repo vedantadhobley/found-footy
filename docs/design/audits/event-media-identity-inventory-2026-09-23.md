@@ -15,7 +15,9 @@ hashed every file's encoded audio/video streams, packet payloads, timing, and
 playback configuration. The old temporary test binary was stale: it had split
 Raphinha's public 22′ root from five hidden copies. Recompiling from commit
 `a978ff7` placed all six in one group. The checked-in opt-in corpus harness
-logs fingerprints but does not yet assert this historical six-file group.
+now asserts this six-file group and three other reviewed groups when supplied
+all sixteen local files through `FF_MEDIA_FINGERPRINT_HISTORICAL_DIRS`. The
+normal unit suite tests the stream/packet rules with fake ffprobe output.
 
 Each of these sixteen assets has one accepted candidate observation and one
 retained verified validation. Every object is still present and unreclaimed.
