@@ -6,9 +6,9 @@ service topology or workflow design.
 
 ## Safety boundary
 
-Production is live. Run a production inspection only when the current task
-authorizes that inspection. An inspection never grants permission for an
-adjacent mutation.
+Production is live. Read-only inspection relevant to the current task needs no
+separate approval. Keep it scoped and protect secrets. An inspection never
+grants permission for an adjacent mutation.
 
 Every production mutation requires explicit approval for that exact action.
 This includes:

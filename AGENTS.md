@@ -9,13 +9,14 @@
 > files, edits to any prod-loaded `.env`, prod database mutations
 > (dropping/altering tables, delete/update DML on prod
 > Postgres), prod S3 (Garage) mutations, and any change to prod's Caddy
-> config. Any action against a container, file, or endpoint whose name
-> or path contains `-prod` (or, for shared infra whose
-> data is prod's) is prod-touching and requires an explicit "yes, do X
-> on prod" from the user before you take it. Ask; wait; then act. A
-> single approval covers the single action described, not adjacent or
-> follow-up prod actions. If in doubt whether an action touches prod,
-> ask.
+> config. Read-only inspection relevant to the current task (scoped
+> status/logs, service GETs, Temporal list/show, and SQL SELECT) needs no
+> separate approval; do not expose secrets or use it to justify a mutation.
+> Any action that changes a `-prod` container, file, endpoint, or shared
+> production data requires an explicit "yes, do X on prod" before acting.
+> Ask; wait; then act. A single approval covers the single mutation
+> described, not adjacent or follow-up mutations. If unsure whether an
+> action changes production state, ask.
 
 Real-time football goal video discovery and curation. Polls API-Football
 every 30 s for live matches across the top-5 European leagues + MLS, plus
@@ -285,7 +286,7 @@ Three layers of persistence, each for a different knowledge type:
 
 ## Load-bearing operational rules
 
-- **Prod is untouchable without explicit per-action user approval.** See the top-of-file callout. It is the single most important rule in this repo and overrides every other instruction.
+- **Read-only prod inspection for the current task needs no separate approval; production mutations require explicit per-action approval.** See the top-of-file callout. It overrides every other instruction in this repo.
 - **Do NOT `ssh vedanta@joi` from this repo's tooling.** joi is a separate node. HTTP queries over the tailnet are fine; shell commands need explicit user approval.
 - **LLM concurrency cap**: the vision model is `gemma-4-12b` on `joi.luv` (`LLM_CHAT_CONCURRENCY_CAP=4`); throughput drops sharply past the cap. Any code that fans out LLM calls needs a semaphore or gateway. (nexus is the planned future inference target — WIP, hardware-bound — not yet live.)
 
