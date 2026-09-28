@@ -299,6 +299,10 @@ versioned media-identity histories also use a partial
 accepted asset inside an event while separate events retain separate assets.
 The original MP4 and its raw MD5 remain unchanged. The old whole-clip
 `perceptual_hash` UNIQUE is retired.
+The local FF-102 follow-up adds `media-v2` for clips whose packet duration is
+unknown but whose packet timestamps and stream end are complete. `media-v1`
+remains stable for existing assets; production stays on v1 until the
+[unknown-duration rollout](./decisions/2026-09-28-unknown-packet-duration-media-identity.md).
 
 Beyond the model, the package owns the dedup + quality logic (pure, table-
 tested): `hash.go` (`DHash`/`DHashPNG`), `match.go` (`Match` plus

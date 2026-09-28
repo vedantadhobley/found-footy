@@ -27,6 +27,25 @@ const fingerprintPacketsA = `{"packets":[
 	{"stream_index":0,"pts_time":"0.040000","dts_time":"0.040000","duration_time":"0.040000","size":"4","data_hash":"SHA256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"}
 ]}`
 
+// ffprobe omits duration_time when AVPacket.duration is unknown. Real Twitter
+// MP4s can have this shape for every video packet while retaining a complete
+// per-stream end boundary and exact packet PTS/DTS values.
+const fingerprintUnknownDurationStreams = `{"streams":[
+	{"index":0,"codec_type":"video","codec_name":"h264","width":1920,"height":1080,
+	 "extradata_hash":"SHA256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+	 "time_base":"1/600000","start_pts":0,"duration_ts":1200000,
+	 "tags":{"title":"first upload"}},
+	{"index":1,"codec_type":"audio","codec_name":"aac","sample_rate":"48000","channels":2,
+	 "extradata_hash":"SHA256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+	 "time_base":"1/48000","start_pts":0,"duration_ts":96000}
+]}`
+
+const fingerprintUnknownDurationPackets = `{"packets":[
+	{"stream_index":0,"pts":0,"dts":0,"pts_time":"0.000000","dts_time":"0.000000","size":"4","data_hash":"SHA256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},
+	{"stream_index":1,"pts":0,"dts":0,"duration":960,"pts_time":"0.000000","dts_time":"0.000000","duration_time":"0.020000","size":"2","data_hash":"SHA256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"},
+	{"stream_index":0,"pts":20000,"dts":20000,"pts_time":"0.033333","dts_time":"0.033333","size":"4","data_hash":"SHA256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"}
+]}`
+
 func fingerprintFromFake(t *testing.T, streams, packets string) (string, error) {
 	t.Helper()
 	c := mustClient(t, config.FFmpegConfig{})
@@ -68,6 +87,118 @@ func TestMediaFingerprintIgnoresContainerTagsAndInterleave(t *testing.T) {
 			}
 			if got != base {
 				t.Fatalf("metadata/interleave changed identity: %q != %q", got, base)
+			}
+		})
+	}
+}
+
+func TestMediaFingerprintOriginalVersionIsStableWithExtraProbeFields(t *testing.T) {
+	base, err := fingerprintFromFake(t, fingerprintStreams, fingerprintPacketsA)
+	if err != nil {
+		t.Fatal(err)
+	}
+	const originalDigest = "media-v1:05e358ae85e6a3c2eab7f385ec9b14f5c8d530b21415062a1cf75b768e1f21c8"
+	if base != originalDigest {
+		t.Fatalf("media-v1 digest changed: %q != %q", base, originalDigest)
+	}
+	withTiming, err := fingerprintFromFake(t,
+		strings.Replace(fingerprintStreams, `"codec_name":"h264"`, `"codec_name":"h264","time_base":"1/1000","start_pts":0,"duration_ts":80`, 1),
+		strings.Replace(fingerprintPacketsA, `"pts_time":"0.000000"`, `"pts":0,"dts":0,"pts_time":"0.000000"`, 1))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if withTiming != base {
+		t.Fatalf("additional probe fields changed media-v1: %q != %q", withTiming, base)
+	}
+}
+
+func TestMediaFingerprintUnknownPacketDurationUsesStreamEnd(t *testing.T) {
+	base, err := fingerprintFromFake(t, fingerprintUnknownDurationStreams, fingerprintUnknownDurationPackets)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasPrefix(base, MediaFingerprintUnknownDurationVersion+":") {
+		t.Fatalf("unknown-duration fingerprint = %q, want media-v2", base)
+	}
+	metadataOnly, err := fingerprintFromFake(t,
+		strings.Replace(fingerprintUnknownDurationStreams, "first upload", "new container title", 1),
+		fingerprintUnknownDurationPackets)
+	if err != nil || metadataOnly != base {
+		t.Fatalf("metadata-only copy split: %q, %v", metadataOnly, err)
+	}
+	unknownSpelledOut, err := fingerprintFromFake(t, fingerprintUnknownDurationStreams,
+		strings.ReplaceAll(fingerprintUnknownDurationPackets, `"size":"4"`, `"duration_time":"N/A","size":"4"`))
+	if err != nil || unknownSpelledOut != base {
+		t.Fatalf("N/A and absent duration should have one identity: %q, %v", unknownSpelledOut, err)
+	}
+	for name, tc := range map[string]struct{ streams, packets string }{
+		"different final-frame hold": {
+			strings.Replace(fingerprintUnknownDurationStreams, `"duration_ts":1200000`, `"duration_ts":1800000`, 1),
+			fingerprintUnknownDurationPackets,
+		},
+		"different raw presentation time": {
+			fingerprintUnknownDurationStreams,
+			strings.Replace(fingerprintUnknownDurationPackets, `"pts":20000`, `"pts":20001`, 1),
+		},
+		"different raw audio duration": {
+			fingerprintUnknownDurationStreams,
+			strings.Replace(fingerprintUnknownDurationPackets, `"duration":960`, `"duration":961`, 1),
+		},
+		"different encoded packet": {
+			fingerprintUnknownDurationStreams,
+			strings.Replace(fingerprintUnknownDurationPackets, `"data_hash":"SHA256:cccccccc`, `"data_hash":"SHA256:dddddddd`, 1),
+		},
+		"different time base": {
+			strings.Replace(fingerprintUnknownDurationStreams, `"time_base":"1/600000"`, `"time_base":"1/600001"`, 1),
+			fingerprintUnknownDurationPackets,
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			got, err := fingerprintFromFake(t, tc.streams, tc.packets)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got == base {
+				t.Fatal("playback change collapsed into the same identity")
+			}
+		})
+	}
+}
+
+func TestMediaFingerprintUnknownDurationFailsWithoutEndEvidence(t *testing.T) {
+	for name, tc := range map[string]struct{ streams, packets string }{
+		"missing stream duration": {
+			strings.Replace(fingerprintUnknownDurationStreams, `,"duration_ts":1200000`, "", 1),
+			fingerprintUnknownDurationPackets,
+		},
+		"missing stream start": {
+			strings.Replace(fingerprintUnknownDurationStreams, `"start_pts":0,`, "", 1),
+			fingerprintUnknownDurationPackets,
+		},
+		"zero stream duration": {
+			strings.Replace(fingerprintUnknownDurationStreams, `"duration_ts":1200000`, `"duration_ts":0`, 1),
+			fingerprintUnknownDurationPackets,
+		},
+		"missing time base": {
+			strings.Replace(fingerprintUnknownDurationStreams, `"time_base":"1/600000",`, "", 1),
+			fingerprintUnknownDurationPackets,
+		},
+		"missing raw packet timestamp": {
+			fingerprintUnknownDurationStreams,
+			strings.Replace(fingerprintUnknownDurationPackets, `"pts":20000,`, "", 1),
+		},
+		"missing known raw packet duration": {
+			fingerprintUnknownDurationStreams,
+			strings.Replace(fingerprintUnknownDurationPackets, `"duration":960,`, "", 1),
+		},
+		"missing packet presentation timestamp": {
+			fingerprintUnknownDurationStreams,
+			strings.Replace(fingerprintUnknownDurationPackets, `"pts_time":"0.033333",`, "", 1),
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			if got, err := fingerprintFromFake(t, tc.streams, tc.packets); err == nil {
+				t.Fatalf("incomplete evidence produced %q", got)
 			}
 		})
 	}

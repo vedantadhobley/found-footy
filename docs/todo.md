@@ -2322,13 +2322,21 @@ the current branch.
 
 ### FF-102 — metadata-only MP4 copies consume distinct exact-variant work
 
-- **Status:** deployed in `ee4eafb` on 2026-09-28; validating natural accepted
-  candidates. See the [release record](./history/event-media-identity-rollout-2026-09-28.md).
+- **Status:** deployed in `ee4eafb` on 2026-09-28; first-match-day validation
+  found unknown packet durations suppressing the new identity for many valid
+  clips. A local v2 repair and migration are implemented but **not deployed**.
+  See the [release record](./history/event-media-identity-rollout-2026-09-28.md)
+  and [follow-up decision](./decisions/2026-09-28-unknown-packet-duration-media-identity.md).
 - **Observed:** Barcelona retained uploads can have different raw MD5s while
   encoded video, audio, packet timing, and playback metadata are identical.
   Container creation/modification tags alone caused separate dense hashes,
   model calls, and accepted objects. Identical sampled dHashes alone are not
-  proof: four reviewed pairs had real media differences.
+  proof: four reviewed pairs had real media differences. In a 2026-09-28
+  read-only post-release snapshot, 202/731 fingerprint probes failed and
+  60/95 new retained assets had NULL identity. Four locally probed fallback
+  assets from different events omitted duration on every video packet while
+  retaining timestamps and stream end evidence. No accepted different-byte
+  alias had been observed yet, so natural join behavior remains unproven.
 - **Invariant:** One accepted encoded-media asset per event and versioned
   fingerprint; never share an asset across events. Preserve each tweet's raw
   MD5 and support vote. Missing fingerprint evidence falls back to raw MD5;
@@ -2350,9 +2358,10 @@ the current branch.
   53.51 MiB of early-reclaim opportunity in three events. It changed no
   production state. Legacy SQL evidence and share IDs cannot be hard-deleted;
   ordinary FF-079 retention will reclaim their media after the public window.
-- **Remaining:** Verify natural match-day behavior, additional fingerprint
-  probe time, and exact-media join counts. The deployed migration did not
-  rewrite historical assets or replay events.
+- **Remaining:** Migrate and deploy v2 in a quiet window, then measure probe
+  coverage and actual different-byte same-asset joins. The deployed v1
+  migration did not rewrite historical assets or replay events; v2 does not
+  backfill those assets either.
 
 ## Deferred decisions and validation
 

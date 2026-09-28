@@ -1,7 +1,8 @@
 # Event-scoped encoded-media identity
 
-Status: implemented locally on `feat/event-media-identity`; not migrated or
-deployed to production.
+Status: deployed to production on 2026-09-28. The first match day exposed
+valid clips without packet durations; the [follow-up decision](./2026-09-28-unknown-packet-duration-media-identity.md)
+adds a conservative, separately versioned path for them.
 
 ## Context
 

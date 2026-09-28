@@ -14,6 +14,9 @@ its historical heading anchors valid.
 
 New decisions after the frozen archive:
 
+- [Unknown packet duration preserves conservative media identity](./2026-09-28-unknown-packet-duration-media-identity.md)
+  — keeps `media-v1` stable and adds a stream-end-guarded `media-v2` for
+  otherwise complete clips whose video packets omit duration.
 - [Encoded-media identity is scoped to an event](./2026-09-23-event-scoped-media-identity.md)
   — preserves raw MD5 evidence while joining MP4 metadata-only copies before
   dense hashing, with no cross-event asset sharing or historical rewrite.

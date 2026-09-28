@@ -145,6 +145,20 @@ func TestAssetRepo_MediaIdentityIsUniqueOnlyWithinEvent(t *testing.T) {
 	if _, err := assets.InsertAsset(t.Context(), b); err == nil {
 		t.Fatal("same event stored two assets for one media fingerprint")
 	}
+	unknownDuration := video.MediaFingerprintUnknownDurationVersion + ":" + strings.Repeat("b", 64)
+	d := newAsset(eventID, fixtureID, "media-unknown-duration", []uint64{4}, 1000)
+	d.MediaFingerprint = unknownDuration
+	if inserted, err := assets.InsertAsset(t.Context(), d); err != nil || !inserted {
+		t.Fatalf("unknown-duration media asset inserted=%v err=%v", inserted, err)
+	}
+	if got, err := assets.Get(t.Context(), d.ID); err != nil || got.MediaFingerprint != unknownDuration {
+		t.Fatalf("unknown-duration fingerprint round-trip asset=%+v err=%v", got, err)
+	}
+	duplicateUnknown := newAsset(eventID, fixtureID, "media-unknown-duplicate", []uint64{5}, 1000)
+	duplicateUnknown.MediaFingerprint = unknownDuration
+	if _, err := assets.InsertAsset(t.Context(), duplicateUnknown); err == nil {
+		t.Fatal("same event stored two unknown-duration assets for one fingerprint")
+	}
 
 	otherEvent := uuid.New()
 	if _, err := pool.Exec(t.Context(), `

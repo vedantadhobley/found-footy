@@ -30,11 +30,14 @@ candidate becomes workflow-owned as `CandidateEvidence`. The producer submits
 all new candidates to `DownloadAndStage` before awaiting their concurrent
 `StoreCandidate` observation inserts, so Postgres does not gate clip launch.
 The activity returns the raw-file MD5, staging key, and media metadata. New
-versioned media-identity histories also request a `media-v1` fingerprint of
+versioned media-identity histories also request an encoded-media fingerprint of
 encoded audio/video packets, playback timing, and stream configuration.
 Descriptive MP4 tags and audio/video packet interleaving do not affect it;
-incomplete probe evidence falls back to raw MD5. The probe runs before staging
-but does not avoid the initial download or staging upload. New FF-082 histories
+incomplete probe evidence falls back to raw MD5. The local v2 follow-up accepts
+unknown packet duration only with complete timestamps and stream end evidence;
+v1 stays stable for existing assets until that follow-up is deployed. The probe
+runs before staging but does not avoid the initial download or staging upload.
+New FF-082 histories
 carry the already-probed frame rate through atomic placement; older histories
 omit it through their Temporal version marker. The consumer claims the media
 fingerprint when available, otherwise raw MD5, before dense `HashVideo`;
@@ -264,8 +267,8 @@ error output while the next poll retains ownership and retries. See the
 dense hashing, then two dedup stages straddle vision (#171 shipped 2026-08-09):
 
 - **Exact claim + gate** (`onDownloadDone`, `onHashDone`; `onVideoDone` for old
-  histories): the first staged candidate for one raw MD5 or complete `media-v1`
-  identity owns dense hashing. Later
+  histories): the first staged candidate for one raw MD5 or complete versioned
+  media identity owns dense hashing. Later
   arrivals wait; success drops their staging objects and credits every vote to
   the representative without hashing them. Their terminal outcomes wait for
   that representative under FF-065. Claimant failure transfers ownership to

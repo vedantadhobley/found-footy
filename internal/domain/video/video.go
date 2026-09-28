@@ -188,7 +188,7 @@ func (a *Asset) ValidateInvariants() error {
 	}
 	if a.MediaFingerprint != "" {
 		version, digest, ok := strings.Cut(a.MediaFingerprint, ":")
-		if !ok || version != MediaFingerprintVersion || len(digest) != 64 {
+		if !ok || (version != MediaFingerprintVersion && version != MediaFingerprintUnknownDurationVersion) || len(digest) != 64 {
 			return fmt.Errorf("video.Asset.ValidateInvariants: invalid media fingerprint")
 		}
 		if _, err := hex.DecodeString(digest); err != nil {

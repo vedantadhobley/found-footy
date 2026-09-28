@@ -237,6 +237,13 @@ Instrument bundles currently ship for `pg`, `nats`, `s3`, `llm`, `temporal`,
 `instruments.go` files are the metric-name and label authority; this ledger
 does not duplicate the full mutable catalog.
 
+The local FF-102 unknown-duration follow-up makes
+`found_footy_ffmpeg_ops_total{op="media_fingerprint",outcome}` and its duration
+histogram cover the subprocess and subsequent semantic evidence checks,
+including failures after ffprobe exits. A failure means the clip safely fell
+back to raw MD5; it is not a video-download or validation failure. Production retains the
+previous metric behavior until this follow-up deploys.
+
 FF-075 adds
 `found_footy_apifootball_fixture_contract_failures_total{reason}`. Its bounded
 reason label distinguishes envelope, paging, response, identity, score, event

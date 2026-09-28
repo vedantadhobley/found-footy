@@ -521,6 +521,13 @@ candidate's raw MD5, and an event-scoped uniqueness constraint. Missing probe
 evidence falls back to the legacy raw-MD5 path. The migration chain must also
 adopt the fresh schema snapshot idempotently.
 
+The local unknown-duration follow-up pins one `media-v1` digest, tests
+`media-v2` against metadata-only and final-frame-timing variations, rejects
+missing end evidence, and extends the Postgres identity check to both
+versions. A read-only real-clip check confirms the previous v1 value and
+recovers v2 fingerprints from production fallback assets; no media is
+committed to the test tree.
+
 FF-034 workflow tests require candidate processing to launch even when every
 observation-insert retry fails, while the failed attempt remains uncheckpointed
 and the downstream checklist stays open. A separate case exhausts the terminal

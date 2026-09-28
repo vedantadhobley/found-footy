@@ -321,7 +321,7 @@ CREATE TABLE video_assets (
 
     UNIQUE (event_id, md5),                                 -- exact-byte dedup + insert idempotency within an event
     CONSTRAINT video_assets_media_fingerprint_format CHECK (
-        media_fingerprint IS NULL OR media_fingerprint ~ '^media-v1:[0-9a-f]{64}$'
+        media_fingerprint IS NULL OR media_fingerprint ~ '^media-v[12]:[0-9a-f]{64}$'
     ),
     CONSTRAINT video_assets_identity_event_unique UNIQUE (id, event_id),
     CONSTRAINT video_assets_identity_event_fixture_unique UNIQUE (id, event_id, fixture_id),

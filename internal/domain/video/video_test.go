@@ -94,12 +94,20 @@ func TestAsset_ValidateInvariants(t *testing.T) {
 	if err := a.ValidateInvariants(); err != nil {
 		t.Fatalf("valid asset: %v", err)
 	}
+	for _, version := range []string{video.MediaFingerprintVersion, video.MediaFingerprintUnknownDurationVersion} {
+		candidate := *a
+		candidate.MediaFingerprint = version + ":" + strings.Repeat("a", 64)
+		if err := candidate.ValidateInvariants(); err != nil {
+			t.Fatalf("valid %s fingerprint: %v", version, err)
+		}
+	}
 
 	tests := []struct {
 		name   string
 		mutate func(*video.Asset)
 	}{
 		{"short md5", func(a *video.Asset) { a.MD5 = []byte("short") }},
+		{"unknown fingerprint version", func(a *video.Asset) { a.MediaFingerprint = "media-v3:" + strings.Repeat("a", 64) }},
 		{"empty hashes", func(a *video.Asset) { a.FrameHashes = nil }},
 		{"zero width", func(a *video.Asset) { a.Width = 0 }},
 		{"zero duration", func(a *video.Asset) { a.DurationMS = 0 }},

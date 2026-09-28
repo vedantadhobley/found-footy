@@ -20,9 +20,13 @@ import (
 	"github.com/vedantadhobley/found-footy/internal/observability/vocabulary"
 )
 
-// MediaFingerprintVersion changes whenever the canonical fields or encoding
-// change. Fingerprints from different versions must never be compared.
+// MediaFingerprintVersion keeps the original canonical encoding fixed.
+// Fingerprints from different versions must never be compared as exact media.
 const MediaFingerprintVersion = dvideo.MediaFingerprintVersion
+
+// MediaFingerprintUnknownDurationVersion has an explicit unknown-duration
+// marker and a stream end boundary. The original version never changes.
+const MediaFingerprintUnknownDurationVersion = dvideo.MediaFingerprintUnknownDurationVersion
 
 type fingerprintStream struct {
 	Index             int             `json:"index"`
@@ -49,8 +53,20 @@ type fingerprintStream struct {
 	} `json:"tags"`
 }
 
+// fingerprintProbeStream separates additional timing evidence from the v1
+// metadata encoding, so existing fingerprints remain byte-for-byte stable.
+type fingerprintProbeStream struct {
+	fingerprintStream
+	TimeBase   string `json:"time_base"`
+	StartPTS   *int64 `json:"start_pts"`
+	DurationTS *int64 `json:"duration_ts"`
+}
+
 type fingerprintPacket struct {
 	StreamIndex int             `json:"stream_index"`
+	PTSRaw      *int64          `json:"pts"`
+	DTSRaw      *int64          `json:"dts"`
+	DurationRaw *int64          `json:"duration"`
 	PTS         string          `json:"pts_time"`
 	DTS         string          `json:"dts_time"`
 	Duration    string          `json:"duration_time"`
@@ -59,12 +75,20 @@ type fingerprintPacket struct {
 	SideData    json.RawMessage `json:"side_data_list"`
 }
 
-// MediaFingerprint hashes decoded ffprobe evidence without reading packet
-// payloads into Go memory. A missing field fails closed: callers may keep the
-// raw-MD5 path, but must not infer two files are identical from partial data.
-// The result is scoped by the caller to an event; this method has no event or
-// storage access.
-func (c *Client) MediaFingerprint(ctx context.Context, videoPath string) (string, error) {
+type fingerprintPacketState struct {
+	legacy          hash.Hash
+	unknownDuration hash.Hash
+	count           int
+	missingDuration bool
+	missingRawTime  bool
+	missingRawSpan  bool
+}
+
+// MediaFingerprint hashes ffprobe evidence without reading packet payloads
+// into Go memory. An unknown packet duration is safe only with an exact
+// stream end boundary; other incomplete evidence falls back to raw MD5.
+// The result is scoped by the caller to an event.
+func (c *Client) MediaFingerprint(ctx context.Context, videoPath string) (_ string, resultErr error) {
 	if err := statInput(videoPath); err != nil {
 		return "", err
 	}
@@ -76,15 +100,17 @@ func (c *Client) MediaFingerprint(ctx context.Context, videoPath string) (string
 	defer c.release()
 
 	started := time.Now()
+	defer func() {
+		c.observe(ctx, vocabulary.ActionFFmpegProbe, "media_fingerprint", started, resultErr)
+	}()
 	streamArgs := []string{"-v", "quiet", "-print_format", "json", "-show_data_hash", "sha256", "-show_streams",
-		"-show_entries", "stream=index,codec_type,codec_name,profile,width,height,pix_fmt,sample_aspect_ratio,color_range,color_space,color_transfer,color_primaries,chroma_location,sample_rate,channels,channel_layout,extradata_hash:stream_side_data=side_data_type,rotation,displaymatrix", videoPath}
+		"-show_entries", "stream=index,codec_type,codec_name,profile,width,height,pix_fmt,sample_aspect_ratio,color_range,color_space,color_transfer,color_primaries,chroma_location,sample_rate,channels,channel_layout,extradata_hash,time_base,start_pts,duration_ts:stream_side_data=side_data_type,rotation,displaymatrix", videoPath}
 	stdout, stderr, err := c.run(ctx, c.ffprobePath, streamArgs)
 	if err != nil {
-		c.observe(ctx, vocabulary.ActionFFmpegProbe, "media_fingerprint", started, err)
 		return "", classify(ctx, true, err, stderr)
 	}
 	var probe struct {
-		Streams []fingerprintStream `json:"streams"`
+		Streams []fingerprintProbeStream `json:"streams"`
 	}
 	if err := json.Unmarshal(stdout, &probe); err != nil {
 		return "", fmt.Errorf("%w: decode fingerprint streams: %v", ErrProbeFailed, err)
@@ -93,11 +119,7 @@ func (c *Client) MediaFingerprint(ctx context.Context, videoPath string) (string
 		return "", fmt.Errorf("%w: fingerprint has no streams", ErrProbeFailed)
 	}
 
-	root := sha256.New()
-	writeFingerprintField(root, MediaFingerprintVersion)
-	writeFingerprintField(root, strconv.Itoa(len(probe.Streams)))
-	packetDigests := make(map[int]hash.Hash, len(probe.Streams))
-	packetCounts := make(map[int]int, len(probe.Streams))
+	packetStates := make(map[int]*fingerprintPacketState, len(probe.Streams))
 	seenVideo := false
 	for _, stream := range probe.Streams {
 		if stream.CodecType != "video" && stream.CodecType != "audio" {
@@ -109,44 +131,81 @@ func (c *Client) MediaFingerprint(ctx context.Context, videoPath string) (string
 		if stream.CodecName == "" || stream.ExtradataHash == "" {
 			return "", fmt.Errorf("%w: stream %d lacks codec evidence", ErrProbeFailed, stream.Index)
 		}
-		if _, exists := packetDigests[stream.Index]; exists {
+		if _, exists := packetStates[stream.Index]; exists {
 			return "", fmt.Errorf("%w: duplicate stream index %d", ErrProbeFailed, stream.Index)
 		}
-		// JSON serialization of this fixed struct is the canonical metadata
-		// encoding. ffprobe tags and container/format metadata are excluded.
-		meta, err := json.Marshal(stream)
-		if err != nil {
-			return "", fmt.Errorf("%w: encode stream: %v", ErrProbeFailed, err)
+		packetStates[stream.Index] = &fingerprintPacketState{
+			legacy: sha256.New(), unknownDuration: sha256.New(),
 		}
-		writeFingerprintField(root, string(meta))
-		packetDigests[stream.Index] = sha256.New()
 	}
 	if !seenVideo {
 		return "", fmt.Errorf("%w: fingerprint has no video stream", ErrProbeFailed)
 	}
 
 	packetArgs := []string{"-v", "quiet", "-print_format", "json", "-show_data_hash", "sha256", "-show_packets",
-		"-show_entries", "packet=stream_index,pts_time,dts_time,duration_time,size,data_hash:packet_side_data", videoPath}
+		"-show_entries", "packet=stream_index,pts,dts,duration,pts_time,dts_time,duration_time,size,data_hash:packet_side_data", videoPath}
 	stderr, err = c.runStream(ctx, c.ffprobePath, packetArgs, func(stdout io.Reader) error {
-		return fingerprintPackets(stdout, packetDigests, packetCounts)
+		return fingerprintPackets(stdout, packetStates)
 	})
-	c.observe(ctx, vocabulary.ActionFFmpegProbe, "media_fingerprint", started, err)
 	if err != nil {
 		return "", classify(ctx, true, err, stderr)
 	}
+	unknownDuration := false
 	for _, stream := range probe.Streams {
-		if packetCounts[stream.Index] == 0 {
+		state := packetStates[stream.Index]
+		if state.count == 0 {
 			return "", fmt.Errorf("%w: stream %d has no packets", ErrProbeFailed, stream.Index)
 		}
-		writeFingerprintField(root, strconv.Itoa(packetCounts[stream.Index]))
-		writeFingerprintField(root, hex.EncodeToString(packetDigests[stream.Index].Sum(nil)))
+		unknownDuration = unknownDuration || state.missingDuration
 	}
-	return MediaFingerprintVersion + ":" + hex.EncodeToString(root.Sum(nil)), nil
+
+	version := MediaFingerprintVersion
+	if unknownDuration {
+		version = MediaFingerprintUnknownDurationVersion
+		for _, stream := range probe.Streams {
+			state := packetStates[stream.Index]
+			if state.missingRawTime || state.missingRawSpan || stream.StartPTS == nil || stream.DurationTS == nil ||
+				*stream.DurationTS <= 0 || !validFingerprintTimeBase(stream.TimeBase) {
+				return "", fmt.Errorf("%w: stream %d lacks exact end-boundary evidence", ErrProbeFailed, stream.Index)
+			}
+		}
+	}
+
+	root := sha256.New()
+	writeFingerprintField(root, version)
+	writeFingerprintField(root, strconv.Itoa(len(probe.Streams)))
+	for _, stream := range probe.Streams {
+		// Keep the v1 metadata encoding exactly as shipped. v2 adds the
+		// stream's exact time base, start, and end to distinguish final-frame
+		// holds when ffprobe cannot report individual packet durations.
+		meta, err := json.Marshal(stream.fingerprintStream)
+		if err != nil {
+			return "", fmt.Errorf("%w: encode stream: %v", ErrProbeFailed, err)
+		}
+		writeFingerprintField(root, string(meta))
+		if unknownDuration {
+			writeFingerprintField(root, stream.TimeBase)
+			writeFingerprintField(root, strconv.FormatInt(*stream.StartPTS, 10))
+			writeFingerprintField(root, strconv.FormatInt(*stream.DurationTS, 10))
+		}
+	}
+	// v1 writes every stream's metadata before any packet summary. Preserve
+	// that ordering; interleaving summaries would silently change old hashes.
+	for _, stream := range probe.Streams {
+		state := packetStates[stream.Index]
+		writeFingerprintField(root, strconv.Itoa(state.count))
+		digest := state.legacy
+		if unknownDuration {
+			digest = state.unknownDuration
+		}
+		writeFingerprintField(root, hex.EncodeToString(digest.Sum(nil)))
+	}
+	return version + ":" + hex.EncodeToString(root.Sum(nil)), nil
 }
 
 // fingerprintPackets groups packets by stream, so a harmless audio/video
 // interleave change does not change identity. Order inside each stream does.
-func fingerprintPackets(r io.Reader, streams map[int]hash.Hash, counts map[int]int) error {
+func fingerprintPackets(r io.Reader, streams map[int]*fingerprintPacketState) error {
 	dec := json.NewDecoder(r)
 	first, err := dec.Token()
 	if err != nil || first != json.Delim('{') {
@@ -175,16 +234,43 @@ func fingerprintPackets(r io.Reader, streams map[int]hash.Hash, counts map[int]i
 			if err := dec.Decode(&packet); err != nil {
 				return fmt.Errorf("%w: decode packet: %v", ErrProbeFailed, err)
 			}
-			h, ok := streams[packet.StreamIndex]
+			state, ok := streams[packet.StreamIndex]
 			if !ok || packet.PTS == "" || packet.PTS == "N/A" || packet.DTS == "" || packet.DTS == "N/A" ||
-				packet.Duration == "" || packet.Duration == "N/A" || packet.Size == "" ||
+				packet.Size == "" ||
 				!strings.HasPrefix(packet.DataHash, "SHA256:") || len(packet.DataHash) != len("SHA256:")+64 {
 				return fmt.Errorf("%w: incomplete packet evidence", ErrProbeFailed)
 			}
-			for _, field := range []string{packet.PTS, packet.DTS, packet.Duration, packet.Size, packet.DataHash, string(packet.SideData)} {
-				writeFingerprintField(h, field)
+			if packet.Duration == "N/A" {
+				packet.Duration = ""
 			}
-			counts[packet.StreamIndex]++
+			if packet.Duration == "" {
+				state.missingDuration = true
+			}
+			if packet.PTSRaw == nil || packet.DTSRaw == nil {
+				state.missingRawTime = true
+			}
+			if packet.Duration != "" && packet.DurationRaw == nil {
+				state.missingRawSpan = true
+			}
+			for _, field := range []string{packet.PTS, packet.DTS, packet.Duration, packet.Size, packet.DataHash, string(packet.SideData)} {
+				writeFingerprintField(state.legacy, field)
+			}
+			if packet.PTSRaw != nil && packet.DTSRaw != nil {
+				writeFingerprintField(state.unknownDuration, strconv.FormatInt(*packet.PTSRaw, 10))
+				writeFingerprintField(state.unknownDuration, strconv.FormatInt(*packet.DTSRaw, 10))
+			}
+			if packet.Duration == "" {
+				writeFingerprintField(state.unknownDuration, "unknown")
+			} else {
+				writeFingerprintField(state.unknownDuration, "known")
+				if packet.DurationRaw != nil {
+					writeFingerprintField(state.unknownDuration, strconv.FormatInt(*packet.DurationRaw, 10))
+				}
+			}
+			for _, field := range []string{packet.Size, packet.DataHash, string(packet.SideData)} {
+				writeFingerprintField(state.unknownDuration, field)
+			}
+			state.count++
 		}
 		if end, err := dec.Token(); err != nil || end != json.Delim(']') {
 			return fmt.Errorf("%w: packet list not closed", ErrProbeFailed)
@@ -194,6 +280,18 @@ func fingerprintPackets(r io.Reader, streams map[int]hash.Hash, counts map[int]i
 		return fmt.Errorf("%w: packet probe not closed", ErrProbeFailed)
 	}
 	return nil
+}
+
+// validFingerprintTimeBase rejects missing or malformed stream timing before
+// an unknown packet duration can claim exact media identity.
+func validFingerprintTimeBase(value string) bool {
+	numerator, denominator, ok := strings.Cut(value, "/")
+	if !ok {
+		return false
+	}
+	n, nErr := strconv.ParseInt(numerator, 10, 64)
+	d, dErr := strconv.ParseInt(denominator, 10, 64)
+	return nErr == nil && dErr == nil && n > 0 && d > 0
 }
 
 func writeFingerprintField(h hash.Hash, field string) {
