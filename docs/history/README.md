@@ -5,6 +5,9 @@ preserve sequence and rationale but do not define current behavior or work.
 Use the [`docs` routing index](../README.md) for current ledgers and
 [`todo.md`](../todo.md) for active issues.
 
+- [Event-scoped media identity rollout — September 28 UTC](./event-media-identity-rollout-2026-09-28.md)
+  — FF-102 migration, exact application release, quiet-window checks, and
+  natural-candidate validation boundary.
 - [MLS discovery recovery — September 20 UTC](./mls-recovery-2026-09-20.md)
   — the approved sixteen-event FF-101 batch, exact clip outcomes, bounded X
   degradation and staggered model-retry evidence.

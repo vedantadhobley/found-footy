@@ -2322,7 +2322,8 @@ the current branch.
 
 ### FF-102 — metadata-only MP4 copies consume distinct exact-variant work
 
-- **Status:** implemented locally on `feat/event-media-identity`; not deployed.
+- **Status:** deployed in `ee4eafb` on 2026-09-28; validating natural accepted
+  candidates. See the [release record](./history/event-media-identity-rollout-2026-09-28.md).
 - **Observed:** Barcelona retained uploads can have different raw MD5s while
   encoded video, audio, packet timing, and playback metadata are identical.
   Container creation/modification tags alone caused separate dense hashes,
@@ -2342,16 +2343,16 @@ the current branch.
   MP4 corpus passed. The opt-in real-media regression now asserts all sixteen
   reviewed files form exactly four fingerprint groups despite different raw
   bytes; normal unit tests assert metadata-only equivalence and playback
-  differences with fake ffprobe evidence. No production mutation was made.
+  differences with fake ffprobe evidence.
 - **Historical inventory:** A separately approved read-only
   [Raphinha/Cancelo inventory](./design/audits/event-media-identity-inventory-2026-09-23.md)
   verified four exact-media groups, sixteen retained objects, and at most
   53.51 MiB of early-reclaim opportunity in three events. It changed no
   production state. Legacy SQL evidence and share IDs cannot be hard-deleted;
   ordinary FF-079 retention will reclaim their media after the public window.
-- **Remaining:** Review the release plan and obtain separate approval before
-  any production migration or deploy; then verify natural match-day behavior.
-  After rollout, measure additional probe time and exact-media join counts.
+- **Remaining:** Verify natural match-day behavior, additional fingerprint
+  probe time, and exact-media join counts. The deployed migration did not
+  rewrite historical assets or replay events.
 
 ## Deferred decisions and validation
 
