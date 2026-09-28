@@ -2322,9 +2322,10 @@ the current branch.
 
 ### FF-102 — metadata-only MP4 copies consume distinct exact-variant work
 
-- **Status:** deployed in `ee4eafb` on 2026-09-28; first-match-day validation
-  found unknown packet durations suppressing the new identity for many valid
-  clips. A local v2 repair and migration are implemented but **not deployed**.
+- **Status:** v1 deployed in `ee4eafb` and the unknown-packet-duration v2
+  repair deployed in `6264693` on 2026-09-28. First-match-day v1 validation
+  found unknown packet durations suppressing identity for many valid clips;
+  post-v2 natural-traffic validation is pending.
   See the [release record](./history/event-media-identity-rollout-2026-09-28.md)
   and [follow-up decision](./decisions/2026-09-28-unknown-packet-duration-media-identity.md).
 - **Observed:** Barcelona retained uploads can have different raw MD5s while
@@ -2358,10 +2359,9 @@ the current branch.
   53.51 MiB of early-reclaim opportunity in three events. It changed no
   production state. Legacy SQL evidence and share IDs cannot be hard-deleted;
   ordinary FF-079 retention will reclaim their media after the public window.
-- **Remaining:** Migrate and deploy v2 in a quiet window, then measure probe
-  coverage and actual different-byte same-asset joins. The deployed v1
-  migration did not rewrite historical assets or replay events; v2 does not
-  backfill those assets either.
+- **Remaining:** Measure v2 probe coverage and actual different-byte
+  same-asset joins on new production candidates. Neither migration rewrote
+  historical assets or replayed events; v2 does not backfill those assets.
 
 ## Deferred decisions and validation
 

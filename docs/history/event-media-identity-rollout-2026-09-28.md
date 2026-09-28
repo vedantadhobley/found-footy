@@ -43,3 +43,23 @@ search precision, or the USA–Peru wrong-event admission.
 Rollback to the older `d256c7e` binary is not a direct restart: that binary's
 schema verifier does not know the newly recorded migration. Preserve the
 ledger and use a reviewed compatible forward release or repair if needed.
+
+## Unknown-packet-duration follow-up
+
+The user separately approved the v2 production migration and application
+deploy. In a quiet window with no scoped Firefox instances or running event
+workflows, `make migrate-prod` applied
+`20260928_01_accept_unknown_packet_duration_fingerprints.sql` at 21:30:34
+UTC. Read-only verification found the schema hash
+`6d72edc944798e7bcafe98e2ff91e1fffcee3d99b6429e7aaf72ac2e6a3d0dd3`
+and a CHECK constraint accepting `media-v1` and `media-v2`. Existing asset
+identities were not rewritten.
+
+The separately approved `make deploy-prod` built and deployed
+`626469349dcddf1d1441df1f7096a219b3f554a9`. Its second fleet gate
+passed. Both workers, API, and Twitter reported the expected release identity;
+all four were running with zero restarts. Worker startup verified the schema
+and found all four existing Temporal schedules. API health and a targeted
+fixture read returned HTTP 200. Postgres, Garage, and Temporal were not
+recreated. Natural candidate traffic still needs to establish v2 probe
+coverage and same-media joins; startup checks do not prove that behavior.
