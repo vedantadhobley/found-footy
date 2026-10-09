@@ -48,12 +48,16 @@ decision supersedes an older target design).
 - [Operator video-evidence UI](../operator-ui/README.md) — removable, read-only
   companion module for retained MD5 review; not part of the public application
 - [`operations.md`](./operations.md) — environment lifecycle, production diagnostics, recovery boundaries, cookie re-auth, and rollout gates
+- [Garage recovery](./operations/garage-recovery.md) — metadata diagnosis,
+  isolated reconstruction, stopped capture, and storage cutover safety
 - [`todo.md`](./todo.md) — canonical active issue register and deferred work
 - [`decisions/`](./decisions/) — **the "why" authority**; individual new records plus the frozen pre-normalization archive
 
 ## Historical evidence
 
 - [`history/`](./history/) — completed project roadmaps and delivery snapshots.
+- [October restart recovery](./history/restart-recovery-2026-10-05.md) — closed
+  FF-103 inference routing and FF-104 Garage recovery with exact validation.
 - [API-Football stalled fixture — 2026-09-16](./incidents/2026-09-16-api-football-stalled-fixture.md)
   — Barcelona's frozen HTTP-200 feed while other fixtures progressed; FF-075
   freshness, scope, recovery, and mutation-protection design gaps.

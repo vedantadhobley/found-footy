@@ -166,6 +166,10 @@ services:
     # is ever searched. (luv-specific gid — parameterize if prod ever moves host.)
     group_add: ["984"]
     env_file: .env
+    # Caddy runs on this host. Resolve its inference route locally so a
+    # Tailscale DNS outage cannot prevent the workers from starting.
+    extra_hosts:
+      - "control-joi.luv:host-gateway"
     environment:
       NATS_CLIENT_NAME: found-footy-prod-worker
       EVENT_ENV: prod                                     # NATS subject token (found-footy.prod.*) + envelope source stamp

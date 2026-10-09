@@ -5,6 +5,9 @@ preserve sequence and rationale but do not define current behavior or work.
 Use the [`docs` routing index](../README.md) for current ledgers and
 [`todo.md`](../todo.md) for active issues.
 
+- [October restart recovery](./restart-recovery-2026-10-05.md) — FF-103 local
+  inference routing and FF-104 metadata recovery, exact acceptance evidence,
+  rollback boundaries, and the separate consumer retry rollout.
 - [Event-scoped media identity rollout — September 28 UTC](./event-media-identity-rollout-2026-09-28.md)
   — FF-102 migration, exact application release, quiet-window checks, and
   natural-candidate validation boundary.

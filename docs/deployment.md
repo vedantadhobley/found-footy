@@ -64,6 +64,14 @@ checked `.env.example` records the intended value. The legacy `joi.luv` route
 is an external rollback surface, not a second application configuration. See
 the [Control Joi cutover decision](./decisions/2026-08-25-control-joi-is-production-inference-route.md).
 
+Both worker services map `control-joi.luv` to Docker's `host-gateway` through
+Compose `extra_hosts`. Caddy listens on the local host and forwards that
+hostname to Control's gateway. This keeps the existing model and gateway
+contracts while removing Tailscale DNS from the local inference path. It
+assumes the worker and Caddy share this Docker host; a remote gateway needs a
+different deployment route. See the
+[local inference routing decision](./decisions/2026-10-03-local-inference-does-not-require-tailscale.md).
+
 Discovery has two independent worker-owned budgets. `DISCOVERY_MAX_ATTEMPTS`
 counts only rendered or explicit-empty X observations.
 `DISCOVERY_MAX_UNAVAILABLE_ATTEMPTS` bounds additional login, upstream-error,
@@ -292,6 +300,14 @@ land via `nsc`, restore the creds mount + populate `NATS_CREDS_FILE`
 in `.env`.
 
 ### Garage (S3-compatible blob storage)
+
+The shared `garage.toml` explicitly enables `metadata_fsync` and `data_fsync`.
+Garage v1.0.1 defaults both to false; the October 5 storage-only recovery
+landed the [syncing and recovery contract](./decisions/2026-10-05-garage-syncing-and-recovery.md).
+The SQLite metadata backend remains in use. Syncing is not replication or a
+backup, and startup reachability does not prove metadata integrity. Use the
+[recovery runbook](./operations/garage-recovery.md)
+before considering any metadata replacement.
 
 One-time setup after `docker compose up -d garage`:
 

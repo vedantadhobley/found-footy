@@ -194,6 +194,10 @@ services:
     # decisions.md 2026-08-06. See postgres note.
     mem_limit: 16g
     env_file: .env
+    # Keep local inference independent of the host's Tailscale DNS state.
+    # Preserve the canonical hostname so Caddy still selects the gateway.
+    extra_hosts:
+      - "control-joi.luv:host-gateway"
     environment:
       NATS_CLIENT_NAME: found-footy-dev-worker
       # Compose owns the deployment partition. The fleet treats this network

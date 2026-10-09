@@ -16,6 +16,11 @@ data_dir = "/var/lib/garage/data"
 replication_factor = 1        # single-node on luv; no replication
 db_engine = "sqlite"
 
+# Preserve SQLite consistency and sync block files through abrupt host shutdowns.
+# These are false by default in Garage v1.0.1; WAL alone is not sufficient.
+metadata_fsync = true
+data_fsync = true
+
 # RPC — internal cluster comms. Single-node, so inert (no peers). The secret
 # comes from GARAGE_RPC_SECRET (.env), not an inline key.
 rpc_bind_addr = "[::]:3901"

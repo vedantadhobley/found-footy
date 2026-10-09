@@ -65,6 +65,25 @@ environments use the same Twitter account and cookie channel. Environment
 isolation applies to browser ownership and lifecycle, not authentication
 identity.
 
+## Local inference after a host restart
+
+The worker's `control-joi.luv` route uses Compose `extra_hosts` to reach local
+Caddy through Docker's host gateway. It does not require Tailscale DNS. See the
+[routing decision](./decisions/2026-10-03-local-inference-does-not-require-tailscale.md).
+
+If workers exit during the model probe, distinguish hostname resolution from
+gateway or model readiness. Probe `/ready` and `/v1/models` through the same
+hostname mapping in a disposable container on the application network. Do not
+call a private model backend or change the production endpoint to an IP.
+
+A separately approved configuration-only recovery recreates only `worker`
+with `--no-deps --no-build --pull never`, setting `IMAGE_TAG` to the full tag
+already deployed. Verify all other loaded environment values match first so
+the recovery cannot deploy unrelated configuration. Confirm the two replicas
+retain that image and fleet-image tag, pass startup, and resume scheduled
+polling; verify the API, Twitter, storage, and Temporal containers retain their
+identities. A full `make deploy-prod` is unnecessary for this Compose change.
+
 ## Routine production inspection
 
 Start with the smallest read-only surface that answers the question:
@@ -120,6 +139,14 @@ docker exec found-footy-prod-temporal \
 Use the Temporal UI when it gives a clearer activity, child-workflow, retry,
 or cancellation history. Do not infer workflow success from process liveness
 or from the absence of a current log line.
+
+## Garage metadata diagnosis and recovery
+
+Garage uses internal SQLite metadata, separate from application Postgres.
+Follow the [Garage recovery runbook](./operations/garage-recovery.md) for
+read-only checks, stopped capture, isolated reconstruction, and approval
+boundaries. The [October recovery record](./history/restart-recovery-2026-10-05.md)
+preserves diagnosis and production acceptance evidence.
 
 ## Database diagnosis
 

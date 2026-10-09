@@ -14,6 +14,12 @@ its historical heading anchors valid.
 
 New decisions after the frozen archive:
 
+- [Garage syncing and stopped metadata recovery](./2026-10-05-garage-syncing-and-recovery.md)
+  — enables metadata/block syncing and requires fresh stopped-state capture,
+  identity-preserving reconstruction, checked reads, and private rollback.
+- [Local inference does not require Tailscale](./2026-10-03-local-inference-does-not-require-tailscale.md)
+  — worker Compose maps the existing Control hostname to Docker's host gateway
+  so local inference survives a Tailscale or split-DNS outage.
 - [Unknown packet duration preserves conservative media identity](./2026-09-28-unknown-packet-duration-media-identity.md)
   — keeps `media-v1` stable and adds a stream-end-guarded `media-v2` for
   otherwise complete clips whose video packets omit duration.

@@ -6,6 +6,8 @@ evidence is routed through the [history index](./history/README.md); the
 release-day register remains preserved as a frozen snapshot.
 Point-in-time audits under [`design/audits/`](./design/audits/) are evidence,
 not parallel task lists.
+The completed FF-103/FF-104 recovery is recorded in the
+[October restart recovery](./history/restart-recovery-2026-10-05.md).
 
 The latest independent code-first review is the
 [2026-08-17 Codex audit](./design/audits/audit-2026-08-17-codex.md). It
@@ -48,6 +50,30 @@ the current branch.
 | `P3` | Cleanup or improvement without a current correctness failure. |
 
 ## Confirmed issues
+
+### FF-105 — failed browser recovery snapshots are not retried on healthy SSE
+
+- **Status:** `implemented` — consumer reports commit `c2807d5`; production
+  rollout and acceptance remain pending
+- **Severity:** P1
+- **Evidence:** In Chromium and WebKit, a successful initial snapshot followed
+  by SSE reconnect and one HTTP 502 recovery snapshot left the fixture at the
+  old minute. Healthy stream heartbeats continued, but no snapshot retry
+  occurred during the observation window. Reload acquired the new minute.
+  This reproduces a failure that can explain the manual-refresh symptom; it
+  does not prove what happened in the user's original browser tab.
+- **Cause:** The Vedanta Systems snapshot failure path retains stale data and
+  marks the backend offline, but does not retain a retry obligation. Stream
+  heartbeats prevent the separate stale-stream watchdog from firing. Targeted
+  dirty signals do not guarantee recovery of the full missed fixture window.
+- **Implementation:** The consumer reports capped retry delays until snapshot
+  success, safe cancellation, and preservation of the selected date and open
+  panels. Its Chromium/mobile-sized WebKit checks, focused tests, type-check,
+  build, and documentation update passed. These are consumer-reported results;
+  Found Footy has not deployed or independently validated that release.
+- **Next:** The consumer agent owns rollout alongside its calendar fix. Verify
+  a failed recovery snapshot retries successfully after healthy SSE returns,
+  without changing date or disclosure state. No Found Footy redeploy is needed.
 
 ### FF-101 — completed event discovery has no safe general replay entry point
 
@@ -506,6 +532,10 @@ the current branch.
 - **Evidence:** Cincinnati–DC United `1490439`, scheduled September 5 at
   23:30 UTC, still polls every 30 seconds on September 8 with PST status,
   no events, and no terminal observation. Terminal grace does not apply.
+- **October 9 evidence:** Cincinnati–DC United `1490439` and Levante–Athletic
+  Club `1570389` now have NS status and future October 21 kickoffs at 23:00 and
+  18:00 UTC respectively, but remain active and poll every 30 seconds. This is
+  also a rescheduling/reactivation defect, not only an overdue-PST policy gap.
 - **Cause:** PST is considered `Live()` for short delays, with no bounded
   deferred policy. `Reschedule` has no runtime caller; moving the row to
   staging alone fails because past-kickoff activation and PST emergency
@@ -2371,6 +2401,7 @@ the [2026-08-17 Codex audit](./design/audits/audit-2026-08-17-codex.md#prior-aud
 
 | Source | Decision or evidence still required |
 |---|---|
+| `FF-104` follow-up | Define scheduled Garage metadata snapshots, off-volume backup coverage, and a restore test. The completed repair and enabled syncing do not protect this single-node store against disk loss. |
 | `AUD-0813-CF-153` | Promoted to FF-059: current VNC contradicts the locked raw-Firefox recovery decision; implement and prove the corrected path before waiting for another expiry. |
 | `AUD-TWITTER-COOKIE-WRITER` | Atomic rename prevents corruption, but concurrent fleet writers remain semantic last-writer-wins. Capture real rotation evidence before adding a cross-container lock or single-writer controller. |
 | `AUD-0813-CF-175` | Decide whether national-team coverage needs an explicit seed beyond league-derived rosters. |
