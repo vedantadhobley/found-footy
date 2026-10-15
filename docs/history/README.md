@@ -5,6 +5,9 @@ preserve sequence and rationale but do not define current behavior or work.
 Use the [`docs` routing index](../README.md) for current ledgers and
 [`todo.md`](../todo.md) for active issues.
 
+- [Vision queue rollout — October 15 UTC](./vision-queue-rollout-2026-10-15.md)
+  — FF-037 capped Temporal admission, isolated backlog/cancellation tests,
+  production poller verification, and remaining natural-load acceptance.
 - [October restart recovery](./restart-recovery-2026-10-05.md) — FF-103 local
   inference routing and FF-104 metadata recovery, exact acceptance evidence,
   rollback boundaries, and the separate consumer retry rollout.

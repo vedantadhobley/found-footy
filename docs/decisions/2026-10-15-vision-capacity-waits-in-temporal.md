@@ -1,6 +1,8 @@
 # Vision capacity waits in Temporal
 
-Status: implemented locally; production rollout and natural-load validation remain.
+Status: deployed on 2026-10-15 as `55c2afd`; natural-load validation remains.
+The [rollout record](../history/vision-queue-rollout-2026-10-15.md) preserves
+the exact gates, queue-poller proof, and unchanged stateful-service identities.
 
 ## Context
 
