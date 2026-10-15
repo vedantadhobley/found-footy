@@ -595,7 +595,12 @@ Adapter-specific notes:
   via `/docker-entrypoint-initdb.d/` (fresh volume only) AND into
   testcontainers via `WithInitScripts`.
 - **temporal**: Client wraps SDK client with `workerShutdownTimeout`
-  accessor; NewWorker seeds `Options.WorkerStopTimeout` from Client if zero.
+  accessor; NewWorker/NewWorkerForQueue seed `Options.WorkerStopTimeout` from
+  Client if zero. Each worker process runs a general worker plus an
+  activity-only `<base>-vision` worker capped at its existing chat cap. New
+  histories queue validation there before its execution deadline starts; old
+  histories retain the base destination. Both pollers drain concurrently before
+  dependencies close. See the [Temporal ledger](./temporal.md#vision-execution-lane-ff-037).
 - **llm**: types.go owns domain-shaped `ChatRequest`/`ChatResponse`;
   classifyError translates HTTP status codes to typed errors
   (ErrRateLimited, ErrCapExceeded, etc.) and maps malformed successful wire

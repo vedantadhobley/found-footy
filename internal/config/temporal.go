@@ -18,9 +18,9 @@ type TemporalConfig struct {
 	// and dev use different namespaces to keep data separate.
 	Namespace string `env:"TEMPORAL_NAMESPACE" envDefault:"default"`
 
-	// TaskQueue is the single queue all workflows + activities dispatch
-	// through. Matches the Python-era value so migration + coexistence
-	// works.
+	// TaskQueue carries workflows and general activities. New EventWorkflow
+	// histories route ValidateClip to the derived <TaskQueue>-vision queue;
+	// old histories retain this base queue for replay compatibility.
 	TaskQueue string `env:"TEMPORAL_TASK_QUEUE" envDefault:"found-footy"`
 
 	// ConnectTimeout bounds the initial dial + health check.

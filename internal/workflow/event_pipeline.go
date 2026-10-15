@@ -152,11 +152,7 @@ func newPipeline(ctx workflow.Context, in EventWorkflowInput, cfg pipelineConfig
 		mediaIdentity:              cfg.mediaIdentity,
 		downloadCtx:                videoDownloadActivityContext(ctx),
 		hashCtx:                    videoHashActivityContext(ctx),
-		visionCtx: workflow.WithActivityOptions(ctx, workflow.ActivityOptions{
-			StartToCloseTimeout: 3 * time.Minute, // vision is slow (multi-frame VLM)
-			HeartbeatTimeout:    time.Minute,
-			RetryPolicy:         &temporal.RetryPolicy{InitialInterval: 2 * time.Second, BackoffCoefficient: 2, MaximumAttempts: 3},
-		}),
+		visionCtx:                  visionActivityContext(ctx, cfg.isolatedVision),
 		persistCtx: workflow.WithActivityOptions(ctx, workflow.ActivityOptions{
 			StartToCloseTimeout: 2 * time.Minute, // S3 copy + pg writes
 			RetryPolicy:         &temporal.RetryPolicy{InitialInterval: time.Second, BackoffCoefficient: 2, MaximumAttempts: 5},
@@ -170,6 +166,7 @@ func newPipeline(ctx workflow.Context, in EventWorkflowInput, cfg pipelineConfig
 }
 
 type pipelineConfig struct {
+	isolatedVision                          bool
 	maxHamming, minRun, maxGaps             int
 	longMaxHamming, longMinRun, longMaxGaps int
 	terminalVideoFailures                   bool

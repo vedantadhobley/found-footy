@@ -24,9 +24,10 @@ import (
 // activities up to the configured shutdown timeout.
 type Worker struct {
 	worker.Worker
-	client  *Client
-	ins     *Instruments
-	options worker.Options
+	client    *Client
+	taskQueue string
+	ins       *Instruments
+	options   worker.Options
 }
 
 // NewWorker builds a Temporal worker bound to the client's task queue.
@@ -46,15 +47,23 @@ type Worker struct {
 // grace-drain deadline has to live here or long-running video-validation
 // activities get force-killed after 10s regardless of config.
 func NewWorker(c *Client, ins *Instruments, options worker.Options) *Worker {
+	return NewWorkerForQueue(c, ins, c.TaskQueue(), options)
+}
+
+// NewWorkerForQueue shares the client's namespace and connection while polling
+// a distinct execution lane. Queue ownership belongs to the composition root;
+// lifecycle logs retain the actual queue rather than the client's default.
+func NewWorkerForQueue(c *Client, ins *Instruments, taskQueue string, options worker.Options) *Worker {
 	if options.WorkerStopTimeout == 0 && c.WorkerShutdownTimeout() > 0 {
 		options.WorkerStopTimeout = c.WorkerShutdownTimeout()
 	}
-	w := worker.New(c.Client, c.TaskQueue(), options)
+	w := worker.New(c.Client, taskQueue, options)
 	return &Worker{
-		Worker:  w,
-		client:  c,
-		ins:     ins,
-		options: options,
+		Worker:    w,
+		client:    c,
+		taskQueue: taskQueue,
+		ins:       ins,
+		options:   options,
 	}
 }
 
@@ -62,14 +71,14 @@ func NewWorker(c *Client, ins *Instruments, options worker.Options) *Worker {
 // immediately; the goroutine runs until Stop is called or an
 // unrecoverable error occurs.
 //
-// The SDK's Worker.Start returns only on failure, so we wrap it in a
-// goroutine and translate a return into a worker_failed log emission.
+// The SDK starts its own polling goroutines; a synchronous startup failure
+// becomes a worker_failed log emission.
 func (w *Worker) Start(ctx context.Context) error {
 	if err := w.Worker.Start(); err != nil {
 		w.ins.emitEvent(ctx, logging.LevelError,
 			vocabulary.ActionTemporalWorkerFailed,
 			"temporal worker start failed",
-			logging.String("task_queue", w.client.TaskQueue()),
+			logging.String("task_queue", w.taskQueue),
 			logging.Err(err),
 		)
 		return fmt.Errorf("temporal.Worker.Start: %w", err)
@@ -77,7 +86,7 @@ func (w *Worker) Start(ctx context.Context) error {
 	w.ins.emitEvent(ctx, logging.LevelInfo,
 		vocabulary.ActionTemporalWorkerStarted,
 		"temporal worker started",
-		logging.String("task_queue", w.client.TaskQueue()),
+		logging.String("task_queue", w.taskQueue),
 		logging.String("namespace", w.client.Namespace()),
 	)
 	return nil
@@ -94,6 +103,6 @@ func (w *Worker) Stop() {
 	w.ins.emitEvent(context.Background(), logging.LevelInfo,
 		vocabulary.ActionTemporalWorkerStopped,
 		"temporal worker stopped",
-		logging.String("task_queue", w.client.TaskQueue()),
+		logging.String("task_queue", w.taskQueue),
 	)
 }

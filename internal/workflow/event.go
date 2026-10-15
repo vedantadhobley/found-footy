@@ -321,6 +321,8 @@ func EventWorkflow(ctx workflow.Context, in EventWorkflowInput) (EventWorkflowOu
 		workflow.DefaultVersion, ff081ReversibleSelectionVersion) != workflow.DefaultVersion
 	mediaIdentity := workflow.GetVersion(ctx, mediaIdentityChangeID,
 		workflow.DefaultVersion, mediaIdentityVersion) != workflow.DefaultVersion
+	isolatedVision := workflow.GetVersion(ctx, visionTaskQueueChangeID,
+		workflow.DefaultVersion, workflow.Version(1)) != workflow.DefaultVersion
 	p := newPipeline(ctx, in, pipelineConfig{
 		maxHamming: cfgOut.MaxHamming, minRun: cfgOut.MinRunFrames, maxGaps: cfgOut.MaxGapFrames,
 		longMaxHamming: cfgOut.LongMaxHamming, longMinRun: cfgOut.LongMinRunFrames, longMaxGaps: cfgOut.LongMaxGapFrames,
@@ -339,6 +341,7 @@ func EventWorkflow(ctx workflow.Context, in EventWorkflowInput) (EventWorkflowOu
 		reversibleSelection:        reversibleSelection && atomicPlacement && variantEvidence && durableValidation && canonicalExactAliases && preserveIncumbentsOnLoss,
 		eventUpdateContract:        eventUpdateContract,
 		mediaIdentity:              mediaIdentity && atomicPlacement && variantEvidence && canonicalExactAliases,
+		isolatedVision:             isolatedVision,
 		startedAt:                  startedAt,
 	}, log)
 

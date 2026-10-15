@@ -139,6 +139,19 @@ non-retryable rule, three-attempt policy, cancellation, and cleanup remain
 unchanged; no schema migration is required. See the
 [decision](../decisions/2026-09-08-vision-failures-retain-stage-and-timeout-kind.md).
 
+**Vision admission contract (FF-037).** New histories use
+`ff-037-vision-task-queue` to dispatch `ValidateClip` to the derived
+`<workflow-task-queue>-vision` queue, with eager execution disabled. Each
+existing worker process polls it with activity-only execution slots capped at
+the existing local chat cap. Excess validation stays durably queued before its
+three-minute execution deadline starts; general polling, download, hashing,
+and persistence retain their own worker capacity. The one-minute heartbeat,
+three attempts, request timeout, exact-follower lifecycle and cancellation
+remain unchanged. Old histories retain the general-queue registration and
+their original command attributes. Control queueing is still inside execution;
+this is not reserved GPU capacity. See the
+[queue and shutdown decision](../decisions/2026-10-15-vision-capacity-waits-in-temporal.md).
+
 **Exact-follower outcome contract (FF-065).** Exact-byte collapse avoids
 duplicate work; it does not by itself prove a durable winner. A candidate that
 matches an existing promoted asset becomes `duplicate` immediately with

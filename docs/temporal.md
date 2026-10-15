@@ -37,7 +37,7 @@ the same commit.
 ```
 temporal/
 ├── client.go            Client struct + NewClient + accessors + StartWorkflow + Close
-├── worker.go            Worker struct + NewWorker + Start + Stop
+├── worker.go            Worker + NewWorker/NewWorkerForQueue + Start + Stop
 ├── instruments.go       RegisterMetrics(reg, log) → *Instruments (counters + histograms)
 ├── doc.go               package docstring
 └── client_test.go       unit tests
@@ -89,6 +89,7 @@ type Worker struct {
 }
 
 func NewWorker(c *Client, ins *Instruments, options worker.Options) *Worker
+func NewWorkerForQueue(c *Client, ins *Instruments, taskQueue string, options worker.Options) *Worker
 func (w *Worker) RegisterWorkflow(wf any)
 func (w *Worker) RegisterActivity(activity any)
 func (w *Worker) Start(ctx context.Context) error
@@ -103,6 +104,26 @@ adapter shouldn't decide their concurrency. **Silent — kept.**
 `NewWorker` seeds `Options.WorkerStopTimeout` from
 `Client.WorkerShutdownTimeout()` if the caller left it zero — one
 place to configure graceful-shutdown drain time.
+`NewWorkerForQueue` does the same while sharing the client's namespace and
+connection. Lifecycle emissions identify the worker's actual task queue.
+
+### Vision execution lane (FF-037)
+
+Each worker process polls two queues. The configured base queue carries
+workflows and general activities at the existing limits. Its derived
+`<base>-vision` queue carries only vision activities, on an activity-only
+worker capped at that process's existing `LLM_CHAT_CONCURRENCY_CAP`. The shared
+contract derives the same name from bootstrap configuration and deterministic
+workflow information; no new env or Compose setting is required.
+
+New EventWorkflow histories use `ff-037-vision-task-queue` to route
+`ValidateClip` to this lane and disable eager execution. Excess tasks wait
+durably before StartToClose begins. Its three-minute execution budget,
+one-minute heartbeat, three attempts, and inherited cancellation do not change;
+queue-wait and total-activity timeouts remain unset. Control admission still
+occurs within execution and can time out. The general worker retains vision
+registration only for histories on the old routing contract. See the
+[decision and rollback boundary](./decisions/2026-10-15-vision-capacity-waits-in-temporal.md).
 
 ## Registration flow (as-shipped in worker binary)
 
@@ -116,8 +137,10 @@ deps.RegisterCloser("temporal-client", func(_ context.Context) error {
     tempClient.Close(); return nil
 })
 
-// 2. Worker construction.
+// 2. General worker construction (existing configured caps).
 w := temporal.NewWorker(tempClient, tempIns, worker.Options{})
+// The same process also creates an activity-only visionWorker on
+// discovery.VisionTaskQueue(tempClient.TaskQueue()), capped at the chat cap.
 
 // 3. Workflow + activity registration — BEFORE Start. Each Activities
 //    struct's exported methods become
@@ -133,18 +156,19 @@ w.RegisterActivity(ingestActs)     // *ingest.Activities   (8 methods)
 w.RegisterActivity(monitorActs)    // *monitor.Activities
 w.RegisterActivity(discoveryActs)  // *discovery.Activities
 w.RegisterActivity(videoActs)      // *video.Activities
-w.RegisterActivity(visionActs)     // *vision.Activities
+w.RegisterActivity(visionActs)     // legacy histories on the base queue
+visionWorker.RegisterActivity(visionActs) // only activities on the vision lane
 w.RegisterActivity(persistActs)    // *video.PersistActivities
 w.RegisterActivity(fleetActs)      // *fleet.Activities
 w.RegisterActivity(livefeedActs)   // *livefeed.Activities
 w.RegisterActivity(twitterMaintenanceActs) // *twittermaintenance.Activities
 
 // 4. Start.
-if err := w.Start(ctx); err != nil { return err }
+if err := startWorkers(ctx, visionWorker, w); err != nil { return err }
 
 // 5. Register closer LAST — LIFO drain runs it FIRST at shutdown.
 deps.RegisterCloser("temporal-worker", func(_ context.Context) error {
-    w.Stop(); return nil
+    stopWorkers(w, visionWorker); return nil
 })
 ```
 
@@ -158,6 +182,9 @@ deps.RegisterCloser("temporal-worker", func(_ context.Context) error {
   downstream adapters while completing.
 - **`WorkerShutdownTimeout` from Client, not baked in.** Env-driven so
   ops can tune drain time without a rebuild.
+- **Independent lanes, shared drain.** Start vision before general polling;
+  partial failure stops already-started workers. Stop both concurrently before
+  dependencies close, rather than multiplying the Compose grace window.
 
 ## Workflow-level conventions
 
@@ -206,10 +233,13 @@ the staging result's errors. See the [monitor ledger](./orchestration/monitor.md
 
 ## Testing shape
 
-Client-level: unit tests exercise `NewClient` connection retries +
-`Close` behavior against a stub server. No testcontainers
-for Temporal itself (heavy; workspace `temporal` dev container serves
-smoke + trigger scripts).
+Client-level unit tests exercise startup guards and bounded connection failure.
+Worker tests cover explicit queue identity, inherited stop budgets, and lifecycle
+logs. `internal/app/worker/vision_queue_integration_test.go` runs a disposable
+`temporalio/temporal:1.5.1` CLI development server capped at 512 MiB with a
+384 MiB Go heap limit. It proves real capped polling, general-lane progress,
+queued cancellation, execution-budget isolation, and poller replacement. It
+never uses a durable application Temporal service and skips under `-short`.
 
 Workflow-level: `testsuite.WorkflowTestSuite` via testify mock —
 see [orchestration testing](./orchestration/testing.md#testing-shape)

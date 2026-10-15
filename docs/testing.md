@@ -29,6 +29,17 @@ and `rg --files test/scenarios -g '*.yaml'`.
 
 ## Tier 1 — pure Go unit tests
 
+FF-037 tests pin the old/new EventWorkflow vision destinations, unchanged
+timeout/retry budgets, disabled eager execution, existing chat-cap derivation,
+actual queue lifecycle logs, partial-startup unwind, and concurrent drain.
+The [real queue integration](../internal/app/worker/vision_queue_integration_test.go)
+uses a disposable Temporal CLI server with a 512 MiB container cap and explicit
+384 MiB Go heap limit. Queued tasks remain scheduled beyond their execution
+timeout and succeed on their first attempt, queued cancellation never reaches
+the fake inference body, general work progresses during saturation, and tasks
+survive a replaced vision poller. This uses no application Temporal, provider,
+or LLM; `-short` skips only the real-server case.
+
 FF-073 tests pin partial removal failure/retry, immutable IDs across replacement,
 ownership changes, concurrent not-found, cancellation, age/keep exclusions, and
 missing ownership evidence. Real-Postgres cases cover warmup, trigger/checklist

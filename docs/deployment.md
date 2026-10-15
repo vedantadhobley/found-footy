@@ -110,6 +110,15 @@ per-process thread count together. Elastic worker counts require a shared
 admission controller or dedicated Temporal queue; a process-local semaphore
 cannot enforce a changing host-wide limit.
 
+FF-037 adds vision execution isolation inside each existing worker container.
+An activity-only Temporal worker polls `<TEMPORAL_TASK_QUEUE>-vision` with
+execution slots equal to that process's existing `LLM_CHAT_CONCURRENCY_CAP`.
+General activity/workflow caps and the two-replica chat budget do not change.
+No new container, env setting, host port, schedule, or migration is needed.
+Control independently limits shared model admission. Deploy after discovery
+drains; rollback to an image without this lane also requires draining its
+queued tasks. See the [vision queue decision](./decisions/2026-10-15-vision-capacity-waits-in-temporal.md).
+
 **Per-event fleet ownership:** Compose owns the deployment partition through
 the explicit `found-footy-dev` / `found-footy-prod` network and passes its
 actual name as `FIREFOXFLEET_NETWORK`. The Go provisioner treats that string as

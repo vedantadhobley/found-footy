@@ -25,6 +25,7 @@ import (
 	videoactivity "github.com/vedantadhobley/found-footy/internal/activity/video"
 	visionactivity "github.com/vedantadhobley/found-footy/internal/activity/vision"
 	"github.com/vedantadhobley/found-footy/internal/bootstrap"
+	discoverycontract "github.com/vedantadhobley/found-footy/internal/contract/discovery"
 	"github.com/vedantadhobley/found-footy/internal/domain/providerintegrity"
 	"github.com/vedantadhobley/found-footy/internal/infra/apifootball"
 	eventinfra "github.com/vedantadhobley/found-footy/internal/infra/event"
@@ -229,6 +230,12 @@ func Run(ctx context.Context, deps *bootstrap.Deps) error {
 		ScratchDir: deps.Cfg.Video.ScratchDir,
 		Cfg:        deps.Cfg.Vision,
 	}
+	// Capacity is reserved by Temporal before ValidateClip starts. Excess tasks
+	// stay durably queued instead of burning execution time on local admission.
+	visionWorker := temporal.NewWorkerForQueue(tempClient, tempIns,
+		discoverycontract.VisionTaskQueue(tempClient.TaskQueue()),
+		visionWorkerOptions(deps.Cfg.LLM.ChatConcurrencyCap))
+	visionWorker.RegisterActivity(visionActs)
 
 	// EventWorkflow consumer-queue persistence promotes
 	// staging→assets + insert asset/share/rank, collapse-bump, staging cleanup.
@@ -294,20 +301,20 @@ func Run(ctx context.Context, deps *bootstrap.Deps) error {
 	w.RegisterActivity(monitorActs)
 	w.RegisterActivity(discoveryActs)
 	w.RegisterActivity(videoActs)
-	w.RegisterActivity(visionActs)
+	w.RegisterActivity(visionActs) // pre-FF-037 histories still target the base queue
 	w.RegisterActivity(persistActs)
 	w.RegisterActivity(fleetActs)
 	w.RegisterActivity(livefeedActs)
 	w.RegisterActivity(twitterMaintenanceActs)
 
-	if err := w.Start(ctx); err != nil {
+	if err := startWorkers(ctx, visionWorker, w); err != nil {
 		return err
 	}
 	// Worker shutdown MUST run before its downstream deps close so
 	// draining activities can still use pg/nats/s3. LIFO order
 	// (temporal-worker registered last → drained first) gives us this.
 	deps.RegisterCloser("temporal-worker", func(_ context.Context) error {
-		w.Stop()
+		stopWorkers(w, visionWorker)
 		return nil
 	})
 

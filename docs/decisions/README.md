@@ -14,6 +14,9 @@ its historical heading anchors valid.
 
 New decisions after the frozen archive:
 
+- [Vision capacity waits in Temporal](./2026-10-15-vision-capacity-waits-in-temporal.md)
+  — isolates validation on a capped activity queue inside existing workers,
+  preserves old histories, and keeps execution deadlines out of local backlog.
 - [Garage syncing and stopped metadata recovery](./2026-10-05-garage-syncing-and-recovery.md)
   — enables metadata/block syncing and requires fresh stopped-state capture,
   identity-preserving reconstruction, checked reads, and private rollback.

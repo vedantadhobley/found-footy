@@ -86,6 +86,29 @@ identities. A full `make deploy-prod` is unnecessary for this Compose change.
 
 ## Routine production inspection
 
+### OCR queue admission
+
+FF-037 isolates new-history validation on `<TEMPORAL_TASK_QUEUE>-vision` inside
+the existing worker processes. Each lane's execution slots equal its local
+chat cap. The base queue retains workflows, other activities, and legacy
+vision registration. Start/stop lifecycle logs identify both actual queues.
+
+Distinguish three waits: Temporal schedule-to-start (before execution), local
+chat semaphore admission (inside execution), and Control gateway admission
+(inside the HTTP request). The candidate's vision-phase measurement includes
+queue time; the LLM adapter's `admission_wait_ms` measures only the local
+semaphore. Use read-only Temporal history/describe for durable queue age and
+Control metrics for shared admission. Idle `found_footy_llm_waiting_calls` is
+not proof that the Temporal vision queue is empty.
+
+Queue isolation leaves prompts, the three-minute execution budget, 60-second
+HTTP budget, retries and acceptance unchanged. It does not reserve GPU capacity
+or repair historical terminal failures. A separately approved replay is still
+required for those. Rollout and rollback boundaries are in the
+[vision queue decision](./decisions/2026-10-15-vision-capacity-waits-in-temporal.md).
+
+### Routine service checks
+
 Start with the smallest read-only surface that answers the question:
 
 ```bash

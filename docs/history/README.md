@@ -8,6 +8,9 @@ Use the [`docs` routing index](../README.md) for current ledgers and
 - [October restart recovery](./restart-recovery-2026-10-05.md) — FF-103 local
   inference routing and FF-104 metadata recovery, exact acceptance evidence,
   rollback boundaries, and the separate consumer retry rollout.
+- [Cucho Hernández recovery — October 14 UTC](./cucho-recovery-2026-10-14.md)
+  — approved one-event recovery, original search/candidate failures, and
+  contemporaneous OCR admission, Twitter 429, and CDN access evidence.
 - [Event-scoped media identity rollout — September 28 UTC](./event-media-identity-rollout-2026-09-28.md)
   — FF-102 migration, exact application release, quiet-window checks, and
   natural-candidate validation boundary.
