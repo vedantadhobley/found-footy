@@ -131,7 +131,7 @@ failure, and `x-rate-limit-*` values when X supplies them. It never retains
 response bodies, page bodies, request headers, cookies, authorization headers,
 or tokens.
 
-**Passive timeline accounting (FF-038; local, not deployed).** Optional
+**Passive timeline accounting (FF-038; deployed October 16 as `62af131`).** Optional
 `evidence.timeline` adds a `scan_id`, scan/snapshot timestamps, observed
 request/response/body-finish/transport-failure totals, 429/5xx totals, and up to
 64 request records. SDK request identity joins events even when URLs match.

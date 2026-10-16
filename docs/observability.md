@@ -130,7 +130,7 @@ counter. The Twitter HTTP client emits the same result fields plus bounded,
 secret-free evidence: final route/title, app-shell/empty/error bits,
 SearchTimeline status/failure, and rate-limit headers when present.
 
-FF-038's local passive-accounting slice adds a bounded `timeline` object to
+FF-038's passive-accounting slice (deployed as `62af131`) adds a bounded `timeline` object to
 the existing HTTP-client and workflow search measurements. The browser emits
 `twitter_timeline_measured` once per scan through its existing diagnostic sink,
 including on failed navigation/caller cancellation. It carries scan identity,

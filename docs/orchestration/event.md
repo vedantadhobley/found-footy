@@ -79,7 +79,7 @@ three/four-attempt activity policy and historical checkpoint behavior. The
 and [incident](../incidents/2026-08-20-twitter-feed-suppression.md) hold the
 rationale and production evidence.
 
-FF-038 passive accounting is implemented locally, not deployed. Optional
+FF-038 passive accounting deployed October 16 as `62af131`. Optional
 `SearchEvidence.timeline` passes through existing activity results/error
 details and progress JSON, and is attached to the replay-aware search
 measurement. It introduces no new workflow commands, version branch, wait,

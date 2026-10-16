@@ -1,7 +1,7 @@
 # Shared Twitter request admission — FF-038
 
-**Status:** admission proposal; October 16 passive accounting is implemented
-locally, not deployed. No scheduler, request limiter, search-count policy, or
+**Status:** admission proposal; October 16 passive accounting deployed as
+`62af131`. No scheduler, request limiter, search-count policy, or
 production configuration changed.
 The separate local FF-089 denial classifier is not part of this proposal.
 
@@ -265,11 +265,11 @@ guarantee that all browser traffic is intercepted.
 
 ## Delivery and acceptance
 
-1. Characterization, the production-version Temporal receipt spike, and local
-   passive per-request accounting are complete. The passive slice has no
-   routing, controller call, new wait or search-policy change. Next obtain
-   approval to capture normal traffic, and build the pure policy model with
-   target regressions. Do not issue additional X searches for telemetry.
+1. Characterization and the production-version Temporal receipt spike are
+   complete. Passive per-request accounting deployed as `62af131`, with no
+   routing, controller call, new wait or search-policy change. Observe normal
+   traffic and build the pure policy model with target regressions. Do not
+   issue additional X searches for telemetry.
 2. Prove the complete admission/deferral path offline before enforcement:
    shared cooldown, one recovery probe, idempotent reservations, stale headers,
    missing reset, cancellation, lease expiry, controller loss, worker restart,

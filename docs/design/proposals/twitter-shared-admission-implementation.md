@@ -1,10 +1,10 @@
 # Shared Twitter admission — implementation and acceptance plan
 
-**Status:** admission proposed; passive accounting implemented locally on
-2026-10-16, not deployed. Read the [design and measured evidence](./twitter-shared-admission.md)
+**Status:** admission proposed; passive accounting deployed on 2026-10-16 as
+`62af131`. Read the [design and measured evidence](./twitter-shared-admission.md)
 first. The previous one-active-scan recommendation is withdrawn: preserve
 healthy concurrency. Scarce-request scheduling remains a design gate, not a
-settled implementation instruction. No production mutation occurred.
+settled implementation instruction. Only the passive telemetry slice is deployed.
 
 ## Scope and ownership
 
@@ -259,10 +259,10 @@ Exhausted quota is not a failed browser or an expired-cookie alert.
 
 ## Verification and release sequence
 
-1. **Source-only baseline:** characterization, protocol probes and passive
-   request accounting are implemented locally. There is no routing, limiter,
-   query change, or extra X search. Validate complete source/config before
-   expensive test work. Obtain approval separately for a telemetry deployment.
+1. **Passive baseline:** characterization/protocol probes passed; request
+   accounting deployed with explicit approval as `62af131`. There is no routing,
+   limiter, query change, or extra X search. Natural observations remain pending.
+   Validate changed source/config before expensive admission test work.
 2. **Offline implementation:** pure model tests; worker restart/history rotation;
    idempotent and concurrent mutations; lost acknowledgment; stale lease and
    cross-run grants; quota observations in every order; no/malformed headers;

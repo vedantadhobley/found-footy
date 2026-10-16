@@ -2437,10 +2437,12 @@ advances neither counter currently used to decide which evidence is newest.
 The October 16 review withdrew whole-search serialization: atomic request
 reservations, not a one-active-scan cap, protect quota; preserve healthy
 concurrency and review scarce-request fairness against measured evidence.
-Passive request accounting is now implemented locally in the browser's
+Passive request accounting deployed October 16 as `62af131` in the browser's
 existing event listeners and optional search evidence, with bounded records,
-explicit gaps, correlated diagnostics and no routing/waits. It is **not
-deployed**. See the [accounting decision](./decisions/2026-10-16-twitter-admission-starts-with-passive-accounting.md).
+explicit gaps, correlated diagnostics and no routing/waits. Health, identities,
+polling, REST and retained playback passed; natural-search evidence is pending.
+See the [accounting decision](./decisions/2026-10-16-twitter-admission-starts-with-passive-accounting.md)
+and [rollout record](./history/twitter-accounting-rollout-2026-10-16.md).
 Admission runtime changes, scheduling review, natural coverage evidence, and
 explicit production approval remain; this is not an admission release.
 

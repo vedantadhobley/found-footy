@@ -5,6 +5,9 @@ preserve sequence and rationale but do not define current behavior or work.
 Use the [`docs` routing index](../README.md) for current ledgers and
 [`todo.md`](../todo.md) for active issues.
 
+- [Passive Twitter accounting rollout — October 16 UTC](./twitter-accounting-rollout-2026-10-16.md)
+  — accounting-only release, clean-source isolation, unchanged search behavior,
+  production acceptance and pending natural-request evidence.
 - [Vision queue rollout — October 15 UTC](./vision-queue-rollout-2026-10-15.md)
   — FF-037 capped Temporal admission, isolated backlog/cancellation tests,
   production poller verification, and remaining natural-load acceptance.

@@ -102,7 +102,7 @@ found-footy/
 │   │   ├── auth.go                      ✓ T/b + FF-058: warm/forced verification, cookie reload/writeback evidence, /authenticate, /auth/verify
 │   │   ├── cookies_backup.go            ✓ T/b + FF-058: full-shape Fingerprint, strict-domain atomic backup, mtime, auth_token guard
 │   │   ├── search.go / search_evidence.go ✓ T/c + FF-051 + FF-061: POST /search, bounded DOM/timeline classification, local age cutoff, cancellable scroll/extraction
-│   │   ├── search_accounting.go          FF-038 local/undeployed: bounded passive request accounting, no routing or admission
+│   │   ├── search_accounting.go          ✓ FF-038: bounded passive request accounting, no routing or admission
 │   │   └── *_test.go                    cookie, auth, browser-conversion, and search tests
 │   ├── twitterauth/                     ✓ FF-059: read-only Firefox SQLite capture, strict publication gate, and health/status service
 ├── docker/twitter/                      ✓ headless Playwright search image; no VNC packages or runtime branch
@@ -667,7 +667,7 @@ next-probe shortcut rule there; new histories initialize the cutoff through
 `activity/discovery/search_window.go` using existing downstream metadata.
 Usable HTTP results must acknowledge the applied window. See the
 [fixed-window decision](./decisions/2026-09-10-search-window-follows-first-observation.md).
-FF-038's local, undeployed `accounting.go` adds optional bounded per-request
+FF-038's `accounting.go` (deployed October 16 as `62af131`) adds bounded per-request
 timeline evidence. Browser diagnostics, HTTP-client logs, workflow measurements
 and existing progress JSON share the scan identity. No controller, new workflow
 commands, schema, routing or search-policy change is introduced. See the

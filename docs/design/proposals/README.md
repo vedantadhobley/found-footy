@@ -12,7 +12,7 @@ work.
   seams, partial-scan defects, and proposed first-release policy;
   [implementation plan](./twitter-shared-admission-implementation.md) covers
   contracts, file changes, recovery and enforcement gates. Passive accounting
-  is local/undeployed; admission is not implemented.
+  is deployed as `62af131`; admission is not implemented.
 - [Reversible video selection](./reversible-video-selection.md) — FF-081 direct
   selected-substitute invariant, offline restoration proof, atomic ownership
   changes and preserved singleton filtering; validation, domain planning and

@@ -1,7 +1,9 @@
 # Twitter admission starts with passive request accounting
 
-**Date:** 2026-10-16. **Status:** implemented locally; not deployed.
+**Date:** 2026-10-16. **Status:** deployed as `62af131`; natural-search validation pending.
 **Issue:** FF-038. Design: [shared admission](../design/proposals/twitter-shared-admission.md).
+The [rollout record](../history/twitter-accounting-rollout-2026-10-16.md) preserves
+source isolation and production acceptance.
 
 ## Decision
 
