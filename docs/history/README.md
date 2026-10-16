@@ -5,6 +5,9 @@ preserve sequence and rationale but do not define current behavior or work.
 Use the [`docs` routing index](../README.md) for current ledgers and
 [`todo.md`](../todo.md) for active issues.
 
+- [Explicit CDN-denial rollout — October 16 UTC](./cdn-denial-rollout-2026-10-16.md)
+  — exact-denial classification, preserved unknown-403 retries, measured release
+  timing and production acceptance without historical data changes.
 - [Passive Twitter accounting rollout — October 16 UTC](./twitter-accounting-rollout-2026-10-16.md)
   — accounting-only release, clean-source isolation, unchanged search behavior,
   production acceptance and pending natural-request evidence.

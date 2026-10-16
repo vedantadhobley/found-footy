@@ -3,7 +3,7 @@
 **Status:** admission proposal; October 16 passive accounting deployed as
 `62af131`. No scheduler, request limiter, search-count policy, or
 production configuration changed.
-The separate local FF-089 denial classifier is not part of this proposal.
+The separate FF-089 denial classifier is not part of this proposal.
 
 ## Problem and current evidence
 

@@ -568,12 +568,14 @@ the current branch.
   identifies geographic denial for these samples, not every historical 403.
   Keita's separate missing-video result had only three pre-download rejects,
   with no CDN or OCR failure. See the [bounded investigation](./design/audits/cdn-and-discovery-gaps-2026-10-15.md).
-- **Local implementation (not deployed):** Recognize only a complete, bounded
+- **Deployed October 16 as `6ffee6b`:** Recognize only a complete, bounded
   plain-text `Geo Forbidden` CDN response as typed `ErrCDNGeoRestricted` and
   persist terminal `rejected/cdn_geo_restricted` after one download attempt.
   Unknown or incomplete 403s retain all four attempts and FF-060 failure detail.
   Response inspection has byte/time bounds and retains no raw body or signed
-  URL. See the [decision](./decisions/2026-10-15-explicit-cdn-geographic-denials.md).
+  URL. See the [decision](./decisions/2026-10-15-explicit-cdn-geographic-denials.md)
+  and [rollout record](./history/cdn-denial-rollout-2026-10-16.md). Health,
+  identities, REST and retained playback passed; natural-denial proof remains.
 - **Next investigation:** Preserve representative denial evidence, determine
   which remaining generic denials are recoverable, and test a bounded recovery
   path before changing their four-attempt policy. Do not infer cause from path

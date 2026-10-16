@@ -1,5 +1,8 @@
 # Explicit CDN geographic denials are terminal candidate outcomes
 
+**Status:** deployed October 16 as `6ffee6b`; natural-denial validation pending.
+See the [rollout record](../history/cdn-denial-rollout-2026-10-16.md).
+
 ## Context
 
 [FF-029](./2026-08-17-cdn-download-denial-is-transient.md) made video-CDN
@@ -58,4 +61,4 @@ reason is the diagnostic evidence; no response-body archive is required.
 Adapter tests cover exact versus ambiguous bodies, byte/time bounds, unchanged
 non-403 statuses, and denial-data exclusion. Activity and workflow regressions
 cover terminal persistence and skipped downstream work; existing generic-403
-tests still require the full retry budget. Production rollout is separate.
+tests still require the full retry budget. Historical recovery remains separate.
