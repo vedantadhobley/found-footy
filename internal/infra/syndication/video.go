@@ -1,9 +1,9 @@
 // video.go — resolve a tweet's best mp4 variant via the syndication
 // tweet-result endpoint, then download the bytes directly from Twitter's
-// CDN. Cookieless (no auth, no session): works for regular public goal
-// clips; amplify/promoted content may 403 (revisit with cookies if it
-// surfaces in production). This is the per-candidate download leaf. See
-// docs/orchestration.md.
+// CDN. Cookieless (no auth, no session): explicit geographic denials are
+// distinct from unexplained 403s; neither the uploader nor the CDN path
+// establishes the cause. This is the per-candidate download leaf. See
+// docs/orchestration/event.md.
 package syndication
 
 import (
@@ -12,10 +12,13 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"mime"
 	"net"
 	"net/http"
 	"regexp"
 	"sort"
+	"strings"
+	"time"
 )
 
 const (
@@ -25,11 +28,15 @@ const (
 	// rather than a generic 404 at the syndication API.
 	minSnowflakeLen = 18
 
-	// Browser-like headers the syndication host + video CDN expect. The
-	// CDN 403s a byte request without Referer + Origin (roadmap "load-
-	// bearing"); they're static, not session-derived.
+	// Retain the existing browser-like headers; they are not evidence that
+	// a particular denial is geographic, authentication-related, or transient.
 	refererHeader = "https://twitter.com/"
 	originHeader  = "https://twitter.com"
+
+	// Denial inspection must not become an unbounded body read or hold a
+	// download slot for the full media-transfer timeout.
+	cdnDenialMaxBytes    = 256
+	cdnDenialReadTimeout = 2 * time.Second
 )
 
 // tweetIDRe pulls the numeric status id out of a tweet URL — handles
@@ -183,10 +190,12 @@ func (c *Client) fetchTweetResult(ctx context.Context, id string, dst *tweetResu
 	return nil
 }
 
-// Download streams the bytes at variantURL (a full video.twimg.com CDN url)
-// into w, cookieless, with the browser headers the CDN requires (Referer +
-// Origin — without them the CDN 403s). Returns bytes written.
+// Download streams the bytes at variantURL into w without cookies. Only a
+// complete, bounded plain-text geographic denial is terminal; unexplained
+// 403s remain retryable. Denial errors include neither signed URL nor body.
 func (c *Client) Download(ctx context.Context, variantURL string, w io.Writer) (int64, error) {
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, variantURL, nil)
 	if err != nil {
 		return 0, fmt.Errorf("%w: build download request: %v", ErrInvalidResponse, err)
@@ -205,7 +214,9 @@ func (c *Client) Download(ctx context.Context, variantURL string, w io.Writer) (
 	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode == http.StatusForbidden {
-		return 0, fmt.Errorf("%w: host=%s", ErrCDNForbidden, req.URL.Host)
+		timer := time.AfterFunc(cdnDenialReadTimeout, cancel)
+		defer timer.Stop()
+		return 0, fmt.Errorf("%w: host=%s", classifyCDNDenial(resp), req.URL.Host)
 	}
 	if err := statusToErr(resp.StatusCode, ""); err != nil {
 		return 0, err
@@ -215,6 +226,21 @@ func (c *Client) Download(ctx context.Context, variantURL string, w io.Writer) (
 		return n, fmt.Errorf("%w: %v", ErrCDNStream, err)
 	}
 	return n, nil
+}
+
+// classifyCDNDenial recognizes only the observed literal response. Partial,
+// oversized, non-text, and unknown bodies cannot establish geographic denial.
+// The caller bounds read time by canceling the response's request context.
+func classifyCDNDenial(resp *http.Response) error {
+	contentType, _, err := mime.ParseMediaType(resp.Header.Get("Content-Type"))
+	if err != nil || contentType != "text/plain" {
+		return ErrCDNForbidden
+	}
+	body, err := io.ReadAll(io.LimitReader(resp.Body, cdnDenialMaxBytes+1))
+	if err == nil && len(body) <= cdnDenialMaxBytes && strings.TrimSpace(string(body)) == "Geo Forbidden" {
+		return ErrCDNGeoRestricted
+	}
+	return ErrCDNForbidden
 }
 
 // statusToErr maps a non-2xx status to the typed taxonomy. 2xx → nil.

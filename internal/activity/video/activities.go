@@ -277,6 +277,8 @@ func classifySyndication(err error) (reason string, terminal bool) {
 		return "not_available", true
 	case errors.Is(err, syndication.ErrGeoRestricted):
 		return "geo_restricted", true
+	case errors.Is(err, syndication.ErrCDNGeoRestricted):
+		return RejectCDNGeoRestricted, true
 	case errors.Is(err, syndication.ErrNoVideoVariants):
 		return "no_video_variant", true
 	case errors.Is(err, syndication.ErrCDNForbidden),

@@ -51,12 +51,17 @@ histories use the fixed search-window contract below.
 
 `DownloadAndStage` resolves the tweet and downloads its selected CDN variant
 inside one retryable activity. A 403 from the metadata endpoint is terminal
-`geo_restricted`; a 403 from the subsequent CDN byte request is transient
-`ErrCDNForbidden`. The latter consumes the normal four activity attempts,
+`geo_restricted`. A complete, bounded plain-text `Geo Forbidden` CDN response
+is terminal `cdn_geo_restricted`: the existing rejected-outcome path persists
+the reason after one download attempt, with no hashing, vision or staging.
+Only this explicit evidence bypasses retries; unknown CDN 403s remain transient
+`ErrCDNForbidden`. They consume the normal four activity attempts,
 rerunning resolution before every download so an expired or edge-rejected
 variant URL can refresh (FF-029). Exhaustion still follows FF-002's correlated
 `download_error` path. New histories retain FF-060's bounded stage/class in
 `outcome_detail.failure` without persisting the raw error or signed variant.
+The [explicit-denial decision](../decisions/2026-10-15-explicit-cdn-geographic-denials.md)
+defines the byte/time bounds and explains why historical 403s remain unchanged.
 
 **Search availability contract (FF-061).** The browser result is one of
 `rendered`, `explicit_empty`, `login`, `upstream_error`, or

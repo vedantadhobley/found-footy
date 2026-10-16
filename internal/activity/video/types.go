@@ -13,6 +13,10 @@ const (
 	OutcomePassed   = "passed"
 	OutcomeRejected = "rejected"
 
+	// RejectCDNGeoRestricted preserves the explicit CDN denial separately
+	// from metadata-level access denial and unexplained download failures.
+	RejectCDNGeoRestricted = "cdn_geo_restricted"
+
 	// RejectInsufficientHashFrames is deterministic for the staged bytes: the
 	// sequence cannot satisfy the configured perceptual-match window, so the
 	// activity returns an outcome instead of retrying identical work.

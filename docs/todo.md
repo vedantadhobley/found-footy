@@ -561,11 +561,25 @@ the current branch.
 - **Disposition:** This is the previously deferred CDN recovery work, not a
   new failure introduced by the event-update rollout. FF-060's diagnostic
   fix is [validated and closed](./history/issue-closures-2026-09-08.md).
+- **October 15 evidence:** Brunner's seven failed posts referenced two media
+  objects, six CANAL+ references and one TNT reference. Fresh metadata worked,
+  but both objects returned explicit `Geo Forbidden`; tested high/low MP4 and
+  HLS paths were denied while an accepted same-family control worked. This
+  identifies geographic denial for these samples, not every historical 403.
+  Keita's separate missing-video result had only three pre-download rejects,
+  with no CDN or OCR failure. See the [bounded investigation](./design/audits/cdn-and-discovery-gaps-2026-10-15.md).
+- **Local implementation (not deployed):** Recognize only a complete, bounded
+  plain-text `Geo Forbidden` CDN response as typed `ErrCDNGeoRestricted` and
+  persist terminal `rejected/cdn_geo_restricted` after one download attempt.
+  Unknown or incomplete 403s retain all four attempts and FF-060 failure detail.
+  Response inspection has byte/time bounds and retains no raw body or signed
+  URL. See the [decision](./decisions/2026-10-15-explicit-cdn-geographic-denials.md).
 - **Next investigation:** Preserve representative denial evidence, determine
-  which failures are recoverable, and test a bounded recovery path before
-  changing the four-attempt download policy. Do not assume more retries,
-  cookies, or variant fallback will work. X search HTTP 429 belongs to FF-038,
-  not this media-CDN issue.
+  which remaining generic denials are recoverable, and test a bounded recovery
+  path before changing their four-attempt policy. Do not infer cause from path
+  family or assume cookies or variant fallback will work. Explicit geographic
+  denial is not recovered by this classification. X search HTTP 429 belongs to
+  FF-038, not this media-CDN issue.
 
 ### FF-075 — successful provider responses can destructively regress live state
 

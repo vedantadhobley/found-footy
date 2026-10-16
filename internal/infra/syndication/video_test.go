@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -171,6 +172,139 @@ func TestDownload_CDN403IsTransientForbidden(t *testing.T) {
 	}
 	if errors.Is(err, syndication.ErrGeoRestricted) {
 		t.Fatalf("CDN 403 must not be terminal ErrGeoRestricted: %v", err)
+	}
+}
+
+// TestDownload_DenialClassification requires complete literal evidence, never
+// a substring, path/uploader heuristic, or raw diagnostic in the returned error.
+func TestDownload_DenialClassification(t *testing.T) {
+	for _, tc := range []struct {
+		name        string
+		contentType string
+		body        string
+		truncated   bool
+		want        error
+	}{
+		{"explicit", "text/plain", "Geo Forbidden", false, syndication.ErrCDNGeoRestricted},
+		{"whitespace-and-charset", "text/plain; charset=utf-8", "\r\nGeo Forbidden\n", false, syndication.ErrCDNGeoRestricted},
+		{"empty", "text/plain", "", false, syndication.ErrCDNForbidden},
+		{"unknown", "text/plain", "Forbidden PRIVATE_RESPONSE", false, syndication.ErrCDNForbidden},
+		{"substring", "text/plain", "not Geo Forbidden", false, syndication.ErrCDNForbidden},
+		{"html", "text/html", "<html>Geo Forbidden</html>", false, syndication.ErrCDNForbidden},
+		{"json", "application/json", `{"error":"Geo Forbidden"}`, false, syndication.ErrCDNForbidden},
+		{"binary", "application/octet-stream", "Geo Forbidden", false, syndication.ErrCDNForbidden},
+		{"missing-content-type", "", "Geo Forbidden", false, syndication.ErrCDNForbidden},
+		{"malformed-content-type", "text/plain; charset=", "Geo Forbidden", false, syndication.ErrCDNForbidden},
+		{"oversized", "text/plain", "Geo Forbidden" + strings.Repeat(" ", 512), false, syndication.ErrCDNForbidden},
+		{"truncated", "text/plain", "Geo Forbidden", true, syndication.ErrCDNForbidden},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				// An explicit empty value prevents net/http's type sniffing.
+				w.Header()["Content-Type"] = []string{tc.contentType}
+				if tc.truncated {
+					w.Header().Set("Content-Length", "100")
+				}
+				w.WriteHeader(http.StatusForbidden)
+				_, _ = w.Write([]byte(tc.body))
+			}))
+			defer srv.Close()
+			var dst bytes.Buffer
+			n, err := newClient(t, "http://unused").Download(context.Background(),
+				srv.URL+"/PRIVATE_PATH.mp4?token=PRIVATE_TOKEN", &dst)
+			if !errors.Is(err, tc.want) {
+				t.Fatalf("denial = %v, want %v", err, tc.want)
+			}
+			other := syndication.ErrCDNGeoRestricted
+			if tc.want == other {
+				other = syndication.ErrCDNForbidden
+			}
+			if errors.Is(err, other) || errors.Is(err, syndication.ErrGeoRestricted) {
+				t.Fatalf("denial conflated with another class: %v", err)
+			}
+			if n != 0 || dst.Len() != 0 || strings.Contains(err.Error(), "PRIVATE_") || strings.Contains(err.Error(), "Geo Forbidden") {
+				t.Fatalf("denial leaked media/response data: bytes=%d, written=%d, err=%v", n, dst.Len(), err)
+			}
+		})
+	}
+}
+
+// TestDownload_DenialBodyHasItsOwnReadBound prevents a stalled error body from
+// holding the media download slot until its two-minute transfer timeout.
+func TestDownload_DenialBodyHasItsOwnReadBound(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/plain")
+		w.WriteHeader(http.StatusForbidden)
+		_, _ = w.Write([]byte("Geo Forbidden"))
+		w.(http.Flusher).Flush()
+		<-r.Context().Done() // no EOF: the apparent literal is incomplete evidence
+	}))
+	defer srv.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	started := time.Now()
+	_, err := newClient(t, "http://unused").Download(ctx, srv.URL, &bytes.Buffer{})
+	if !errors.Is(err, syndication.ErrCDNForbidden) || errors.Is(err, syndication.ErrCDNGeoRestricted) {
+		t.Fatalf("stalled denial = %v, want unknown/retryable", err)
+	}
+	if ctx.Err() != nil || time.Since(started) > 5*time.Second {
+		t.Fatalf("denial read exceeded its own bound: elapsed=%s, parent=%v", time.Since(started), ctx.Err())
+	}
+}
+
+// TestDownload_DenialReadRespectsCancellation lets the caller release a stalled
+// diagnostic read immediately, without waiting for the adapter's read bound.
+func TestDownload_DenialReadRespectsCancellation(t *testing.T) {
+	ready := make(chan struct{})
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/plain")
+		w.WriteHeader(http.StatusForbidden)
+		w.(http.Flusher).Flush()
+		close(ready)
+		<-r.Context().Done()
+	}))
+	defer srv.Close()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	client := newClient(t, "http://unused")
+	done := make(chan error, 1)
+	go func() {
+		_, err := client.Download(ctx, srv.URL, &bytes.Buffer{})
+		done <- err
+	}()
+	<-ready
+	cancel()
+	select {
+	case err := <-done:
+		if err == nil || errors.Is(err, syndication.ErrCDNGeoRestricted) {
+			t.Fatalf("cancellation became success or geographic evidence: %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("caller cancellation did not release the denial read")
+	}
+}
+
+// TestDownload_GeoLiteralDoesNotOverrideOtherStatuses preserves successful
+// byte transfers and the existing rate-limit taxonomy regardless of the body.
+func TestDownload_GeoLiteralDoesNotOverrideOtherStatuses(t *testing.T) {
+	for _, code := range []int{http.StatusOK, http.StatusTooManyRequests} {
+		t.Run(fmt.Sprint(code), func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.Header().Set("Content-Type", "text/plain")
+				w.WriteHeader(code)
+				_, _ = w.Write([]byte("Geo Forbidden"))
+			}))
+			defer srv.Close()
+			var dst bytes.Buffer
+			n, err := newClient(t, "http://unused").Download(context.Background(), srv.URL, &dst)
+			if code == http.StatusOK {
+				if err != nil || n != 13 || dst.String() != "Geo Forbidden" {
+					t.Fatalf("success changed: bytes=%d, err=%v", n, err)
+				}
+			} else if !errors.Is(err, syndication.ErrRateLimited) || n != 0 || dst.Len() != 0 {
+				t.Fatalf("429 changed: bytes=%d, err=%v", n, err)
+			}
+		})
 	}
 }
 

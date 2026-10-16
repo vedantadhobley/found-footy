@@ -153,6 +153,37 @@ func TestEventWorkflow_PreHashDownloadFailurePersistsBoundedDetail(t *testing.T)
 	env.AssertNotCalled(t, "ValidateClip", mock.Anything, mock.Anything)
 }
 
+// TestEventWorkflow_CDNGeoDenialIsTerminal requires the bounded reason to reach
+// the durable candidate row after one download, without hashing or inference.
+func TestEventWorkflow_CDNGeoDenialIsTerminal(t *testing.T) {
+	var s testsuite.WorkflowTestSuite
+	env := preHashEventEnv(&s)
+	const tweetURL = "https://x.com/u/status/1111111111111111111"
+	env.OnActivity("SearchTweets", mock.Anything, mock.Anything).
+		Return(discoveryactivity.SearchTweetsOutput{
+			Videos: []twitter.VideoRef{{TweetURL: tweetURL, VideoPageURL: "vp", DurationSeconds: 21}}, Count: 1,
+		}, nil)
+	env.OnActivity("StoreCandidate", mock.Anything, mock.Anything).
+		Return(discoveryactivity.StoreCandidateOutput{Inserted: true}, nil).Once()
+	env.OnActivity("DownloadAndStage", mock.Anything, downloadTweetIs(tweetURL)).
+		Return(videoactivity.DownloadAndStageOutput{
+			Outcome: videoactivity.OutcomeRejected, RejectReason: videoactivity.RejectCDNGeoRestricted,
+		}, nil).Once()
+	env.OnActivity("UpsertCandidateOutcome", mock.Anything,
+		mock.MatchedBy(func(in discoveryactivity.UpsertCandidateOutcomeInput) bool {
+			return in.Evidence.TweetURL == tweetURL &&
+				in.Outcome == discoveryactivity.OutcomeRejected &&
+				in.RejectReason == videoactivity.RejectCDNGeoRestricted
+		})).Return(nil).Once()
+
+	env.ExecuteWorkflow(workflow.EventWorkflow, stdDiscoveryInput())
+	requireDone(t, env)
+	env.AssertNumberOfCalls(t, "DownloadAndStage", 1)
+	env.AssertNotCalled(t, "HashVideo", mock.Anything, mock.Anything)
+	env.AssertNotCalled(t, "ValidateClip", mock.Anything, mock.Anything)
+	env.AssertNotCalled(t, "PromoteAndPersist", mock.Anything, mock.Anything)
+}
+
 func TestEventWorkflow_PreFF060HistoryOmitsNewDownloadFailureDetail(t *testing.T) {
 	var s testsuite.WorkflowTestSuite
 	env := preHashEventEnv(&s)

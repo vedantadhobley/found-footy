@@ -609,9 +609,13 @@ Adapter-specific notes:
   FF-087 adds typed local-admission interruption, separate wait/request timers,
   and queued versus admitted-call gauges without changing the request contract.
 - **syndication**: metadata resolution and CDN byte download use separate 403
-  classes. Metadata 403 is terminal `ErrGeoRestricted`; CDN 403 is transient
-  `ErrCDNForbidden`, allowing the enclosing activity retry to resolve a fresh
-  variant URL without exposing the signed URL in errors (FF-029). Transport,
+  classes. Metadata 403 is terminal `ErrGeoRestricted`; an explicit, bounded
+  plain-text `Geo Forbidden` CDN response is terminal `ErrCDNGeoRestricted`
+  and becomes candidate reason `cdn_geo_restricted` (FF-089). Denial inspection
+  caps the body at 256 bytes plus one overflow byte and the read at two seconds;
+  incomplete or unknown evidence remains retryable `ErrCDNForbidden`. That
+  retry resolves a fresh variant URL; denial errors expose neither signed URL
+  nor response body (FF-029). Transport,
   invalid-response, and response-stream sentinels let FF-060 persist bounded
   stage/class evidence after retry exhaustion.
 - **apifootball**: getJSON helper handles auth (`x-apisports-key` per

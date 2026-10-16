@@ -835,6 +835,17 @@ failures, activity tests decode bounded resolve/download/probe/staging detail,
 and EventWorkflow tests require the terminal candidate JSON while a version
 test preserves the pre-FF-060 payload.
 
+FF-089 adds local HTTP regressions for the literal plain-text geographic
+denial, media-type parameters, empty/unknown/non-text/oversized/truncated
+responses, and unchanged HTTP 200/429 behavior. An internal reader test proves
+the 256-byte-plus-overflow bound; a stalled response proves the separate
+two-second read deadline without canceling its parent. Tests also exclude raw
+denial bodies and signed URL data from denial errors. Activity tests require
+scratch cleanup and skipped probe/staging; EventWorkflow tests require one
+download and durable `rejected/cdn_geo_restricted` with no hash or inference.
+Existing unknown-CDN-403 workflow tests still require four attempts. These
+tests use no production, external service, or model capacity.
+
 FF-087 tests fault each vision stage and round-trip its allowlisted details
 through Temporal's failure converter. Workflow regressions cover timeout
 precedence, malformed/old detail, permanent versus transient attempts, matching

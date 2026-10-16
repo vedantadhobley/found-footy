@@ -42,3 +42,8 @@ the download retry count, or the FF-002 failure result.
 [FF-060](./2026-08-25-download-failures-retain-bounded-stage-and-class.md)
 retains the same retry policy and `download_error` result while adding bounded
 `cdn_download/forbidden` evidence to the terminal candidate row.
+
+[Explicit geographic-denial evidence](./2026-10-15-explicit-cdn-geographic-denials.md)
+later adds one narrow exception: a complete, bounded plain-text
+`Geo Forbidden` response becomes terminal `cdn_geo_restricted`. Unexplained
+CDN 403s retain this decision's retry behavior.

@@ -12,6 +12,8 @@ import (
 	"image"
 	"image/png"
 	"io"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -251,6 +253,31 @@ func TestDownloadAndStage_CDNForbiddenIsError(t *testing.T) {
 		t.Fatalf("CDN forbidden outcome=%q, want empty retryable result", out.Outcome)
 	}
 	requireDownloadFailure(t, err, DownloadFailureCDNDownload, DownloadFailureForbidden)
+}
+
+// TestDownloadAndStage_CDNGeoIsOutcomeNotError stops only explicit geographic
+// denial before probe, fingerprinting, or staging, and removes scratch files.
+func TestDownloadAndStage_CDNGeoIsOutcomeNotError(t *testing.T) {
+	s := &fakeSynd{
+		rv: &syndication.ResolvedVideo{
+			TweetID: "123", VariantURL: "https://v/hi.mp4",
+			Width: 1920, Height: 1080, DurationMS: 21360,
+		},
+		dlErr: fmt.Errorf("download: %w", syndication.ErrCDNGeoRestricted),
+	}
+	ff, storage := &fakeFFmpeg{}, &fakeS3{}
+	acts, in := newActs(t, s, ff, storage), input()
+	out, err := acts.DownloadAndStage(context.Background(), in)
+	if err != nil || out.Outcome != OutcomeRejected || out.RejectReason != RejectCDNGeoRestricted {
+		t.Fatalf("explicit CDN denial = %+v, %v; want rejected/%s", out, err, RejectCDNGeoRestricted)
+	}
+	if !s.downloadCalled || out.MD5 != "" || out.StagingKey != "" || len(storage.uploaded) != 0 || ff.fingerprintCalled {
+		t.Fatalf("denied candidate reached downstream processing: %+v", out)
+	}
+	dir := filepath.Join(acts.ScratchDir, fmt.Sprint(in.FixtureID), in.EventID.String(), s.rv.TweetID)
+	if _, err := os.Stat(dir); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("denied candidate scratch remains: %v", err)
+	}
 }
 
 func TestDownloadAndStage_ProbeFailureCarriesDetail(t *testing.T) {

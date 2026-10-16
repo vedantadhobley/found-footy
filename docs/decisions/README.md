@@ -17,6 +17,9 @@ New decisions after the frozen archive:
 - [Twitter admission starts with passive accounting](./2026-10-16-twitter-admission-starts-with-passive-accounting.md)
   — records bounded request identity, quota/timing evidence and explicit
   gaps without routing, admission, healthy-search serialization or new waits.
+- [Explicit CDN geographic denials are terminal candidate outcomes](./2026-10-15-explicit-cdn-geographic-denials.md)
+  — recognizes only bounded literal denial evidence, preserves unknown-403
+  retries, and stores a separate reason without raw bodies or signed URLs.
 - [Vision capacity waits in Temporal](./2026-10-15-vision-capacity-waits-in-temporal.md)
   — isolates validation on a capped activity queue inside existing workers,
   preserves old histories, and keeps execution deadlines out of local backlog.

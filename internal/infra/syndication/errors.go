@@ -31,9 +31,14 @@ var (
 	// is not expected to change the result).
 	ErrGeoRestricted = errors.New("syndication: video geo-restricted (403)")
 
+	// ErrCDNGeoRestricted — the CDN returned a complete, bounded plain-text
+	// "Geo Forbidden" response. Terminal for this candidate from this egress;
+	// it does not establish availability from another location or with cookies.
+	ErrCDNGeoRestricted = errors.New("syndication: CDN geographic denial (403)")
+
 	// ErrCDNForbidden — 403 while fetching a resolved variant from the CDN.
-	// Transient: retrying DownloadAndStage resolves the tweet again, which
-	// can refresh an expired or edge-rejected variant URL.
+	// No explicit geographic denial was established. Retryable: resolving
+	// again can refresh an expired or edge-rejected variant URL.
 	ErrCDNForbidden = errors.New("syndication: CDN denied video download (403)")
 
 	// ErrRateLimited — 429. Transient; the caller may back off + retry.
