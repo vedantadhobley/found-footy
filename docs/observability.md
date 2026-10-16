@@ -130,6 +130,17 @@ counter. The Twitter HTTP client emits the same result fields plus bounded,
 secret-free evidence: final route/title, app-shell/empty/error bits,
 SearchTimeline status/failure, and rate-limit headers when present.
 
+FF-038's local passive-accounting slice adds a bounded `timeline` object to
+the existing HTTP-client and workflow search measurements. The browser emits
+`twitter_timeline_measured` once per scan through its existing diagnostic sink,
+including on failed navigation/caller cancellation. It carries scan identity,
+timestamps, request/response/finish/failure and 429/5xx counts, explicit
+truncation/unmatched events, and up to 64 correlated request records. The
+browser and returned snapshots may differ in observation time; join by
+`scan_id`, never sum the copies. No IDs become metric labels and no new
+Prometheus counter claims these observations are proven upstream quota debits.
+See the [accounting decision](./decisions/2026-10-16-twitter-admission-starts-with-passive-accounting.md).
+
 FF-091 adds the applied `search_window` object and calculated
 `next_allow_seen_stop` to the existing workflow search measurement. The window
 contains the absolute timestamp and the permission used for that probe;

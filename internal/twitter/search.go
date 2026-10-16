@@ -142,16 +142,26 @@ func (s *Service) handleSearch(w http.ResponseWriter, r *http.Request) {
 	start := time.Now()
 	searchURL := buildSearchURL(req.Query)
 
-	evidenceCollector := &searchEvidenceCollector{}
+	evidenceCollector := &searchEvidenceCollector{accounting: newTimelineAccounting()}
+	var page playwright.Page
+	defer func() {
+		if page != nil {
+			_ = page.Close()
+		}
+	}()
+	// LIFO snapshots before cleanup, without waiting for unfinished requests.
+	// Separate defers preserve page cleanup even if a diagnostic sink panics.
+	defer s.emitTimelineAccounting(evidenceCollector.accounting)
 	page, err := s.browser.Navigate(r.Context(), searchURL, s.pageLoadTimeout, evidenceCollector.observe)
 	if err != nil {
 		s.SetState(StateDegraded, "search navigation failed")
+		evidence := evidenceCollector.networkSnapshot()
+		evidence.TimelineFailure = "navigation_failed"
 		writeSearchClassifiedError(w, http.StatusBadGateway, errClassNavigation,
 			"navigate: "+err.Error(), twittercontract.ResultUnknownTimeout,
-			twittercontract.SearchEvidence{TimelineFailure: "navigation_failed"})
+			evidence)
 		return
 	}
-	defer func() { _ = page.Close() }()
 
 	// Combined verify+search: check for the logged-in indicator on this
 	// same page load. Timeout is short (5s) — the SPA shell renders
@@ -174,7 +184,8 @@ func (s *Service) handleSearch(w http.ResponseWriter, r *http.Request) {
 	)
 	if stateErr != nil && !errors.Is(stateErr, playwright.ErrTimeout) {
 		s.SetState(StateDegraded, "search feed locator failed")
-		writeSearchError(w, http.StatusInternalServerError, errClassInternal, "wait for search state: "+stateErr.Error())
+		writeSearchClassifiedError(w, http.StatusInternalServerError, errClassInternal,
+			"wait for search state: "+stateErr.Error(), "", evidenceCollector.networkSnapshot())
 		return
 	}
 	initialArticles, _ := articles.Count()
@@ -221,7 +232,8 @@ func (s *Service) handleSearch(w http.ResponseWriter, r *http.Request) {
 
 	videos, stopReason, scrolls, stats, extractErr := s.scrollAndExtract(r.Context(), page, excludeIDs, maxAgeMinutes, req.Window)
 	if extractErr != nil {
-		writeSearchError(w, http.StatusInternalServerError, errClassInternal, "extract: "+extractErr.Error())
+		writeSearchClassifiedError(w, http.StatusInternalServerError, errClassInternal,
+			"extract: "+extractErr.Error(), "", evidenceCollector.networkSnapshot())
 		return
 	}
 

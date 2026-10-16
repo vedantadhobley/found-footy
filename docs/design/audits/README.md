@@ -5,6 +5,9 @@ Every surviving finding must have a stable disposition in
 [`todo.md`](../../todo.md), and any old claim must be verified against current
 code before work begins.
 
+- [CDN denial and discovery gaps — October 15 UTC](./cdn-and-discovery-gaps-2026-10-15.md)
+  — Brunner's two geographic-denial source objects, Keita's three ineligible
+  candidates, and separate shared-search budget exhaustion after OCR recovery.
 - [Quality-first video presentation planning — 2026-09-19](./video-presentation-planning-2026-09-19.md)
   — current FF-078 visibility replay, technical/context Pareto frontiers,
   graph-aware suppression, and the Raphinha primary ambiguity; offline only.

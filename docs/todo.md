@@ -2418,6 +2418,32 @@ natural validation measured HTTP 429, limit 50, remaining 0, and a roughly
 policy belongs inside FF-038's atomic fleet controller, not in an independent
 limiter.
 
+The [October 15 shared-admission proposal](./design/proposals/twitter-shared-admission.md)
+compares existing limiter/queue patterns and proposes a durable resource
+coordinator behind the fleet's HTTP boundary. A network-isolated real-Firefox
+probe verified that request routing can block a timeline fetch before it
+reaches a local fake upstream. This is not an implemented controller or a
+production policy change. The research also identifies rendered-then-429
+classification and partial-candidate handling that must change together;
+restarting a page on every fair turn could repeatedly consume the same prefix.
+The private Temporal 1.24.3 Signal/receipt probe passed retry, worker replacement
+and history rotation. Default Workflow Updates were disabled in that test
+namespace, so no server feature change is proposed. The
+[implementation plan](./design/proposals/twitter-shared-admission-implementation.md)
+preserves the fifteen-usable-search target and proposes a thirty-minute
+cumulative admission-wait budget, without long-held X pages.
+It also identifies a checkpoint sequencing/fencing change: deliberate deferral
+advances neither counter currently used to decide which evidence is newest.
+The October 16 review withdrew whole-search serialization: atomic request
+reservations, not a one-active-scan cap, protect quota; preserve healthy
+concurrency and review scarce-request fairness against measured evidence.
+Passive request accounting is now implemented locally in the browser's
+existing event listeners and optional search evidence, with bounded records,
+explicit gaps, correlated diagnostics and no routing/waits. It is **not
+deployed**. See the [accounting decision](./decisions/2026-10-16-twitter-admission-starts-with-passive-accounting.md).
+Admission runtime changes, scheduling review, natural coverage evidence, and
+explicit production approval remain; this is not an admission release.
+
 The [completed September 9 MLS audit](./design/audits/mls-search-recovery-2026-09-10.md)
 extends FF-038's evidence: 35 HTTP 429s across six reported reset values, with
 all surviving discoveries recovering their usable budget. Some observations

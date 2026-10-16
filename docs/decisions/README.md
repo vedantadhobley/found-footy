@@ -14,6 +14,9 @@ its historical heading anchors valid.
 
 New decisions after the frozen archive:
 
+- [Twitter admission starts with passive accounting](./2026-10-16-twitter-admission-starts-with-passive-accounting.md)
+  — locally records bounded request identity, quota/timing evidence and explicit
+  gaps without routing, admission, healthy-search serialization or new waits.
 - [Vision capacity waits in Temporal](./2026-10-15-vision-capacity-waits-in-temporal.md)
   — isolates validation on a capped activity queue inside existing workers,
   preserves old histories, and keeps execution deadlines out of local backlog.

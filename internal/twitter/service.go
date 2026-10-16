@@ -105,6 +105,8 @@ type ServiceOptions struct {
 	// any-state → StateUnauthenticated as `twitter.auth_expired` and
 	// any-state → StateFailed as `twitter.browser_failed`. Nil
 	// (default) makes it a no-op.
+	// Also emits one bounded twitter_timeline_measured diagnostic per search,
+	// before page cleanup. It does not publish a semantic event or NATS message.
 	//
 	// Contract: called synchronously from SetState after s.mu is released.
 	// Implementations still should not block the state transition.

@@ -131,6 +131,34 @@ failure, and `x-rate-limit-*` values when X supplies them. It never retains
 response bodies, page bodies, request headers, cookies, authorization headers,
 or tokens.
 
+**Passive timeline accounting (FF-038; local, not deployed).** Optional
+`evidence.timeline` adds a `scan_id`, scan/snapshot timestamps, observed
+request/response/body-finish/transport-failure totals, 429/5xx totals, and up to
+64 request records. SDK request identity joins events even when URLs match.
+Records contain an ordinal, local monotonic event-processing offsets, status,
+failure flag, and parsed quota integers. Missing or malformed headers remain
+null/absent; a real zero is retained. No raw URL, cursor, body or credential
+enters these records. Older producers omit the object rather than claiming
+zero requests.
+
+Totals continue after the detail cap; `dropped_records` and `unmatched_events`
+expose the resulting gaps. A response may later fail during its body. Unfinished
+requests remain unfinished at snapshot; accounting never waits for them or
+infers completion. Browser events do not prove that X received/charged a request.
+One `twitter_timeline_measured` browser summary survives caller disconnection
+and snapshots before normal cleanup. Client/history/workflow evidence shares
+its scan identity; do not add those copies together. Navigation failure can
+already have closed the failed page before the handler sees its evidence.
+
+This observes existing events only. There is no routing hook, extra X request,
+per-request driver RPC, admission call, new sleep, or change to concurrency or
+scrolling. Listener registration uses normal driver subscription messages.
+Rendered-then-failed pagination still has its existing result classification;
+the new records expose it without changing attempt accounting in this slice.
+The [decision](./decisions/2026-10-16-twitter-admission-starts-with-passive-accounting.md)
+and [proposal](./design/proposals/twitter-shared-admission.md) separate this
+instrumentation from future enforcement.
+
 The service installs response listeners before navigation, so fast timeline
 responses cannot race past the collector. It waits for the first article,
 explicit-empty selector, or known error selector. Explicit states therefore

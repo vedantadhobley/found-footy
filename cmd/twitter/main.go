@@ -149,8 +149,8 @@ func main() {
 			BuiltAt:  builtAt,
 			ImageTag: os.Getenv("IMAGE_TAG"),
 		},
-		// AuditEmit — structured auth-expiry and browser-failure transitions
-		// for Grafana/Loki alerting.
+		// AuditEmit — structured state transitions and bounded passive search
+		// accounting for Grafana/Loki; no remote diagnostic calls.
 		AuditEmit: emitAudit,
 	})
 

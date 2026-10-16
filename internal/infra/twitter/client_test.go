@@ -59,6 +59,7 @@ func TestSearch_HappyPath(t *testing.T) {
 		ResultState: twittercontract.ResultRendered,
 		Evidence: twittercontract.SearchEvidence{
 			FinalURL: "https://x.com/search", TimelineSeen: true, TimelineStatus: 200,
+			Timeline: &twittercontract.TimelineAccounting{ScanID: "fixture-scan", Requests: 2, Responses: 2},
 		},
 		Count:           2,
 		StopReason:      "age",
@@ -94,6 +95,21 @@ func TestSearch_HappyPath(t *testing.T) {
 	if res.ResultState != twittercontract.ResultRendered ||
 		res.Evidence.TimelineStatus != 200 {
 		t.Errorf("Search classification was not preserved: %+v", res)
+	}
+	if res.Evidence.Timeline == nil || res.Evidence.Timeline.ScanID != "fixture-scan" || res.Evidence.Timeline.Requests != 2 {
+		t.Fatalf("timeline accounting was not preserved: %+v", res.Evidence)
+	}
+	foundAccounting := false
+	for _, entry := range log.Snapshot() {
+		for _, field := range entry.Fields {
+			if field.Key == "timeline" {
+				accounting, ok := field.Value.(*twittercontract.TimelineAccounting)
+				foundAccounting = ok && accounting.ScanID == "fixture-scan" && accounting.Requests == 2
+			}
+		}
+	}
+	if !foundAccounting {
+		t.Fatal("timeline accounting missing from the existing search log")
 	}
 	if !log.HasAction(vocabulary.ModuleInfraTwitter, vocabulary.ActionTwitterSearch) {
 		t.Errorf("expected ActionTwitterSearch; got %+v", log.Snapshot())

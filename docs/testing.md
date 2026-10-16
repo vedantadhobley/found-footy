@@ -24,6 +24,23 @@ updates this doc if it introduces a new test tier or pattern.
 | Release contract | `test/release_contract_test.go` | Parses production Compose without Docker operations and requires immutable identity propagation plus the stack-wide ffmpeg CPU budget. |
 | Tooling contract | `test/tooling_contract_test.go` | Requires exact Go, golangci-lint, and Air versions across build files, the intended commit/push hook targets, and Git-visible isolation between Go modules. |
 
+The opt-in [FF-038 research probes](../scripts/probe_twitter_admission/README.md)
+use a private disposable Temporal 1.24 stack and network-isolated real Firefox.
+They verify Signal/receipt recovery and the routing seam, not a shipped
+scheduler. Normal short tests run only the synthetic rendered-then-429/503
+characterization; it deliberately pins the current partial-scan defect.
+
+FF-038 passive-accounting tests in `internal/twitter/search_accounting_test.go`
+pin physical request identity rather than URL, out-of-order responses,
+failure after response headers, unknown/zero quota values, unfinished and
+unmatched events, bounded records with continued totals, concurrent snapshots,
+and diagnostics after canceled-caller navigation failure. Browser fakes expose
+only passive event/getter methods; unexpected routing or response-body I/O
+panics. Contract/client tests cover additive wire compatibility and forwarding.
+The existing partial-scan characterization now also verifies request counts
+without changing rendered/usable outcomes. A focused benchmark measures local
+bookkeeping only, not driver setup, network, JSON logging or live-search latency.
+
 For a live inventory, use `rg -n '^func Test' --glob '*_test.go' internal test`
 and `rg --files test/scenarios -g '*.yaml'`.
 

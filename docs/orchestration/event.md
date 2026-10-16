@@ -79,6 +79,14 @@ three/four-attempt activity policy and historical checkpoint behavior. The
 and [incident](../incidents/2026-08-20-twitter-feed-suppression.md) hold the
 rationale and production evidence.
 
+FF-038 passive accounting is implemented locally, not deployed. Optional
+`SearchEvidence.timeline` passes through existing activity results/error
+details and progress JSON, and is attached to the replay-aware search
+measurement. It introduces no new workflow commands, version branch, wait,
+search counters, or schema. Legacy histories lack the object. The rendered-
+then-429/503 classification defect remains unchanged; records expose the
+partial failure for the later coordinated admission fix.
+
 Classified non-2xx browser responses cross the activity boundary as retryable
 Temporal application errors with typed output details. Pre-FF-061 histories
 therefore execute their original retry chain. New histories make one activity

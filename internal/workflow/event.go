@@ -592,7 +592,8 @@ func EventWorkflow(ctx workflow.Context, in EventWorkflowInput) (EventWorkflowOu
 				"scrolls", searchOut.Scrolls,
 				"initial_articles", searchOut.InitialArticles,
 				"tweets_parsed", searchOut.TweetsParsed,
-				"video_tweets", searchOut.VideoTweets)
+				"video_tweets", searchOut.VideoTweets,
+				"timeline", searchOut.Evidence.Timeline)
 			if searchErr != nil && temporal.IsCanceledError(searchErr) {
 				producerErr = searchErr
 				return

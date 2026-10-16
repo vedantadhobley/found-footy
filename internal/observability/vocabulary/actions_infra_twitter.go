@@ -2,10 +2,11 @@
 package vocabulary
 
 const (
-	ActionTwitterSearch       Action = "twitter_search"        // /search succeeded
-	ActionTwitterSearchFailed Action = "twitter_search_failed" // /search returned an error
-	ActionTwitterVerify       Action = "twitter_verify"        // forced auth verify + cookie persistence succeeded
-	ActionTwitterVerifyFailed Action = "twitter_verify_failed" // forced auth verify or persistence failed
+	ActionTwitterSearch           Action = "twitter_search"            // /search succeeded
+	ActionTwitterSearchFailed     Action = "twitter_search_failed"     // /search returned an error
+	ActionTwitterVerify           Action = "twitter_verify"            // forced auth verify + cookie persistence succeeded
+	ActionTwitterVerifyFailed     Action = "twitter_verify_failed"     // forced auth verify or persistence failed
+	ActionTwitterTimelineMeasured Action = "twitter_timeline_measured" // passive browser timeline accounting
 )
 
 func init() {
@@ -14,5 +15,6 @@ func init() {
 		ActionTwitterSearchFailed,
 		ActionTwitterVerify,
 		ActionTwitterVerifyFailed,
+		ActionTwitterTimelineMeasured,
 	)
 }

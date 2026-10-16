@@ -278,5 +278,6 @@ func logSearchEvidence(e twittercontract.SearchEvidence) []logging.Field {
 		logging.String("rate_limit_limit", e.RateLimitLimit),
 		logging.String("rate_limit_remaining", e.RateLimitRemain),
 		logging.String("rate_limit_reset", e.RateLimitReset),
+		{Key: "timeline", Value: e.Timeline},
 	}
 }

@@ -44,6 +44,9 @@ type SearchEvidence struct {
 	RateLimitLimit  string `json:"rate_limit_limit,omitempty"`
 	RateLimitRemain string `json:"rate_limit_remaining,omitempty"`
 	RateLimitReset  string `json:"rate_limit_reset,omitempty"`
+	// Timeline is passive per-request evidence. Nil means an older producer,
+	// not proof that the scan sent zero timeline requests.
+	Timeline *TimelineAccounting `json:"timeline,omitempty"`
 }
 
 // VideoRef is one tweet carrying a video that passed browser extraction.

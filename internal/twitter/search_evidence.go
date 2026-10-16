@@ -20,14 +20,23 @@ const (
 // searchEvidenceCollector observes only the X search timeline request. It
 // retains status and rate headers, never bodies or request/auth headers.
 type searchEvidenceCollector struct {
-	mu       sync.Mutex
-	evidence twittercontract.SearchEvidence
+	mu         sync.Mutex
+	evidence   twittercontract.SearchEvidence
+	accounting *timelineAccountingCollector
 }
 
 func (c *searchEvidenceCollector) observe(page playwright.Page) {
+	page.OnRequest(func(request playwright.Request) {
+		if isSearchTimelineURL(request.URL()) && c.accounting != nil {
+			c.accounting.request(request)
+		}
+	})
 	page.OnResponse(func(response playwright.Response) {
 		if !isSearchTimelineURL(response.URL()) {
 			return
+		}
+		if c.accounting != nil {
+			c.accounting.response(response)
 		}
 		c.mu.Lock()
 		defer c.mu.Unlock()
@@ -39,9 +48,17 @@ func (c *searchEvidenceCollector) observe(page playwright.Page) {
 		c.evidence.RateLimitRemain = boundedEvidence(headers["x-rate-limit-remaining"], maxEvidenceFailureLength)
 		c.evidence.RateLimitReset = boundedEvidence(headers["x-rate-limit-reset"], maxEvidenceFailureLength)
 	})
+	page.OnRequestFinished(func(request playwright.Request) {
+		if isSearchTimelineURL(request.URL()) && c.accounting != nil {
+			c.accounting.end(request, false)
+		}
+	})
 	page.OnRequestFailed(func(request playwright.Request) {
 		if !isSearchTimelineURL(request.URL()) {
 			return
+		}
+		if c.accounting != nil {
+			c.accounting.end(request, true)
 		}
 		failure := "request_failed"
 		if err := request.Failure(); err != nil {
@@ -77,14 +94,23 @@ func (c *searchEvidenceCollector) snapshot(page playwright.Page) twittercontract
 	}
 	// Copy network evidence last so a timeline response that lands while the
 	// DOM signals are read is retained.
-	c.mu.Lock()
-	evidence := c.evidence
-	c.mu.Unlock()
+	evidence := c.networkSnapshot()
 	evidence.FinalURL = pageEvidence.FinalURL
 	evidence.PageTitle = pageEvidence.PageTitle
 	evidence.AppShell = pageEvidence.AppShell
 	evidence.EmptyState = pageEvidence.EmptyState
 	evidence.ErrorState = pageEvidence.ErrorState
+	return evidence
+}
+
+// networkSnapshot preserves passive evidence on paths that have no usable page.
+func (c *searchEvidenceCollector) networkSnapshot() twittercontract.SearchEvidence {
+	c.mu.Lock()
+	evidence := c.evidence
+	c.mu.Unlock()
+	if c.accounting != nil {
+		evidence.Timeline = c.accounting.snapshot()
+	}
 	return evidence
 }
 

@@ -1,0 +1,69 @@
+# Disposable, network-isolated Temporal 1.24 protocol research; never a production stack.
+services:
+  postgres:
+    image: postgres:16-alpine
+    mem_limit: 512m
+    memswap_limit: 512m
+    environment:
+      # Public fixture credentials apply only to this disposable private network.
+      POSTGRES_USER: research
+      POSTGRES_PASSWORD: research-only
+    command: [postgres, -c, shared_buffers=64MB, -c, work_mem=4MB, -c, maintenance_work_mem=64MB]
+    volumes:
+      - research-postgres:/var/lib/postgresql/data
+    healthcheck:
+      test: [CMD-SHELL, pg_isready -U research]
+      interval: 1s
+      timeout: 2s
+      retries: 30
+    networks: [research]
+  temporal:
+    image: temporalio/auto-setup:1.24
+    mem_limit: 1g
+    memswap_limit: 1g
+    cpus: 2
+    environment:
+      DB: postgres12
+      DB_PORT: "5432"
+      POSTGRES_USER: research
+      POSTGRES_PWD: research-only
+      POSTGRES_SEEDS: postgres
+      GOMEMLIMIT: 768MiB
+      GOMAXPROCS: "2"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: [CMD, tctl, --address, temporal:7233, cluster, health]
+      interval: 1s
+      timeout: 3s
+      retries: 60
+    networks: [research]
+  probe:
+    image: golang:1.25.11-bookworm
+    mem_limit: 2g
+    memswap_limit: 2g
+    cpus: 2
+    working_dir: /src
+    environment:
+      FF038_DISPOSABLE_SERVER: "1"
+      GOCACHE: /gocache
+      GOMODCACHE: /gomodcache
+      GOPROXY: "off"
+      GOSUMDB: "off"
+      GOTOOLCHAIN: local
+    volumes:
+      # Git-visible snapshot excludes .env, cookies, .git and ignored forensic data.
+      - ${FF038_SOURCE_DIR:?create a secret-free snapshot first}:/src:ro
+      - /home/vedanta/.cache/found-footy/gocache:/gocache
+      - /home/vedanta/.cache/found-footy/gomodcache:/gomodcache
+    command: [go, test, -buildvcs=false, -v, -count=1, -timeout=180s, ./scripts/probe_twitter_admission]
+    depends_on:
+      temporal:
+        condition: service_healthy
+    networks: [research]
+volumes:
+  research-postgres:
+networks:
+  research:
+    internal: true
