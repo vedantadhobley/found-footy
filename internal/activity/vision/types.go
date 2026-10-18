@@ -5,6 +5,7 @@ import (
 	"github.com/google/uuid"
 
 	dvision "github.com/vedantadhobley/found-footy/internal/domain/vision"
+	"github.com/vedantadhobley/found-footy/internal/infra/llm"
 )
 
 // ValidateClipInput points at one hash-successful exact-MD5 claimant plus the
@@ -26,6 +27,8 @@ type ValidateClipInput struct {
 // model observations and ClockReadings carries their normalized timing
 // interpretation so the workflow can persist both for post-hoc diagnosis.
 type ValidateClipOutput struct {
+	// ModelResponse is absent in old results and joins this attempt to Control.
+	ModelResponse *llm.ResponseInfo `json:"ModelResponse,omitempty"`
 	// Evaluator is absent in old activity results; replay must not invent it.
 	Evaluator     string `json:"Evaluator,omitempty"`
 	Outcome       string // "verified" | "unverified" | "rejected"

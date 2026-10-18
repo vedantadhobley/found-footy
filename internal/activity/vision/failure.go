@@ -76,10 +76,15 @@ type FailureDetail struct {
 	Stage       FailureStage       `json:"stage"`
 	Class       FailureClass       `json:"class"`
 	TimeoutType FailureTimeoutType `json:"timeout_type,omitempty"`
+	// ModelResponse contains only public identifiers/status/retry guidance.
+	ModelResponse *llm.ResponseInfo `json:"model_response,omitempty"`
 }
 
 // Valid rejects unregistered strings, including errors accidentally put in detail fields.
 func (d FailureDetail) Valid() bool {
+	if d.ModelResponse != nil && !d.ModelResponse.Valid() {
+		return false
+	}
 	switch d.Stage {
 	case FailureScratch, FailureFetch, FailureProbe, FailureExtract, FailureAdmission, FailureRequest, FailureParse, FailureActivity:
 	default:
@@ -108,9 +113,15 @@ func (d FailureDetail) Valid() bool {
 	}
 }
 
-// visionFailure attaches safe details while preserving the pre-existing retry rules.
+// visionFailure preserves retryability and attempt limits; valid gateway retry
+// guidance changes only the next Temporal-owned retry delay.
 func visionFailure(stage FailureStage, err error) error {
 	detail := FailureDetail{Stage: stage, Class: classifyFailure(stage, err)}
+	var responseErr *llm.ResponseError
+	if errors.As(err, &responseErr) && responseErr.Info != (llm.ResponseInfo{}) && responseErr.Info.Valid() {
+		info := responseErr.Info
+		detail.ModelResponse = &info
+	}
 	permanent := (stage == FailureRequest || stage == FailureParse) &&
 		(errors.Is(err, llm.ErrInvalidJSON) || errors.Is(err, llm.ErrModelNotFound) ||
 			errors.Is(err, llm.ErrInvalidRequest) || errors.Is(err, llm.ErrAuthFailed))
@@ -118,11 +129,17 @@ func visionFailure(stage FailureStage, err error) error {
 	if permanent {
 		errorType = PermanentLLMErrorType
 	}
-	return temporal.NewApplicationErrorWithOptions("vision stage failed", errorType,
-		temporal.ApplicationErrorOptions{
-			NonRetryable: permanent, Cause: fmt.Errorf("vision.ValidateClip: %s: %w", stage, err),
-			Details: []any{detail},
-		})
+	opts := temporal.ApplicationErrorOptions{
+		NonRetryable: permanent, Cause: fmt.Errorf("vision.ValidateClip: %s: %w", stage, err),
+		Details: []any{detail},
+	}
+	// The HTTP adapter never sleeps or retries. Temporal owns this delay outside
+	// an activity execution slot; its existing maximum-attempt count still applies.
+	if !permanent && detail.ModelResponse != nil &&
+		(detail.Class == FailureCapacity || detail.Class == FailureRateLimited || detail.Class == FailureUnavailable) {
+		opts.NextRetryDelay = detail.ModelResponse.RetryAfter
+	}
+	return temporal.NewApplicationErrorWithOptions("vision stage failed", errorType, opts)
 }
 
 // classifyFailure uses typed causes, never model bodies or message substring parsing.

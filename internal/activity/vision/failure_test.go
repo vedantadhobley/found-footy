@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"go.temporal.io/sdk/temporal"
 
@@ -90,9 +91,40 @@ func TestFailureDetailValid(t *testing.T) {
 		{Stage: FailureActivity, Class: FailureTimeout, TimeoutType: "raw error"},
 		{Stage: FailureRequest, Class: FailureTimeout, TimeoutType: TimeoutHeartbeat},
 		{Stage: FailureActivity, Class: FailureUnknown, TimeoutType: TimeoutStartToClose},
+		{Stage: FailureRequest, Class: FailureCapacity, ModelResponse: &llm.ResponseInfo{RequestID: "raw response text"}},
 	} {
 		if detail.Valid() {
 			t.Errorf("accepted invalid detail: %+v", detail)
 		}
+	}
+}
+
+// TestVisionFailureGatewayRetry keeps capacity waits in Temporal and metadata across serialization.
+func TestVisionFailureGatewayRetry(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		cause error
+		delay time.Duration
+	}{
+		{"capacity", llm.ErrCapExceeded, 7 * time.Second},
+		{"unavailable", llm.ErrUnavailable, 7 * time.Second},
+		{"generic_limit", llm.ErrRateLimited, 7 * time.Second},
+		{"permanent", llm.ErrInvalidRequest, 0},
+		{"timeout", context.DeadlineExceeded, 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			info := llm.ResponseInfo{RequestID: "req_abc", ErrorCode: "capacity_exceeded", StatusCode: 429, RetryAfter: 7 * time.Second}
+			err := visionFailure(FailureRequest, &llm.ResponseError{Info: info, Err: tc.cause})
+			converter := temporal.GetDefaultFailureConverter()
+			err = converter.FailureToError(converter.ErrorToFailure(err))
+			var app *temporal.ApplicationError
+			if !errors.As(err, &app) || app.NextRetryDelay() != tc.delay {
+				t.Fatalf("retry delay = %v, want %v", err, tc.delay)
+			}
+			var detail FailureDetail
+			if app.Details(&detail) != nil || detail.ModelResponse == nil || *detail.ModelResponse != info || !detail.Valid() {
+				t.Fatalf("lost metadata: %+v", detail)
+			}
+		})
 	}
 }

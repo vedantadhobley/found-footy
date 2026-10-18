@@ -525,6 +525,20 @@ the current branch.
   Do not bypass vision, globally extend deadlines, or replay old events as
   part of this diagnostic slice.
 
+- **Control contract follow-up (2026-10-17; local, undeployed):** Distinguish
+  429 `capacity_exceeded` from generic limiting and unavailable 503 responses;
+  preserve bounded request ID/status/code/retry guidance in the adapter and
+  vision evidence. Valid transient `Retry-After` drives Temporal's next delay,
+  never a client-side wait loop. INFO success logs and candidate-phase logs
+  enable request-ID correlation. Regression tests cover SDK wire behavior,
+  serialization, and exact followers. See the
+  [boundary decision](./decisions/2026-10-17-control-errors-and-request-correlation.md).
+- **Remaining timing boundary:** Control already logs admission `waited_ms`
+  and backend dispatch `ms` by request ID. These are not pure GPU execution
+  timings. Direct phase metrics here require a separately accepted Control
+  response contract; requests ending before headers may lack an observable ID.
+  Keep unknown values unknown and do not infer timings from aggregate averages.
+
 ### FF-088 — long-postponed fixtures never leave active polling
 
 - **Status:** `confirmed`

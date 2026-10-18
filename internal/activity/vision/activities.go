@@ -66,8 +66,8 @@ type Activities struct {
 // non-retryable ApplicationError. The verdict is always a nil-error Outcome.
 func (a *Activities) ValidateClip(ctx context.Context, in ValidateClipInput) (ValidateClipOutput, error) {
 	var out ValidateClipOutput
-	// One opaque VLM request that can queue behind the local LLM semaphore past
-	// the HeartbeatTimeout; keep the attempt alive (#184 audit P0-1).
+	// Model HTTP work can wait at Control or run longer than the heartbeat
+	// interval; durable queue waiting before execution needs no heartbeat.
 	defer heartbeat.Keepalive(ctx, heartbeat.Interval)()
 
 	dir, err := os.MkdirTemp(a.ScratchDir, "vision-*")
@@ -104,13 +104,16 @@ func (a *Activities) ValidateClip(ctx context.Context, in ValidateClipInput) (Va
 		}
 		return out, visionFailure(stage, err)
 	}
+	if resp.ResponseInfo != (llm.ResponseInfo{}) {
+		out.ModelResponse = &resp.ResponseInfo
+	}
 
 	vr, err := dvision.DecodeResponse([]byte(resp.Content))
 	if err != nil {
 		// Constrained decoding should make this impossible. Repeating the same
 		// accepted response does not repair it, so fail this activity once.
 		parseErr := fmt.Errorf("%w: %v", llm.ErrInvalidJSON, err)
-		return out, visionFailure(FailureParse, parseErr)
+		return out, visionFailure(FailureParse, &llm.ResponseError{Info: resp.ResponseInfo, Err: parseErr})
 	}
 
 	ev := dvision.Evaluate(vr.Frames, dvision.Expected{Elapsed: in.APIElapsed, Extra: in.APIExtra}, a.Cfg.ToleranceMinutes)
@@ -126,7 +129,9 @@ func (a *Activities) ValidateClip(ctx context.Context, in ValidateClipInput) (Va
 	out.Evidence = a.acceptanceEvidence(ctx, in, meta.DurationSecs, resp.Model, request, vr.Frames, ev)
 	if out.Evidence != nil {
 		if err := out.Evidence.Validate(); err != nil {
-			return ValidateClipOutput{}, visionFailure(FailureParse, fmt.Errorf("%w: %v", llm.ErrInvalidJSON, err))
+			return ValidateClipOutput{}, visionFailure(FailureParse, &llm.ResponseError{
+				Info: resp.ResponseInfo, Err: fmt.Errorf("%w: %v", llm.ErrInvalidJSON, err),
+			})
 		}
 	}
 	return out, nil

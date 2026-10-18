@@ -304,7 +304,7 @@ func TestChat_ClassifiesErrors(t *testing.T) {
 		wantSentinel error
 	}{
 		{"429 → ErrRateLimited", http.StatusTooManyRequests, llm.ErrRateLimited},
-		{"503 → ErrCapExceeded (llama.cpp max_parallel)", http.StatusServiceUnavailable, llm.ErrCapExceeded},
+		{"503 → ErrUnavailable", http.StatusServiceUnavailable, llm.ErrUnavailable},
 		{"500 → ErrUnavailable", http.StatusInternalServerError, llm.ErrUnavailable},
 		{"502 → ErrUnavailable", http.StatusBadGateway, llm.ErrUnavailable},
 		{"504 → ErrUnavailable", http.StatusGatewayTimeout, llm.ErrUnavailable},

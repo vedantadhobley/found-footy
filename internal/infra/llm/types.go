@@ -115,6 +115,8 @@ type ChatResponse struct {
 	Content string
 	Usage   Usage
 	Model   string
+	// ResponseInfo carries gateway correlation, not model scheduling state.
+	ResponseInfo ResponseInfo
 }
 
 // Usage captures token accounting.

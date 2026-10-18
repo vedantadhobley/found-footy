@@ -56,6 +56,7 @@ type fakeLLM struct {
 	model   string
 	err     error
 	lastReq llm.ChatRequest
+	info    llm.ResponseInfo
 }
 
 func (f *fakeLLM) Chat(_ context.Context, req llm.ChatRequest) (*llm.ChatResponse, error) {
@@ -63,7 +64,7 @@ func (f *fakeLLM) Chat(_ context.Context, req llm.ChatRequest) (*llm.ChatRespons
 	if f.err != nil {
 		return nil, f.err
 	}
-	return &llm.ChatResponse{Content: f.resp, Model: f.model}, nil
+	return &llm.ChatResponse{Content: f.resp, Model: f.model, ResponseInfo: f.info}, nil
 }
 
 func newActivities(t *testing.T, llmResp string, llmErr error) (*Activities, *fakeFFmpeg, *fakeLLM) {
@@ -93,6 +94,7 @@ func TestValidateClip_VerifiedAndRequestShape(t *testing.T) {
 		map[string]any{"soccer": true, "screen": false, "clock": "90:00", "period_label": "2H", "added": "+2", "stoppage_clock": "+1:58"},
 	)
 	a, ff, fl := newActivities(t, resp, nil)
+	fl.info = llm.ResponseInfo{RequestID: "req_verified"}
 
 	out, err := a.ValidateClip(context.Background(), ValidateClipInput{
 		EventID: uuid.New(), FixtureID: 1583467, StagingKey: "staging/x.mp4",
@@ -103,6 +105,9 @@ func TestValidateClip_VerifiedAndRequestShape(t *testing.T) {
 	}
 	if out.Outcome != "verified" {
 		t.Errorf("Outcome = %q (%s), want verified", out.Outcome, out.Reason)
+	}
+	if out.ModelResponse == nil || *out.ModelResponse != fl.info {
+		t.Fatalf("lost model correlation: %+v", out.ModelResponse)
 	}
 	if out.MatchedMinute == nil || *out.MatchedMinute != 91 {
 		t.Errorf("MatchedMinute = %v, want 91", out.MatchedMinute)

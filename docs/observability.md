@@ -112,6 +112,18 @@ local waiting. HTTP time includes remote admission/network/inference; it cannot
 separate those components without gateway correlation. No model, event, or
 request identifier is added as a metric label.
 
+Control response correlation adds `model_request_id`, `gateway_error_code`,
+`http_status` and `retry_after_ms` to request success/failure logs. Success logs
+are INFO. Status zero means the SDK did not report an HTTP error status, not a
+synthetic successful response code. IDs/codes are bounded ASCII tokens; absent
+headers remain unknown, including cancellation before response headers arrive.
+Optional `ModelResponse` in vision activity results and `model_response` in
+terminal failure detail preserve the join through Temporal. Vision-phase
+candidate logs include the model request ID when known. No identifier becomes
+a metric label, and no gateway phase duration is inferred from total HTTP time.
+The [correlation procedure](./operations.md#ocr-request-correlation) explains
+Control's existing queue/backend measurements and their limitations.
+
 FF-050 emits correlated workflow-observed timings for lifecycle, each Twitter
 search, candidate observation persistence, download, dense hash, vision,
 promotion, terminal persistence, and `event.update` publication. Candidate

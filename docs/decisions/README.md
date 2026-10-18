@@ -14,6 +14,9 @@ its historical heading anchors valid.
 
 New decisions after the frozen archive:
 
+- [Control errors and request correlation stay at the HTTP boundary](./2026-10-17-control-errors-and-request-correlation.md)
+  — distinguishes admission from availability, preserves bounded response
+  metadata, and delegates retry guidance to Temporal without a model scheduler.
 - [Twitter admission starts with passive accounting](./2026-10-16-twitter-admission-starts-with-passive-accounting.md)
   — records bounded request identity, quota/timing evidence and explicit
   gaps without routing, admission, healthy-search serialization or new waits.

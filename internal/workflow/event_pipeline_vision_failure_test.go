@@ -15,6 +15,7 @@ import (
 	discoveryactivity "github.com/vedantadhobley/found-footy/internal/activity/discovery"
 	videoactivity "github.com/vedantadhobley/found-footy/internal/activity/video"
 	visionactivity "github.com/vedantadhobley/found-footy/internal/activity/vision"
+	"github.com/vedantadhobley/found-footy/internal/infra/llm"
 	"github.com/vedantadhobley/found-footy/internal/workflow"
 )
 
@@ -22,6 +23,8 @@ import (
 func TestEventWorkflow_VisionFailuresPersistForExactFollowers(t *testing.T) {
 	requestFailure := visionactivity.FailureDetail{Stage: visionactivity.FailureRequest, Class: visionactivity.FailureTimeout}
 	permanentFailure := visionactivity.FailureDetail{Stage: visionactivity.FailureRequest, Class: visionactivity.FailureModelNotFound}
+	capacityFailure := visionactivity.FailureDetail{Stage: visionactivity.FailureRequest, Class: visionactivity.FailureCapacity,
+		ModelResponse: &llm.ResponseInfo{RequestID: "req_capacity", StatusCode: 429, ErrorCode: "capacity_exceeded", RetryAfter: 7 * time.Second}}
 	for _, tt := range []struct {
 		name     string
 		err      error
@@ -30,6 +33,7 @@ func TestEventWorkflow_VisionFailuresPersistForExactFollowers(t *testing.T) {
 		legacy   bool
 	}{
 		{"request_timeout", temporal.NewApplicationError("raw URL SECRET", visionactivity.FailureErrorType, requestFailure), requestFailure, 3, false},
+		{"gateway_capacity", temporal.NewApplicationError("gateway capacity", visionactivity.FailureErrorType, capacityFailure), capacityFailure, 3, false},
 		{"permanent", temporal.NewNonRetryableApplicationError("raw body SECRET", visionactivity.PermanentLLMErrorType, nil, permanentFailure), permanentFailure, 1, false},
 		{"start_to_close", temporal.NewTimeoutError(enumspb.TIMEOUT_TYPE_START_TO_CLOSE, nil), visionactivity.FailureDetail{Stage: visionactivity.FailureActivity, Class: visionactivity.FailureTimeout, TimeoutType: visionactivity.TimeoutStartToClose}, 3, false},
 		{"heartbeat", temporal.NewTimeoutError(enumspb.TIMEOUT_TYPE_HEARTBEAT, nil), visionactivity.FailureDetail{Stage: visionactivity.FailureActivity, Class: visionactivity.FailureTimeout, TimeoutType: visionactivity.TimeoutHeartbeat}, 3, false},
@@ -89,6 +93,9 @@ func TestEventWorkflow_VisionFailuresPersistForExactFollowers(t *testing.T) {
 						}
 						if tt.want.TimeoutType != "" && m["failure_timeout_type"] != string(tt.want.TimeoutType) {
 							t.Errorf("timeout subtype missing: %v", m)
+						}
+						if tt.want.ModelResponse != nil && m["model_request_id"] != tt.want.ModelResponse.RequestID {
+							t.Errorf("gateway request correlation missing: %v", m)
 						}
 					}
 				}

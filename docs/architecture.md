@@ -603,9 +603,13 @@ Adapter-specific notes:
   histories retain the base destination. Both pollers drain concurrently before
   dependencies close. See the [Temporal ledger](./temporal.md#vision-execution-lane-ff-037).
 - **llm**: types.go owns domain-shaped `ChatRequest`/`ChatResponse`;
-  classifyError translates HTTP status codes to typed errors
-  (ErrRateLimited, ErrCapExceeded, etc.) and maps malformed successful wire
-  responses to `ErrInvalidJSON`.
+  classifyError translates gateway status/code pairs to typed errors: only
+  429 `capacity_exceeded` proves admission saturation; 503 is unavailable.
+  Malformed successful wire responses map to `ErrInvalidJSON`. Optional bounded
+  `ResponseInfo` carries request ID, SDK-reported error status/code and parsed
+  retry guidance without storing bodies or depending on runtime scheduling.
+  `ResponseError` preserves the typed cause and metadata. Vision activities
+  pass valid transient retry hints to Temporal, not a local sleep loop.
   FF-087 adds typed local-admission interruption, separate wait/request timers,
   and queued versus admitted-call gauges without changing the request contract.
 - **syndication**: metadata resolution and CDN byte download use separate 403

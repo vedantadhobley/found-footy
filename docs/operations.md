@@ -107,6 +107,54 @@ or repair historical terminal failures. A separately approved replay is still
 required for those. Rollout and rollback boundaries are in the
 [vision queue decision](./decisions/2026-10-15-vision-capacity-waits-in-temporal.md).
 
+### OCR request correlation
+
+The [Control-boundary change](./decisions/2026-10-17-control-errors-and-request-correlation.md)
+is local and undeployed. After rollout, use the candidate's `ValidateClip`
+activity result (`ModelResponse.request_id`), its terminal failure detail
+(`failure.model_response.request_id`), or the vision-phase log's
+`model_request_id`. The INFO-level `llm_chat_call` and warning-level
+`llm_chat_failed` records carry the same ID. Each retry has its own ID; do not
+join only by event or assume one request represents all attempts.
+
+On luv, inspect existing Control logs without sending inference:
+
+```bash
+docker logs control-joi --since 30m 2>&1 | rg -F 'req_<request-id>'
+```
+
+Match the actual ID exactly. `admission granted` reports `waited_ms`;
+`admission ended` reports a wait that did not acquire capacity. A completed
+`dispatched` record reports `waited_ms` and backend duration `ms`. Aggregate
+gateway histograms are useful for load, but cannot provide a particular
+candidate's wait by subtracting averages.
+
+| Measurement | What it actually includes |
+|---|---|
+| Workflow vision-phase duration | Temporal queueing, activity work, retries and retry delays |
+| Found Footy `admission_wait_ms` | Process-local semaphore wait only |
+| Found Footy `request_ms` / `elapsed_ms` | Entire model HTTP call, including Control wait and decoding |
+| Control `waited_ms` | Gateway capacity-admission wait only |
+| Control dispatch `ms` | Backend HTTP processing and response forwarding, possibly runtime queueing |
+| Pure model execution | Not exposed by this correlation contract; requires runtime-owned timings |
+
+Missing timing is unknown, not zero. The public gateway response currently
+does not carry separate phase durations. Requests canceled before response
+headers may lack a gateway ID in Found Footy. A final Temporal timeout remains
+authoritative and does not inherit the interrupted attempt's metadata.
+
+Control 429 `capacity_exceeded` is admission saturation; unknown 429 is a
+generic limit; 503 is unavailable, not saturation. Valid positive `Retry-After`
+on a retryable capacity/limit/unavailable error becomes the next Temporal retry
+delay. Invalid or absent guidance keeps the ordinary backoff. Permanent errors
+and exhausted attempts do not become retryable. Production's Temporal version
+supports `NextRetryDelay` (requires server 1.24.2 or newer).
+
+Direct per-request queue/backend metrics in Found Footy need a future Control
+response-timing contract. Do not query Control's metrics, scrape its logs or
+infer free GPU slots inside the application request path. Control retains
+scheduling ownership; concurrency and deadlines are unchanged in this slice.
+
 ### Routine service checks
 
 Start with the smallest read-only surface that answers the question:

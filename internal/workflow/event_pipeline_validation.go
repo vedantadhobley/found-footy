@@ -271,6 +271,11 @@ func (p *pipeline) onVisionDone(c clip) func(workflow.Future) {
 				failure := visionFailureDetail(err)
 				detail = jsonDetail(map[string]any{"failure": failure})
 				fields = append(fields, "failure_stage", string(failure.Stage), "failure_class", string(failure.Class))
+				if failure.ModelResponse != nil {
+					fields = append(fields, "model_request_id", failure.ModelResponse.RequestID,
+						"gateway_error_code", failure.ModelResponse.ErrorCode,
+						"http_status", failure.ModelResponse.StatusCode)
+				}
 				if failure.TimeoutType != "" {
 					fields = append(fields, "failure_timeout_type", string(failure.TimeoutType))
 				}
@@ -281,8 +286,12 @@ func (p *pipeline) onVisionDone(c clip) func(workflow.Future) {
 			p.deleteStaging(c.stagingKey)
 			return
 		}
+		requestID := ""
+		if vout.ModelResponse != nil {
+			requestID = vout.ModelResponse.RequestID
+		}
 		p.logCandidatePhase(c.tweetURL, "vision", vout.Outcome, c.visionStartedAt,
-			"frame_count", len(vout.Frames))
+			"frame_count", len(vout.Frames), "model_request_id", requestID)
 
 		switch vout.Outcome {
 		case string(dvision.OutcomeVerified), string(dvision.OutcomeUnverified):

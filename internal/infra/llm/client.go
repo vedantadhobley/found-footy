@@ -192,36 +192,42 @@ func (c *Client) Chat(ctx context.Context, req ChatRequest) (*ChatResponse, erro
 	start := time.Now()
 	oaiResp, err := c.oai.CreateChatCompletion(reqCtx, oaiReq)
 	elapsed := time.Since(start)
+	info := responseInfo(oaiResp.Header(), err, time.Now())
 	c.ins.callDuration.WithLabelValues("chat").Observe(elapsed.Seconds())
+	fields := []logging.Field{
+		logging.String("model", req.Model), logging.String("phase", "request"),
+		logging.Int64("admission_wait_ms", wait.Milliseconds()),
+		logging.Int64("request_ms", elapsed.Milliseconds()),
+		logging.Int64("elapsed_ms", elapsed.Milliseconds()),
+		logging.String("model_request_id", info.RequestID),
+		logging.Int("http_status", info.StatusCode),
+		logging.String("gateway_error_code", info.ErrorCode),
+		logging.Int64("retry_after_ms", info.RetryAfter.Milliseconds()),
+	}
 
 	if err != nil {
 		classified := classifyError(err)
+		if info != (ResponseInfo{}) {
+			classified = &ResponseError{Info: info, Err: classified}
+		}
 		c.ins.calls.WithLabelValues("chat", "failure").Inc()
 		c.ins.emitEvent(ctx, logging.LevelWarn, vocabulary.ActionLLMChatFailed,
 			"llm chat call failed",
-			logging.String("model", req.Model),
-			logging.String("phase", "request"),
-			logging.Int64("admission_wait_ms", wait.Milliseconds()),
-			logging.Int64("request_ms", elapsed.Milliseconds()),
-			logging.Int64("elapsed_ms", elapsed.Milliseconds()),
-			logging.Err(classified),
+			append(fields, logging.Err(classified))...,
 		)
 		return nil, classified
 	}
 
 	resp := fromOpenAIResponse(oaiResp)
+	resp.ResponseInfo = info
+	fields[0] = logging.String("model", resp.Model)
 	c.ins.calls.WithLabelValues("chat", "success").Inc()
 	c.ins.tokens.WithLabelValues("chat", "prompt").Add(float64(resp.Usage.PromptTokens))
 	c.ins.tokens.WithLabelValues("chat", "completion").Add(float64(resp.Usage.CompletionTokens))
-	c.ins.emitEvent(ctx, logging.LevelDebug, vocabulary.ActionLLMChatCall,
+	c.ins.emitEvent(ctx, logging.LevelInfo, vocabulary.ActionLLMChatCall,
 		"llm chat call ok",
-		logging.String("model", resp.Model),
-		logging.String("phase", "request"),
-		logging.Int64("admission_wait_ms", wait.Milliseconds()),
-		logging.Int64("request_ms", elapsed.Milliseconds()),
-		logging.Int64("elapsed_ms", elapsed.Milliseconds()),
-		logging.Int("prompt_tokens", resp.Usage.PromptTokens),
-		logging.Int("completion_tokens", resp.Usage.CompletionTokens),
+		append(fields, logging.Int("prompt_tokens", resp.Usage.PromptTokens),
+			logging.Int("completion_tokens", resp.Usage.CompletionTokens))...,
 	)
 	return &resp, nil
 }

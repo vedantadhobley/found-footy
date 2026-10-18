@@ -46,6 +46,15 @@ and `rg --files test/scenarios -g '*.yaml'`.
 
 ## Tier 1 — pure Go unit tests
 
+Control-boundary tests use synthetic HTTP servers through the pinned SDK:
+429 capacity versus generic limiting, unavailable 503, malformed error bodies,
+bounded metadata, concurrent request-ID isolation, and HTTP-date/delay-seconds
+retry parsing. Vision tests preserve request identity in activity results and
+serialized failure detail; workflow tests propagate it identically to exact
+followers and candidate logs. Positive retry hints cross Temporal's failure
+converter as `NextRetryDelay`; permanent errors and timeout causes do not gain
+a delay. No live model call, capacity probe, or Control deployment is required.
+
 FF-037 tests pin the old/new EventWorkflow vision destinations, unchanged
 timeout/retry budgets, disabled eager execution, existing chat-cap derivation,
 actual queue lifecycle logs, partial-startup unwind, and concurrent drain.

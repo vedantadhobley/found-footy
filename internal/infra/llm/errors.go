@@ -21,9 +21,8 @@ var (
 	// The context error stays in the chain; this sentinel does not change retries.
 	ErrLocalAdmission = errors.New("llm: local admission interrupted")
 
-	// ErrCapExceeded — the endpoint is at its concurrency cap.
-	// llama.cpp on joi returns 503 when max_parallel is exceeded (per
-	// AGENTS.md joi-side notes). Retry with backoff.
+	// ErrCapExceeded marks Control's HTTP 429 capacity_exceeded admission result.
+	// It does not imply an account rate limit or a physical model slot count.
 	ErrCapExceeded = errors.New("llm: concurrency cap exceeded")
 
 	// ErrRateLimited — the endpoint imposed a per-account/per-key
@@ -31,8 +30,8 @@ var (
 	// Retry-After header when present.
 	ErrRateLimited = errors.New("llm: rate limited")
 
-	// ErrUnavailable — the endpoint is transiently unreachable / down.
-	// 500, 502, 504, network transport errors. Retry.
+	// ErrUnavailable — the gateway/backend is unavailable or failed.
+	// Includes 503 model_unavailable/backend_unavailable, not capacity admission.
 	ErrUnavailable = errors.New("llm: server unavailable")
 
 	// ErrInvalidJSON — response was 2xx but the body wasn't parseable.
@@ -66,15 +65,24 @@ func classifyError(err error) error {
 		return nil
 	}
 
-	// sashabaranov/go-openai errors carry the HTTP status code.
+	// Prefer Control's capacity code only with its documented HTTP status.
+	// An unknown 429 remains a generic limit; a 503 never proves saturation.
 	var apiErr *openai.APIError
+	var requestErr *openai.RequestError
+	status := 0
 	if errors.As(err, &apiErr) {
-		switch apiErr.HTTPStatusCode {
+		status = apiErr.HTTPStatusCode
+	} else if errors.As(err, &requestErr) {
+		status = requestErr.HTTPStatusCode
+	}
+	if status != 0 {
+		switch status {
 		case http.StatusTooManyRequests: // 429
+			if apiErr != nil && apiErr.Code == "capacity_exceeded" {
+				return joinErr(err, ErrCapExceeded)
+			}
 			return joinErr(err, ErrRateLimited)
-		case http.StatusServiceUnavailable: // 503 — llama.cpp cap-exceeded case
-			return joinErr(err, ErrCapExceeded)
-		case http.StatusInternalServerError, http.StatusBadGateway, http.StatusGatewayTimeout: // 500/502/504
+		case http.StatusServiceUnavailable, http.StatusInternalServerError, http.StatusBadGateway, http.StatusGatewayTimeout:
 			return joinErr(err, ErrUnavailable)
 		case http.StatusNotFound: // 404 (chat-completion returns this for missing model)
 			return joinErr(err, ErrModelNotFound)
