@@ -14,6 +14,9 @@ its historical heading anchors valid.
 
 New decisions after the frozen archive:
 
+- [Event scores follow the observed timeline](./2026-10-18-event-scores-follow-observed-timeline.md)
+  — separates provisional goal boundaries from aggregate scores, keeps genuine
+  ambiguity local, and hands off a stable consumer scoreline layout.
 - [Control errors and request correlation stay at the HTTP boundary](./2026-10-17-control-errors-and-request-correlation.md)
   — distinguishes admission from availability, preserves bounded response
   metadata, and delegates retry guidance to Temporal without a model scheduler.

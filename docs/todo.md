@@ -143,7 +143,7 @@ the current branch.
   and keep API-Football vocabulary embedded in the browser.
 - **Producer implementation:** The additive API exposes provider-independent
   event `kind`, complete `presentation_state`, normalized `presentation`
-  label/team side, ambiguity- and parity-guarded score context, normalized
+  label/team side, originally ambiguity- and parity-guarded score context, normalized
   round label/kind, and producer-owned competition priority. Existing `phase`
   remains for additive compatibility and `share_id` remains authoritative.
   Equal-clock goals receive null score context because provider-array position
@@ -156,6 +156,16 @@ the current branch.
   recovers an authoritative parent when an `event.update` target or parent is
   missing, and rewrites public media URLs while preserving `share_id`. React
   owns explicit-field sorting, Local/UTC bucketing, and visual composition.
+- **Score policy follow-up (2026-10-18; local, undeployed):** Málaga–Real
+  Sociedad `1570418` temporarily had 3–4 stored goals against a 2–4 scoreboard
+  during a scorer correction, then a 2–5 scoreboard before the seventh event.
+  The global parity gate blanked every goal's score context. Source now derives
+  provisional event boundaries independently, preserves local ambiguity and
+  isolates removed historical targets. The consumer must keep a scoreline layout
+  with unknown values rather than using its team-only fallback. No schema,
+  debounce, completion or NATS change is included. The
+  [decision and handoff](./decisions/2026-10-18-event-scores-follow-observed-timeline.md)
+  define the contract and regression cases.
 - **Next:** Land and test the Vedanta Systems removal of the underscore adapter,
   then deploy that consumer against the already-live additive contract.
 
@@ -524,7 +534,6 @@ the current branch.
   work-lane/admission follow-up; shared gateway changes need a Control handoff.
   Do not bypass vision, globally extend deadlines, or replay old events as
   part of this diagnostic slice.
-
 - **Control contract follow-up (2026-10-17; local, undeployed):** Distinguish
   429 `capacity_exceeded` from generic limiting and unavailable 503 responses;
   preserve bounded request ID/status/code/retry guidance in the adapter and

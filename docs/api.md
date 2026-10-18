@@ -198,19 +198,27 @@ player nullability to reconstruct presentation state.
 `missed_penalty` for the public tracked set. `presentation.label` supplies the
 normalized English event label; `team_side` is `home`, `away`, or `null` when
 stored identity is inconsistent with the parent fixture. Score context is
-present only for goals and only when surviving stored goals reconcile exactly
-with the provider's current home/away score. During a partial or degraded feed,
-both score fields are `null` rather than an invented historical scoreline. A
-directly requested removed goal can carry its tentative before/after score, but
-it never advances the score of later surviving events.
+present only for goals and derives provisionally from surviving stored goals,
+independently of the fixture's current home/away score. Either observation may
+arrive first; disagreement or missing aggregate scores never suppress otherwise
+known event context. Late event changes recompute scorelines, which can be
+temporarily inaccurate while the observed timeline is incomplete. A directly
+requested removed goal can carry its tentative before/after score, but it never
+advances the score of later surviving events. The
+[timeline decision and consumer handoff](./decisions/2026-10-18-event-scores-follow-observed-timeline.md)
+record the local implementation and separate frontend rollout.
 
 Fixture event arrays are in ascending match-clock order, then first-observed
 and UUID order for deterministic ties. Those final tie-breakers make transport
 deterministic; they do not claim a real order between goals with the same
-minute and stoppage minute. Equal-clock goals therefore receive null score
-context. Their aggregate still advances the baseline for later unambiguous
-goals. Consumers may reverse the array for recent-first display, but must not
-fabricate observation timestamps or score chronology. The event-only endpoint
+minute and stoppage minute. Equal-clock surviving goals therefore receive null
+score context. Their aggregate still advances the baseline for later unambiguous
+goals. An unassignable surviving goal team makes its own and later boundaries
+unknown; earlier rows retain their context. Removed targets do not introduce
+ambiguity into the surviving timeline. Consumers keep the scoreline layout for
+null goal context, with an unknown value instead of a team-only heading or the
+fixture's final score. Consumers may reverse the array for recent-first display,
+but must not fabricate observation timestamps or score chronology. The event-only endpoint
 derives the same presentation from the authoritative parent and surviving
 siblings, including for directly requested removed rows.
 

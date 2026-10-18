@@ -49,9 +49,9 @@ type Score struct {
 }
 
 // Presentation contains semantic display inputs without frontend markup.
-// Score fields are nil when the retained event inventory does not reconcile
-// with the provider score or equal-clock goals have no durable relative order,
-// so consumers never display invented history.
+// Scores are provisional boundaries in the surviving event timeline, independent
+// of the provider's aggregate score. Nil means the boundary itself is unknown,
+// not merely that separately arriving fixture and event observations disagree.
 type Presentation struct {
 	Label       string    `json:"label"`
 	TeamSide    *TeamSide `json:"team_side"`
@@ -93,7 +93,7 @@ func DeriveState(e *event.Event, discoveryComplete bool) State {
 	}
 }
 
-// Build derives event team sides and trustworthy score boundaries for one
+// Build derives event team sides and provisional score boundaries for one
 // fixture. Input order is irrelevant. Removed goals receive their tentative
 // score boundary but never advance the score seen by later surviving events.
 func Build(f *fixture.Fixture, events []*event.Event) map[uuid.UUID]Projection {
@@ -120,31 +120,39 @@ func Build(f *fixture.Fixture, events []*event.Event) map[uuid.UUID]Projection {
 		projections[e.ID] = projection
 	}
 
-	reliable := scoreInventoryReconciles(f, ordered)
-	if !reliable {
-		return projections
-	}
-
 	home, away := 0, 0
+	boundaryKnown := true
 	for start := 0; start < len(ordered); {
 		end := start + 1
 		for end < len(ordered) && sameClock(ordered[start], ordered[end]) {
 			end++
 		}
 		goals := make([]*event.Event, 0, end-start)
+		survivingGoals := 0
 		for _, e := range ordered[start:end] {
 			if e.Type == event.TypeGoal {
 				goals = append(goals, e)
+				if !e.Removed {
+					survivingGoals++
+				}
 			}
 		}
 
 		// The provider array is chronological, but its position is not retained.
-		// Multiple goals at one displayed clock therefore have no durable relative
+		// Multiple surviving goals at one clock have no durable relative
 		// order. Suppress their individual boundaries rather than assigning them
 		// by observation timestamp or UUID. Their aggregate still advances the
 		// baseline used by later, unambiguous goals.
-		if len(goals) == 1 {
-			e := goals[0]
+		for _, e := range goals {
+			orderedBoundary := survivingGoals == 1
+			if e.Removed {
+				// Removed history is tentative and cannot make a surviving
+				// same-clock goal ambiguous in a targeted event response.
+				orderedBoundary = len(goals) == 1
+			}
+			if !boundaryKnown || !orderedBoundary {
+				continue
+			}
 			projection := projections[e.ID]
 			if projection.Presentation.TeamSide != nil {
 				before := Score{Home: home, Away: away}
@@ -165,6 +173,9 @@ func Build(f *fixture.Fixture, events []*event.Event) map[uuid.UUID]Projection {
 			}
 			side := projections[e.ID].Presentation.TeamSide
 			if side == nil {
+				// Unlike an aggregate-score mismatch, an unassignable surviving
+				// goal prevents knowing the score on either side of later goals.
+				boundaryKnown = false
 				continue
 			}
 			if *side == TeamSideHome {
@@ -226,28 +237,6 @@ func teamSide(f *fixture.Fixture, teamID int) *TeamSide {
 		return nil
 	}
 	return &side
-}
-
-func scoreInventoryReconciles(f *fixture.Fixture, events []*event.Event) bool {
-	if f.HomeScore == nil || f.AwayScore == nil {
-		return false
-	}
-	home, away := 0, 0
-	for _, e := range events {
-		if e.Removed || e.Type != event.TypeGoal {
-			continue
-		}
-		side := teamSide(f, e.Team.ID)
-		if side == nil {
-			return false
-		}
-		if *side == TeamSideHome {
-			home++
-		} else {
-			away++
-		}
-	}
-	return home == *f.HomeScore && away == *f.AwayScore
 }
 
 func intValue(value *int) int {

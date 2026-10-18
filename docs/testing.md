@@ -46,6 +46,15 @@ and `rg --files test/scenarios -g '*.yaml'`.
 
 ## Tier 1 — pure Go unit tests
 
+Event-presentation regressions preserve independent aggregate/event arrival,
+unknown aggregate scores, Málaga's October 18 scorer correction, late earlier
+goals, VAR removal, equal-clock ambiguity and unknown-team propagation. Read-API
+tests compare window, targeted fixture, search and targeted event score context
+without changing the fixture scoreboard. Historical removed targets cannot
+change a surviving same-clock goal. These tests do not change event debounce or
+provider/fixture-completion safety rules. See the
+[timeline decision](./decisions/2026-10-18-event-scores-follow-observed-timeline.md).
+
 Control-boundary tests use synthetic HTTP servers through the pinned SDK:
 429 capacity versus generic limiting, unavailable 503, malformed error bodies,
 bounded metadata, concurrent request-ID isolation, and HTTP-date/delay-seconds

@@ -23,10 +23,12 @@ Python-era completion flags or parse media identity from a URL.
 
 ## Score integrity
 
-Score context is emitted only when the surviving stored goal inventory exactly
-matches the provider's current home/away score. A partial or degraded event
-feed produces null score context. This fails closed instead of publishing an
-invented event scoreline.
+The original rule emitted score context only when the surviving goal inventory
+matched the provider's aggregate score. The
+[October 18 timeline decision](./2026-10-18-event-scores-follow-observed-timeline.md)
+supersedes that global gate: current source derives provisional event boundaries
+independently and keeps only genuinely ambiguous boundaries unknown. Its rollout
+status is recorded there. The producer ownership and wire shape remain unchanged.
 
 API-Football describes its event response as chronological, but Found Footy's
 stored event row does not retain the provider-array position. Events discovered
@@ -36,6 +38,9 @@ relative order. Those goals receive null score context. Their aggregate score
 still advances the boundary used by later unambiguous goals. A future durable
 provider ordinal may restore the tied scorelines; deterministic storage order
 must never stand in for that evidence.
+
+Only surviving goals create live same-clock ambiguity; directly requested removed
+history must not alter a survivor's projection.
 
 A directly requested removed goal can expose its tentative boundary for
 historical context, but it never advances the score assigned to later surviving

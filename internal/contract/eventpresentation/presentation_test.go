@@ -1,4 +1,4 @@
-// Tests for provider-independent event presentation and guarded score context.
+// Tests for provider-independent event presentation and timeline-derived score context.
 package eventpresentation
 
 import (
@@ -67,14 +67,22 @@ func TestBuildSuppressesEqualClockGoalsButAdvancesTheirAggregate(t *testing.T) {
 	assertProjection(t, got[later.ID], KindGoal, "Goal", TeamSideHome, &Score{1, 1}, &Score{2, 1})
 }
 
-func TestBuildSuppressesScoresWhenInventoryDoesNotMatchProvider(t *testing.T) {
-	homeScore, awayScore := 2, 0
-	f := &fixture.Fixture{Home: fixture.Team{ID: 10}, Away: fixture.Team{ID: 20}, HomeScore: &homeScore, AwayScore: &awayScore}
+// TestBuildScoresIgnoreAggregateArrivalOrder covers score-first, event-first and unknown scores.
+func TestBuildScoresIgnoreAggregateArrivalOrder(t *testing.T) {
 	goal := makeEvent(1, event.TypeGoal, apifootball.DetailNormalGoal, 10, 10, nil, false)
-
-	projection := Build(f, []*event.Event{goal})[goal.ID]
-	if projection.Presentation.ScoreBefore != nil || projection.Presentation.ScoreAfter != nil {
-		t.Fatalf("mismatched inventory exposed score context: %+v", projection.Presentation)
+	for _, tc := range []struct {
+		name       string
+		home, away *int
+	}{
+		{"aggregate_ahead", intPointer(2), intPointer(0)},
+		{"event_ahead", intPointer(0), intPointer(0)},
+		{"aggregate_unknown", nil, nil},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := &fixture.Fixture{Home: fixture.Team{ID: 10}, Away: fixture.Team{ID: 20}, HomeScore: tc.home, AwayScore: tc.away}
+			projection := Build(f, []*event.Event{goal})[goal.ID]
+			assertProjection(t, projection, KindGoal, "Goal", TeamSideHome, &Score{0, 0}, &Score{1, 0})
+		})
 	}
 }
 
