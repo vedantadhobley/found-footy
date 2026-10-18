@@ -206,7 +206,7 @@ temporarily inaccurate while the observed timeline is incomplete. A directly
 requested removed goal can carry its tentative before/after score, but it never
 advances the score of later surviving events. The
 [timeline decision and consumer handoff](./decisions/2026-10-18-event-scores-follow-observed-timeline.md)
-record the local implementation and separate frontend rollout.
+record the deployed backend policy and separate frontend rollout.
 
 Fixture event arrays are in ascending match-clock order, then first-observed
 and UUID order for deterministic ties. Those final tie-breakers make transport

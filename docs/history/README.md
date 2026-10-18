@@ -5,6 +5,9 @@ preserve sequence and rationale but do not define current behavior or work.
 Use the [`docs` routing index](../README.md) for current ledgers and
 [`todo.md`](../todo.md) for active issues.
 
+- [Control boundary and event-score rollout — October 18 UTC](./control-and-event-score-rollout-2026-10-18.md)
+  — separate source commits, exact production identity, resumed polling,
+  REST/playback acceptance and remaining natural-call/consumer validation.
 - [Explicit CDN-denial rollout — October 16 UTC](./cdn-denial-rollout-2026-10-16.md)
   — exact-denial classification, preserved unknown-403 retries, measured release
   timing and production acceptance without historical data changes.

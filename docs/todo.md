@@ -156,16 +156,18 @@ the current branch.
   recovers an authoritative parent when an `event.update` target or parent is
   missing, and rewrites public media URLs while preserving `share_id`. React
   owns explicit-field sorting, Local/UTC bucketing, and visual composition.
-- **Score policy follow-up (2026-10-18; local, undeployed):** Málaga–Real
+- **Score policy follow-up (backend deployed 2026-10-18 as `02f071a`):** Málaga–Real
   Sociedad `1570418` temporarily had 3–4 stored goals against a 2–4 scoreboard
   during a scorer correction, then a 2–5 scoreboard before the seventh event.
-  The global parity gate blanked every goal's score context. Source now derives
+  The global parity gate blanked every goal's score context. Production now derives
   provisional event boundaries independently, preserves local ambiguity and
   isolates removed historical targets. The consumer must keep a scoreline layout
   with unknown values rather than using its team-only fallback. No schema,
   debounce, completion or NATS change is included. The
   [decision and handoff](./decisions/2026-10-18-event-scores-follow-observed-timeline.md)
-  define the contract and regression cases.
+  define the contract and regression cases. The separate consumer layout change
+  remains pending; the [rollout record](./history/control-and-event-score-rollout-2026-10-18.md)
+  records backend acceptance without a data repair.
 - **Next:** Land and test the Vedanta Systems removal of the underscore adapter,
   then deploy that consumer against the already-live additive contract.
 
@@ -534,7 +536,7 @@ the current branch.
   work-lane/admission follow-up; shared gateway changes need a Control handoff.
   Do not bypass vision, globally extend deadlines, or replay old events as
   part of this diagnostic slice.
-- **Control contract follow-up (2026-10-17; local, undeployed):** Distinguish
+- **Control contract follow-up (deployed 2026-10-18 as `02f071a`):** Distinguish
   429 `capacity_exceeded` from generic limiting and unavailable 503 responses;
   preserve bounded request ID/status/code/retry guidance in the adapter and
   vision evidence. Valid transient `Retry-After` drives Temporal's next delay,
@@ -542,6 +544,8 @@ the current branch.
   enable request-ID correlation. Regression tests cover SDK wire behavior,
   serialization, and exact followers. See the
   [boundary decision](./decisions/2026-10-17-control-errors-and-request-correlation.md).
+  Production identity and health passed; natural request-ID correlation and
+  transient retry-guidance validation remain pending.
 - **Remaining timing boundary:** Control already logs admission `waited_ms`
   and backend dispatch `ms` by request ID. These are not pure GPU execution
   timings. Direct phase metrics here require a separately accepted Control

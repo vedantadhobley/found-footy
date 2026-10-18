@@ -110,7 +110,7 @@ required for those. Rollout and rollback boundaries are in the
 ### OCR request correlation
 
 The [Control-boundary change](./decisions/2026-10-17-control-errors-and-request-correlation.md)
-is local and undeployed. After rollout, use the candidate's `ValidateClip`
+is deployed in `02f071a` (October 18). Use the candidate's `ValidateClip`
 activity result (`ModelResponse.request_id`), its terminal failure detail
 (`failure.model_response.request_id`), or the vision-phase log's
 `model_request_id`. The INFO-level `llm_chat_call` and warning-level

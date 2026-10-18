@@ -1,6 +1,6 @@
 # Control errors and request correlation stay at the HTTP boundary
 
-Status: implemented; production rollout pending.
+Status: deployed October 18 in `02f071a`; implementation commit `423268d`.
 
 ## Context
 
@@ -69,8 +69,11 @@ Temporal server 1.24.3 supports the retry-delay field. Existing Control text log
 also supplied a completed request with `waited_ms=5234` and backend `ms=10866`
 under one request ID. No inference was triggered to obtain that evidence.
 
-These checks validate local source and the existing producer evidence, not a
-deployed end-to-end Found Footy correlation. Production remains unchanged.
+These source checks and existing producer evidence did not trigger inference.
+The [October 18 rollout](../history/control-and-event-score-rollout-2026-10-18.md)
+verified production identity, health and resumed polling. No natural model call
+had arrived at acceptance; deployed request-ID correlation and retry guidance
+still require natural-case validation.
 
 The [operations guide](../operations.md#ocr-request-correlation) owns the read-only
 diagnostic procedure. [FF-087](../todo.md#ff-087--vision-failure-exhaustion-discards-the-actionable-cause)

@@ -1,7 +1,8 @@
 # Event scores follow the observed timeline
 
-Status: implemented; production rollout pending. The Control adapter change is
-a separate slice in the same planned release. Production has not changed.
+Status: backend deployed October 18 as `02f071a`, alongside the separately
+committed Control adapter change. The consumer's stable unknown-score layout
+remains a separate Vedanta Systems change.
 
 ## Evidence
 
@@ -81,4 +82,8 @@ change its survivor's projection.
 
 Both modules passed `make check-short`. Focused race tests passed for event
 presentation, the read API and monitor activities. Documentation links and
-`git diff --check` passed. No production data or service was changed.
+`git diff --check` passed. Source validation changed no production data or service.
+The [rollout record](../history/control-and-event-score-rollout-2026-10-18.md)
+records the later application deployment and read-only acceptance. The sampled
+completed fixture had matching totals; asynchronous disagreement behavior is
+covered by regression tests, not claimed as a live rollout observation.
