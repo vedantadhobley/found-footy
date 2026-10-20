@@ -29,8 +29,8 @@ decision supersedes an older target design).
 - **`docs/design/` — design history and evidence.** Target architecture,
   proposals, and point-in-time audits. Index: [`design/README.md`](./design/README.md).
 - **`archive/docs/` — legacy.** Frozen Python-era docs, next to the
-  Python code they describe (`archive/`). Use them as behavior and rollback
-  evidence; production runs the Go stack.
+  Python code they describe (`archive/`). Use them as historical behavior
+  evidence, not as an operational rollback; production runs the Go stack.
 
 ## As-built ledgers (this directory)
 

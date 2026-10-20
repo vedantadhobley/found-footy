@@ -47,13 +47,15 @@ landed here:
 - **Consulting the legacy Python reference** (archived at cutover; the
   pre-cutover system-of-record) → skip to [§ Python legacy stack](#python-legacy-stack-archived).
 
-**Current branch context**: `rebuild/go` is the active branch AND what
-prod runs. The Python→Go cutover happened **2026-08-15** (see
-[`docs/decisions/README.md`](./docs/decisions/)); prod containers build from
-this branch's `Dockerfile`. `main` still holds the Python codebase as the
-preserved rollback (its data volumes are kept, not wiped). A merge of
-`rebuild/go` → `main` is deliberately held until the Go stack proves a
-clean match-day.
+**Branch and release context:** `main` is the canonical Go development branch.
+The Python→Go production cutover happened **2026-08-15**. Production runs
+immutable commit-tagged images; a branch name or Git promotion is not proof of
+the deployed version and does not deploy code. Verify live release identity.
+The [main-promotion decision](./docs/decisions/2026-10-20-go-development-returns-to-main.md)
+records the preserved Python-era main reference and separate research branches.
+
+This repository is intentionally public. Its visibility is not an unresolved
+privacy issue; do not change it without authorization.
 
 ## Go system (current active work)
 
@@ -182,7 +184,7 @@ with `env_file`.
 
 - Go 1.25 (bumped from 1.23 for air compatibility). Toolchain via container — nothing installed on host.
 - Everything runs in Docker. `make build`, `make test`, `make test-short`, and the check targets all spin pinned `golang:1.25.11-bookworm` throwaway containers with the source bind-mounted.
-- Dev stack: `docker compose -f docker-compose.dev.yml up -d` — air hot-reload on the three Go binaries (worker/api/twitter).
+- Dev stack: `docker compose -f docker-compose.dev.yml up -d` — air hot-reload for worker/API; Twitter uses its dedicated Playwright image.
 - Prod stack: `docker compose -f docker-compose.prod.yml` — **runs the Go stack** (worker/api/twitter on Postgres + Garage) since the 2026-08-15 cutover. Files intentionally renamed from bare `docker-compose.yml` so a stray `docker compose <cmd>` from this directory refuses to resolve.
 - Tests: unit + integration in the same package; integration tests spin real Postgres via testcontainers-go (`/var/run/docker.sock` mounted + `--network=host` in the `test` make target). Skip with `-short`.
 
@@ -198,13 +200,16 @@ with `env_file`.
 ## Python legacy stack (archived)
 
 **Until the 2026-08-15 cutover, prod ran this Python codebase.** The Go
-cutover retired it — prod no longer runs Python. The code stays in the
-tree (under `archive/`), and `main`'s data volumes are preserved, as the
-**rollback path** if the Go stack has to be reverted.
+cutover retired it — prod no longer runs Python. The code under `archive/`
+is historical behavioral reference, not a supported production rollback.
+The current Postgres/Garage schema, migration ledger and Temporal histories
+require an explicitly compatible Go release or a reviewed recovery plan.
 
-Do NOT delete or refactor the Python code from this branch — it's the
-rollback. Its docs below remain the reference for how the pre-cutover
-system behaved (Grafana/Loki queries, edge cases, the RAG pipeline).
+Do not delete or refactor the frozen Python reference without separate
+authorization. Git history preserves it, so keeping it in the working tree
+is not a runtime requirement. Removing legacy source is never authorization
+to remove old containers, volumes or other durable data. Its docs below
+describe the pre-cutover system, not current operational instructions.
 
 **Python stack summary (as it ran pre-cutover — historical):**
 
@@ -217,7 +222,7 @@ system behaved (Grafana/Loki queries, edge cases, the RAG pipeline).
 
 **Where to look for Python legacy context:**
 
-- [`README.md`](./README.md) — public-facing project description (Python-oriented)
+- [`README.md`](./README.md) — current Go project overview and development entry point
 - [`archive/docs/architecture.md`](./archive/docs/architecture.md) — 5-collection MongoDB design + workflow hierarchy
 - [`archive/docs/orchestration.md`](./archive/docs/orchestration.md) — event lifecycle state machine, debouncing
 - [`archive/docs/temporal.md`](./archive/docs/temporal.md) — per-activity timeouts, retries, heartbeats

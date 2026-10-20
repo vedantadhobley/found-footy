@@ -14,6 +14,9 @@ its historical heading anchors valid.
 
 New decisions after the frozen archive:
 
+- [Go development returns to main](./2026-10-20-go-development-returns-to-main.md)
+  — promotes the production-tested Go lineage without rewriting history,
+  preserves independent research, and separates legacy reference from rollback.
 - [Event scores follow the observed timeline](./2026-10-18-event-scores-follow-observed-timeline.md)
   — separates provisional goal boundaries from aggregate scores, keeps genuine
   ambiguity local, and hands off a stable consumer scoreline layout.

@@ -1,4 +1,4 @@
-# air hot-reload config, one file for all three binaries.
+# Air hot-reload config shared by the worker and API dev containers.
 #
 # The BINARY environment variable is set by Dockerfile.dev at build time
 # (from the BINARY build arg). Air expands ${BINARY} in cmd / bin at load
@@ -6,7 +6,7 @@
 #
 #   BINARY=worker  → go build -o ./tmp/worker  ./cmd/worker
 #   BINARY=api     → go build -o ./tmp/api     ./cmd/api
-#   BINARY=twitter → go build -o ./tmp/twitter ./cmd/twitter
+# Twitter uses its dedicated Playwright image, not this hot-reload config.
 #
 # NB: assumes BINARY is set. Only used inside our dev containers where
 # that's guaranteed; not intended for direct host invocation of air.

@@ -597,8 +597,9 @@ extension of a read-only investigation. Before requesting rollout approval:
 4. state schema, object-storage, Temporal-history, and Firefox-fleet
    compatibility;
 5. define observable success and failure markers; and
-6. define a rollback that preserves Postgres, Garage, and the archived Python
-   rollback volumes.
+6. define a compatible rollback or forward recovery that preserves Postgres,
+   Garage, Temporal history and any retained legacy data. The Python archive
+   is historical reference, not a supported rollback target.
 
 The approved application rollout is `make deploy-prod`. It builds the exact
 clean checked-out commit, selects active production event browsers by their

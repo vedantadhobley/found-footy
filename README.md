@@ -8,8 +8,8 @@ deduplication, and ranking before the surviving assets reach
 [vedanta.systems](https://vedanta.systems).
 
 Production has run the Go rebuild since the 2026-08-15 cutover. The retired
-Python implementation remains under [`archive/`](./archive/) as behavior and
-rollback evidence.
+Python implementation remains under [`archive/`](./archive/) as a historical
+behavioral reference, not a supported production rollback.
 
 ## Pipeline
 
@@ -19,9 +19,10 @@ flowchart LR
     INGEST --> EVENT[EventWorkflow]
     EVENT --> SEARCH[Per-event Firefox X search]
     SEARCH --> MEDIA[Download and media filters]
-    MEDIA --> VISION[Gemma 4 vision validation]
-    VISION --> HASH[Dense perceptual hashing]
-    HASH --> STORE[PostgreSQL and Garage]
+    MEDIA --> HASH[Dense perceptual hashing]
+    HASH --> VISION[Gemma 4 vision validation]
+    VISION --> DEDUP[Perceptual deduplication and ranking]
+    DEDUP --> STORE[PostgreSQL and Garage]
     STORE --> FEED[NATS and Chi read API]
     FEED --> UI[vedanta.systems]
 ```
@@ -44,9 +45,15 @@ shipped workflow contracts.
 
 The toolchain runs in Docker; no host Go installation is required.
 
+Before `make dev-up` on a fresh host, follow the
+[deployment prerequisites](./docs/deployment.md#compose-files) and
+[first-time dev bootstrap](./docs/deployment.md#first-time-dev-bootstrap) for
+shared networks, cookie-directory permissions, and Garage provisioning.
+
 ```bash
 cp .env.example .env
 $EDITOR .env
+make hooks
 make dev-up
 ```
 
