@@ -29,7 +29,7 @@ decision supersedes an older target design).
 - **`docs/design/` — design history and evidence.** Target architecture,
   proposals, and point-in-time audits. Index: [`design/README.md`](./design/README.md).
 - **Retired Python source and docs — Git history.** The old `archive/` tree
-  is preserved at revision `4c9971b`; use the retrieval guide above. The frozen
+  is preserved at revision `bfcbc42`; use the retrieval guide above. The frozen
   behavioral specification remains under `docs/design/`. Neither is a supported
   operational rollback; production runs the Go stack.
 
@@ -56,6 +56,9 @@ decision supersedes an older target design).
 
 ## Historical evidence
 
+- [Attribution rewrite](./decisions/2026-10-21-remove-ai-coauthor-trailers.md)
+  — the approved metadata correction, revision map and private-backup recovery
+  boundary; historical production release IDs remain unchanged.
 - [`history/`](./history/) — completed project roadmaps and delivery snapshots.
 - [October restart recovery](./history/restart-recovery-2026-10-05.md) — closed
   FF-103 inference routing and FF-104 Garage recovery with exact validation.

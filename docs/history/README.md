@@ -5,6 +5,10 @@ preserve sequence and rationale but do not define current behavior or work.
 Use the [`docs` routing index](../README.md) for current ledgers and
 [`todo.md`](../todo.md) for active issues.
 
+- [Attribution rewrite revision map](./attribution-rewrite-2026-10-21.tsv)
+  — original-to-rewritten published commit IDs; the
+  [rewrite decision](../decisions/2026-10-21-remove-ai-coauthor-trailers.md)
+  explains recovery, private research coverage and unchanged release labels.
 - [Control boundary and event-score rollout — October 18 UTC](./control-and-event-score-rollout-2026-10-18.md)
   — separate source commits, exact production identity, resumed polling,
   REST/playback acceptance and remaining natural-call/consumer validation.

@@ -205,7 +205,7 @@ with `env_file`.
 
 Python left production on August 15; its `archive/` working tree was removed
 on October 21. The [retirement decision and retrieval guide](./docs/decisions/2026-10-21-retire-python-working-tree.md)
-pins the full source and old documentation to Git revision `4c9971b`.
+pins the full source and old documentation to Git revision `bfcbc42`.
 Historical `archive/...` paths in frozen reports or SQL comments refer to that
 revision, not the current filesystem. The
 [functional specification](./docs/design/python-functional-spec/) remains here.

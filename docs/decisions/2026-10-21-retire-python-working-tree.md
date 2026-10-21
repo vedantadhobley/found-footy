@@ -16,13 +16,13 @@ the current checkout is not an architectural or recovery requirement.
 ## Historical source and retrieval
 
 The complete pre-removal tree is preserved at Git commit
-`4c9971bdc888791cc5a3f8d8d5d1563d0a729840`. Browse its
-[Python source and documentation](https://github.com/vedantadhobley/found-footy/tree/4c9971bdc888791cc5a3f8d8d5d1563d0a729840/archive),
+`bfcbc4247f6c95ab22e75027091b84310ec25438`. Browse its
+[Python source and documentation](https://github.com/vedantadhobley/found-footy/tree/bfcbc4247f6c95ab22e75027091b84310ec25438/archive),
 or inspect an individual file with ordinary Git:
 
 ```bash
-git show 4c9971b:archive/src/activities/monitor.py
-git show 4c9971b:archive/docs/architecture.md
+git show bfcbc42:archive/src/activities/monitor.py
+git show bfcbc42:archive/docs/architecture.md
 ```
 
 Historical `archive/...` paths and line numbers in frozen reports or source

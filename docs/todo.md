@@ -2444,7 +2444,6 @@ the [2026-08-17 Codex audit](./design/audits/audit-2026-08-17-codex.md#prior-aud
 
 | Source | Decision or evidence still required |
 |---|---|
-| Public repository attribution | The October 21 request is to remove Claude co-author trailers from published commits `f17b2bb` and `7d5429d`. This requires rewriting their descendants, not deleting agent configuration. Preserve an offline backup and old-to-new revision map, then agree the exact remote branches/tags and research-worktree recovery plan before any forced update. No history was rewritten in the repository-file cleanup. |
 | Third-party reference licensing | Review redistribution terms and attribution for the frozen API-Football PDF/HTML before treating the public-repository review as complete. The project MIT license does not relicense those materials or discovered footage. |
 | `FF-104` follow-up | Define scheduled Garage metadata snapshots, off-volume backup coverage, and a restore test. The completed repair and enabled syncing do not protect this single-node store against disk loss. |
 | `AUD-0813-CF-153` | Promoted to FF-059: current VNC contradicts the locked raw-Firefox recovery decision; implement and prove the corrected path before waiting for another expiry. |

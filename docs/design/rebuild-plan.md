@@ -11403,7 +11403,7 @@ collide across projects.
 
 **Link text:**
 
-- Descriptive. "See [the dedup design doc](https://github.com/vedantadhobley/found-footy/blob/4c9971bdc888791cc5a3f8d8d5d1563d0a729840/archive/docs/proposals/dedup-unification.md)"
+- Descriptive. "See [the dedup design doc](https://github.com/vedantadhobley/found-footy/blob/bfcbc4247f6c95ab22e75027091b84310ec25438/archive/docs/proposals/dedup-unification.md)"
   beats "See this doc" or bare `./proposals/dedup-unification.md`.
 - Read out of context: if a reader clicks the link and the surrounding
   sentence is invisible, the link text should still tell them where they're

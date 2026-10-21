@@ -79,7 +79,7 @@ Per `internal/domain/event/event.go` `TrackableEventType`:
 Atletico's team ID: the beneficiary, not the player's team. Normal counting by
 `event.team` therefore assigns own goals to the correct side; Go must not swap
 the team. The preserved sample and original analysis live in the archived
-[event-matching proposal](https://github.com/vedantadhobley/found-footy/blob/4c9971bdc888791cc5a3f8d8d5d1563d0a729840/archive/docs/proposals/event-matching.md#api-verification-own-goal-attribution).
+[event-matching proposal](https://github.com/vedantadhobley/found-footy/blob/bfcbc4247f6c95ab22e75027091b84310ec25438/archive/docs/proposals/event-matching.md#api-verification-own-goal-attribution).
 
 ## Open questions the doc doesn't resolve
 

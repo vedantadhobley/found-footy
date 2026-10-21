@@ -17,7 +17,7 @@ is intentionally public.
 
 - Use `main` as the canonical Go integration branch. Preserve the complete
   history through a normal fast-forward push; do not squash or force-push.
-- Preserve the previous local main tip `e70a76b` under the annotated tag
+- Preserve the previous local main tip under the annotated tag
   `archive/python-main`. It includes the older remote main lineage and is a
   source-history reference, not a claimed production image or recovery recipe.
 - Leave `feat/event-identity-v2`, `research/ff081-quality-graph` and

@@ -2657,7 +2657,7 @@ twitter-vnc container — the "MVP first" call from the [T/b.3 phase
 proposal review](../design/proposals/twitter-port.md). The bet was
 that Playwright-instrumented Firefox might be acceptable to Twitter
 at login time, letting us skip Python's raw-Firefox-subprocess trick
-([`archive/twitter/session.py`](https://github.com/vedantadhobley/found-footy/blob/4c9971bdc888791cc5a3f8d8d5d1563d0a729840/archive/twitter/session.py):313
+([`archive/twitter/session.py`](https://github.com/vedantadhobley/found-footy/blob/bfcbc4247f6c95ab22e75027091b84310ec25438/archive/twitter/session.py):313
 `_launch_manual_firefox`). If it worked, T/b.5's fallback code
 wouldn't be needed. If not, we'd know quickly and add it.
 
@@ -2677,7 +2677,7 @@ Live experiment ran during T/b smoke testing:
 
 **Raw-Firefox-subprocess fallback is REQUIRED for the login path.**
 Match Python's design pattern from
-[`archive/twitter/session.py:313`](https://github.com/vedantadhobley/found-footy/blob/4c9971bdc888791cc5a3f8d8d5d1563d0a729840/archive/twitter/session.py#L313):
+[`archive/twitter/session.py:313`](https://github.com/vedantadhobley/found-footy/blob/bfcbc4247f6c95ab22e75027091b84310ec25438/archive/twitter/session.py#L313):
 
 - Login: `pkill firefox` → `firefox --new-instance -profile <dir>
   https://x.com/i/flow/login` via subprocess. Human logs in through
@@ -2699,7 +2699,7 @@ moment cookies fail.
   existing cookies, verify succeeds against x.com/home. The failure
   is at login specifically.
 - **Python's archive documents the same failure mode.**
-  [`docs/audit.md`](https://github.com/vedantadhobley/found-footy/blob/4c9971bdc888791cc5a3f8d8d5d1563d0a729840/archive/docs/audit.md) notes the abandoned
+  [`docs/audit.md`](https://github.com/vedantadhobley/found-footy/blob/bfcbc4247f6c95ab22e75027091b84310ec25438/archive/docs/audit.md) notes the abandoned
   `twitter/auth.py` module attempted automated login via Selenium
   and got accounts banned. Whether Playwright specifically has
   distinguishable fingerprints from Selenium at login time is
@@ -5057,7 +5057,7 @@ all routed through the same `Fixture.Activate(at)` primitive:
 Python-era 15-minute staging API poll, meaning postponements +
 kickoff changes on staging fixtures would go undetected until the
 fixture activated (which may never happen if the new kickoff is far
-out). This was already noted in [`docs/todo.md`](https://github.com/vedantadhobley/found-footy/blob/4c9971bdc888791cc5a3f8d8d5d1563d0a729840/archive/docs/todo.md) as a
+out). This was already noted in [`docs/todo.md`](https://github.com/vedantadhobley/found-footy/blob/bfcbc4247f6c95ab22e75027091b84310ec25438/archive/docs/todo.md) as a
 deferred Go-rebuild item after the 2026-07-05 Mexico vs England
 postponement surfaced the gap.
 

@@ -14,6 +14,9 @@ its historical heading anchors valid.
 
 New decisions after the frozen archive:
 
+- [Remove historical AI co-author trailers](./2026-10-21-remove-ai-coauthor-trailers.md)
+  — records the approved metadata-only rewrite, private recovery backup,
+  public revision map, and unchanged application/release identities.
 - [Retired Python source leaves the working tree](./2026-10-21-retire-python-working-tree.md)
   — removes unused legacy source and caches, preserves exact Git retrieval,
   and leaves production state and schema checksums untouched.

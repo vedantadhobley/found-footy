@@ -6,8 +6,8 @@
 > [`docs/README.md`](../../README.md).
 
 Historical `archive/` paths and line references in this spec refer to the
-[pre-removal Python source snapshot](https://github.com/vedantadhobley/found-footy/tree/4c9971bdc888791cc5a3f8d8d5d1563d0a729840/archive)
-at commit `4c9971bdc888791cc5a3f8d8d5d1563d0a729840`, not the current working
+[pre-removal Python source snapshot](https://github.com/vedantadhobley/found-footy/tree/bfcbc4247f6c95ab22e75027091b84310ec25438/archive)
+at commit `bfcbc4247f6c95ab22e75027091b84310ec25438`, not the current working
 tree. See the [Python working-tree retirement decision](../../decisions/2026-10-21-retire-python-working-tree.md).
 
 ## Preamble
