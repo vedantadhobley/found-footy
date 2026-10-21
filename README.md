@@ -75,6 +75,25 @@ make test-race
 make test-corpus
 ```
 
+## Repository layout
+
+| Path | Purpose |
+|---|---|
+| [`cmd/`](./cmd/), [`internal/`](./internal/) | Application entry points, domain logic, workflows, and adapters. |
+| [`test/`](./test/) | Cross-package contracts and fixture-lifecycle scenarios; package unit tests live beside their Go code. |
+| [`migrations/`](./migrations/) | Immutable, ordered PostgreSQL migrations. |
+| [`operator-ui/`](./operator-ui/) | Independent, read-only video-review tool with its own Go module. |
+| [`scripts/`](./scripts/) | Build, deployment, recovery, and opt-in research tools. |
+| [`docker/`](./docker/), [`caddy/`](./caddy/), `Dockerfile*`, `docker-compose.*.yml`, [`garage.toml`](./garage.toml) | Container builds, routing, and service declarations. |
+| [`go.mod`](./go.mod), [`go.sum`](./go.sum) | Go dependency requirements and integrity checksums; both belong in Git. |
+| [`Makefile`](./Makefile), [`.githooks/`](./.githooks/), [`.golangci.yml`](./.golangci.yml) | Versioned build, test, commit, push, and lint gates. Install hooks with `make hooks`. |
+| [`.editorconfig`](./.editorconfig), [`.air.toml`](./.air.toml) | Editor-neutral formatting and worker/API development hot reload. Personal editor settings are ignored. |
+| [`.env.example`](./.env.example), [`.gitignore`](./.gitignore), [`.dockerignore`](./.dockerignore) | Configuration template and exclusions for secrets, local state, and build inputs. |
+| [`AGENTS.md`](./AGENTS.md), [`CLAUDE.md`](./CLAUDE.md) | Agent instructions; `CLAUDE.md` is a compatibility symlink to the same file, not contributor metadata. |
+
+`main` is the canonical Go branch. Production uses immutable commit-tagged
+images; committing or pushing repository cleanup does not deploy it.
+
 ## Documentation
 
 - [`docs/README.md`](./docs/README.md) — routing index and authority map
@@ -90,4 +109,6 @@ Agents working in this repository must read [`AGENTS.md`](./AGENTS.md) first.
 
 ## License
 
-MIT
+Project source is licensed under the [MIT License](./LICENSE). Third-party
+reference materials retain their own terms. This license does not grant rights
+to discovered football footage.

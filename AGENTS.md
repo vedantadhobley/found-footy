@@ -29,7 +29,10 @@ the surviving clips through the `vedanta-systems` portal via SSE.
 
 ## Cross-cutting context
 
-Workspace-wide rules, node topology, and cross-project decisions live in [`~/workspace/vedanta-dhobley/`](../../vedanta-dhobley/). Every agent session reads its global `AGENTS.md` automatically via symlinks (`~/.claude/CLAUDE.md`, `~/.codex/AGENTS.md`, `~/.gemini/GEMINI.md`); this pointer exists so anyone browsing the repo sees the pattern.
+Workspace-wide rules, node topology, and cross-project decisions live in the
+local `vedanta-dhobley` checkout. The links below are workspace-only operator
+context, not prerequisites for building this public repository. Agent sessions
+read the shared global instructions through their configured user-level files.
 
 - [`AGENTS.md`](../../vedanta-dhobley/AGENTS.md) — operating model, commit conventions, Docker-first policy, host-port scheme, `mem_limit` rules, tailnet FQDN rule, privacy preferences
 - [`docs/topology.md`](../../vedanta-dhobley/docs/topology.md) — aerial view of nodes, services, routing, messaging, roadmap

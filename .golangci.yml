@@ -1,4 +1,4 @@
-# golangci-lint v2 policy for the active Go tree; archive/ is frozen Python.
+# golangci-lint v2 policy for the Git-visible Go modules.
 version: "2"
 
 run:
@@ -38,7 +38,6 @@ linters:
           - errcheck
           - gosec
     paths:
-      - archive
       - vendor
       - migrations
 
@@ -53,6 +52,5 @@ formatters:
   exclusions:
     generated: lax
     paths:
-      - archive
       - vendor
       - migrations

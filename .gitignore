@@ -1,5 +1,5 @@
 # found-footy .gitignore — Go build outputs, local research, dev env, secrets,
-# and artifacts from the retired Python reference.
+# and local Python benchmark artifacts.
 
 # Python
 __pycache__/
@@ -37,6 +37,7 @@ venv.bak/
 
 # IDEs
 .idea/
+.vscode/
 *.swp
 *.swo
 *~

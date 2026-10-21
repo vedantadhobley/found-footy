@@ -8,8 +8,10 @@ owns browser transport and reconnect behavior.
 Implementation authority is
 [`internal/api`](../internal/api/) for HTTP and DTOs, and
 [`internal/infra/event`](../internal/infra/event/) for NATS. The workspace
-schemas under `~/workspace/nats/schemas/` own the shared envelope and payload
-validation; their cross-project ownership is recorded in the
+schemas in the separate NATS workspace own shared envelope and payload
+validation. That checkout is not bundled with this public repository; the
+local path is `~/workspace/nats/schemas/`. Cross-project ownership is recorded
+in the workspace-only
 [dhobley messaging topology](../../../vedanta-dhobley/docs/topology.md#messaging--events).
 
 ## HTTP surface

@@ -18,7 +18,8 @@ the runtime path. It is not the intended search policy.
 Use the secret-free source snapshot helper. The Compose stack has a private
 internal network, no published ports, no application networks/data/cookies,
 explicit memory limits, and disposable PostgreSQL storage. Dependencies must
-already exist in the host Go module cache; the probe cannot download modules.
+already exist in the shared cache under `$HOME/.cache/found-footy`; the probe
+cannot download modules. The cache layout matches the root Makefile.
 
 From the repository root:
 
@@ -56,11 +57,11 @@ default configuration. This does not assert production's namespace setting.
 Compile the test executable in the pinned Go image using the existing caches:
 
 ```sh
-docker run --rm \
+docker run --rm --memory 2g --memory-swap 2g --cpus 2 \
   -e GOCACHE=/gocache -e GOMODCACHE=/gomodcache -e CGO_ENABLED=0 \
   -v "$PWD:/src:ro" \
-  -v /home/vedanta/.cache/found-footy/gocache:/gocache \
-  -v /home/vedanta/.cache/found-footy/gomodcache:/gomodcache \
+  -v "$HOME/.cache/found-footy/gocache:/gocache" \
+  -v "$HOME/.cache/found-footy/gomodcache:/gomodcache" \
   -v /tmp:/out -w /src golang:1.25.11-bookworm \
   go test -buildvcs=false -c -o /out/ff038-browser-probe.bin \
   ./scripts/probe_twitter_admission

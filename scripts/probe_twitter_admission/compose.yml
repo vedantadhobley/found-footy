@@ -55,8 +55,8 @@ services:
     volumes:
       # Git-visible snapshot excludes .env, cookies, .git and ignored forensic data.
       - ${FF038_SOURCE_DIR:?create a secret-free snapshot first}:/src:ro
-      - /home/vedanta/.cache/found-footy/gocache:/gocache
-      - /home/vedanta/.cache/found-footy/gomodcache:/gomodcache
+      - ${HOME:?set HOME to your user directory}/.cache/found-footy/gocache:/gocache
+      - ${HOME:?set HOME to your user directory}/.cache/found-footy/gomodcache:/gomodcache
     command: [go, test, -buildvcs=false, -v, -count=1, -timeout=180s, ./scripts/probe_twitter_admission]
     depends_on:
       temporal:
