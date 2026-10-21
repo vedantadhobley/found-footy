@@ -22,7 +22,10 @@ updates this doc if it introduces a new test tier or pattern.
 | Scenario corpus | `test/scenarios` | YAML-driven fixture lifecycles against real workflow/activity code and test Postgres. |
 | Configuration contract | `internal/config/contract_test.go` | Derives each binary's env ownership from Go tags and checks `.env.example`, both Compose files, environment routing, and cookie-directory mounts. |
 | Release contract | `test/release_contract_test.go` | Parses production Compose without Docker operations and requires immutable identity propagation plus the stack-wide ffmpeg CPU budget. |
-| Tooling contract | `test/tooling_contract_test.go` | Requires exact Go, golangci-lint, and Air versions across build files, the intended commit/push hook targets, and Git-visible isolation between Go modules. |
+| Tooling contract | `test/tooling_contract_test.go` | Requires pinned Go, linter, Air and secret-scanner versions, intended commit/push targets, scanner isolation and Git-visible Go-module scope. |
+
+The [source-security ledger](./security.md) owns the pinned secret-scanner,
+staged/outgoing gates and real offline `make test-secrets` acceptance suite.
 
 The opt-in [FF-038 research probes](../scripts/probe_twitter_admission/README.md)
 use a private disposable Temporal 1.24 stack and network-isolated real Firefox.

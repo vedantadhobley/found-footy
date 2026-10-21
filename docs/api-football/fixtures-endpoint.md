@@ -2,10 +2,9 @@
 
 **Status: Seeded from vendor doc v3.9.3, 2026-07-09.**
 
-**Source**: `docs/api-football/vendor/api-football-v3.9.3.{pdf,html}`
-→ "Fixtures" section (PDF pages 58-62). Live URL:
-<https://www.api-football.com/documentation-v3> (Cloudflare-blocked
-to agents).
+**Source**: [official v3 documentation](https://www.api-football.com/documentation-v3),
+"Fixtures" section (July 9 export pages 58–62). Full exports are optional
+[ignored local references](./README.md#optional-local-exports), not repository inputs.
 
 ## Base URL
 

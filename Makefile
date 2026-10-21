@@ -7,8 +7,10 @@
 #
 GO_VERSION             := 1.25.11
 GOLANGCI_LINT_VERSION  := 2.12.2
+GITLEAKS_VERSION       := 8.30.1
 GO_IMAGE               := golang:$(GO_VERSION)-bookworm
 GOLANGCI_IMAGE         := golangci/golangci-lint:v$(GOLANGCI_LINT_VERSION)-alpine
+GITLEAKS_IMAGE         := ghcr.io/gitleaks/gitleaks:v$(GITLEAKS_VERSION)
 
 CACHE_DIR        := $(HOME)/.cache/found-footy
 DOCKER_ENV       := -e GOCACHE=/gocache -e GOMODCACHE=/gomodcache
@@ -59,7 +61,8 @@ define run_tidy_modules
 	done
 endef
 
-.PHONY: help build check check-short test test-short test-race test-corpus hooks \
+.PHONY: help build check check-short test test-short test-race test-corpus test-secrets hooks \
+        secrets-check secrets-check-staged secrets-check-push \
         lint fmt fmt-check vet tidy tidy-check clean cache-init \
         dev-up dev-down dev-logs dev-restart dev-shell dev-ps \
         twitter-vnc-up twitter-vnc-down twitter-vnc-logs migrate-prod deploy-prod
@@ -95,9 +98,21 @@ test-race: cache-init ## Run tests with the race detector
 test-corpus: cache-init ## Run the scenario harness (test/scenarios/*.yaml)
 	$(GO_TEST_RUN) go test -buildvcs=false -v -run TestScenarios ./test/
 
-check-short: fmt-check tidy-check vet lint test-short ## Run every fast, non-integration gate
+check-short: secrets-check fmt-check tidy-check vet lint test-short ## Run every fast, non-integration gate
 
-check: fmt-check tidy-check vet lint test ## Run every gate, including integration tests
+check: secrets-check fmt-check tidy-check vet lint test-secrets test ## Run every gate, including integration tests
+
+secrets-check: ## Scan Git-visible working files without mounting ignored private state
+	./scripts/check-secrets.sh tree $(GITLEAKS_IMAGE)
+
+secrets-check-staged: ## Scan the actual staged patch before committing
+	./scripts/check-secrets.sh staged $(GITLEAKS_IMAGE)
+
+secrets-check-push: ## Scan outgoing commits supplied by the pre-push hook
+	./scripts/check-secrets.sh push $(GITLEAKS_IMAGE) "$(PUSH_REMOTE)"
+
+test-secrets: ## Verify redaction, staged isolation, and outgoing-history detection offline
+	./scripts/test-secrets.sh $(GITLEAKS_IMAGE)
 
 hooks: ## Install git gates (core.hooksPath → .githooks)
 	git config core.hooksPath .githooks

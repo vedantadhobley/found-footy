@@ -69,6 +69,7 @@ Useful local checks:
 ```bash
 make check-short
 make check
+make secrets-check
 make test-short
 make test
 make test-race
@@ -102,6 +103,7 @@ images; committing or pushing repository cleanup does not deploy it.
 - [`docs/orchestration/`](./docs/orchestration/) — workflow and activity contracts
 - [`docs/deployment.md`](./docs/deployment.md) — Compose, routing, and bootstrap
 - [`docs/operations.md`](./docs/operations.md) — current safety boundary and runbook status
+- [`docs/security.md`](./docs/security.md) — source secret checks and third-party reference policy
 - [`docs/decisions/README.md`](./docs/decisions/) — architectural decision index
 - [`docs/design/README.md`](./docs/design/README.md) — design history and audit evidence
 

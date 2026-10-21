@@ -2444,7 +2444,7 @@ the [2026-08-17 Codex audit](./design/audits/audit-2026-08-17-codex.md#prior-aud
 
 | Source | Decision or evidence still required |
 |---|---|
-| Third-party reference licensing | Review redistribution terms and attribution for the frozen API-Football PDF/HTML before treating the public-repository review as complete. The project MIT license does not relicense those materials or discovered footage. |
+| Historical credential exposure | New staged/outgoing scans do not prove old credentials revoked. October 21 read-only comparison found no historical API value in current config and neither historical Twitter cookie in persisted prod cookies. Owner-side revocation/session review remains; no authenticated validity probe, rotation or history purge ran. See the [source-security ledger](./security.md). |
 | `FF-104` follow-up | Define scheduled Garage metadata snapshots, off-volume backup coverage, and a restore test. The completed repair and enabled syncing do not protect this single-node store against disk loss. |
 | `AUD-0813-CF-153` | Promoted to FF-059: current VNC contradicts the locked raw-Firefox recovery decision; implement and prove the corrected path before waiting for another expiry. |
 | `AUD-TWITTER-COOKIE-WRITER` | Atomic rename prevents corruption, but concurrent fleet writers remain semantic last-writer-wins. Capture real rotation evidence before adding a cross-container lock or single-writer controller. |

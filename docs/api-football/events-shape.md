@@ -2,10 +2,9 @@
 
 **Status: Seeded from vendor doc v3.9.3, 2026-07-09.**
 
-**Source**: `docs/api-football/vendor/api-football-v3.9.3.{pdf,html}`
-→ "Events" section (PDF page 69). Live URL:
-<https://www.api-football.com/documentation-v3> (Cloudflare-blocked
-to agents).
+**Source**: [official v3 documentation](https://www.api-football.com/documentation-v3),
+"Events" section (July 9 export page 69). Full exports are optional
+[ignored local references](./README.md#optional-local-exports), not repository inputs.
 
 Two ways to get events:
 

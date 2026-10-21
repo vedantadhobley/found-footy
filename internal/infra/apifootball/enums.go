@@ -3,8 +3,8 @@
 // (4 values), event details (varies per parent type).
 //
 // Canonical form matches the vendor doc casing exactly — see
-// docs/api-football/vendor/api-football-v3.9.3.pdf for the source
-// of truth. Rationale: log lines + debugging tools show what the
+// docs/api-football/ for attributed summaries and official source
+// links. Rationale: log lines + debugging tools show what the
 // vendor console shows, easy cross-reference during incident triage.
 // Yes, that means `CardRed = "Red card"` (lowercase 'c') — the
 // vendor writes it that way and we mirror.

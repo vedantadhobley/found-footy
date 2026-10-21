@@ -1,6 +1,6 @@
-#!/bin/sh
+#!/usr/bin/env bash
 # go-scope.sh derives Go modules, packages, and files from Git-visible source.
-set -eu
+set -euo pipefail
 
 usage() {
 	printf 'usage: %s modules | files | packages <module> | snapshot <directory>\n' "$0" >&2
@@ -70,9 +70,14 @@ snapshot() {
 		exit 1
 	}
 
-	git_repo ls-files -co --exclude-standard | while IFS= read -r path; do
-		if [ -e "$path" ] || [ -L "$path" ]; then
-			cp -a --parents "$path" "$destination"
+	# NUL paths preserve Unicode, spaces, and newlines. Never recursively copy
+	# a gitlink or nested repository: its ignored secrets are outside our scope.
+	git_repo ls-files -co --exclude-standard -z | while IFS= read -r -d '' path; do
+		if [ -f "$path" ] || [ -L "$path" ]; then
+			cp -a --parents -- "$path" "$destination"
+		elif [ -e "$path" ]; then
+			printf 'snapshot cannot include a directory or special file: %s\n' "$path" >&2
+			exit 1
 		fi
 	done
 }

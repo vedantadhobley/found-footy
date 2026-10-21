@@ -70,7 +70,7 @@ func newMockAPIServer() *mockAPIServer {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/status", func(w http.ResponseWriter, r *http.Request) {
 		// Auth is x-apisports-key on the direct API-Sports endpoint
-		// (docs/api-football/vendor/api-football-v3.9.3.pdf p.1).
+		// (official v3.9.3 docs; see docs/api-football/fixtures-endpoint.md).
 		m.receivedKey = r.Header.Get("x-apisports-key")
 		// Per doc: `X-RateLimit-Remaining` is the PER-MINUTE burst
 		// counter, `x-ratelimit-requests-remaining` (name has "requests")
@@ -100,7 +100,7 @@ func newClientAgainst(t *testing.T, ctx context.Context, baseURL string, fx *tes
 	t.Helper()
 	c, err := apifootball.NewClient(ctx, config.APIFootballConfig{
 		BaseURL: baseURL,
-		APIKey:  "test-key-abc123",
+		APIKey:  "test-key",
 		Timeout: 5 * time.Second,
 	}, fx.ins)
 	if err != nil {
@@ -128,8 +128,8 @@ func TestClient_ConnectsAndSendsAuth(t *testing.T) {
 	fx := newTestFixture()
 	_ = newClientAgainst(t, ctx, m.URL(), fx)
 
-	if m.receivedKey != "test-key-abc123" {
-		t.Errorf("server received x-apisports-key = %q, want test-key-abc123", m.receivedKey)
+	if m.receivedKey != "test-key" {
+		t.Errorf("server received x-apisports-key = %q, want test-key", m.receivedKey)
 	}
 	if !fx.log.HasAction(vocabulary.ModuleInfraAPIFootball, vocabulary.ActionAPIFootballCall) {
 		t.Errorf("expected ActionAPIFootballCall from probe; got %+v", fx.log.Snapshot())

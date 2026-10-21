@@ -22,7 +22,8 @@ func TestToolchainVersionsArePinned(t *testing.T) {
 	makefile := readToolingFile(t, root, "Makefile")
 	goVersion := makeVariable(t, makefile, "GO_VERSION")
 	lintVersion := makeVariable(t, makefile, "GOLANGCI_LINT_VERSION")
-	for name, version := range map[string]string{"Go": goVersion, "golangci-lint": lintVersion} {
+	secretsVersion := makeVariable(t, makefile, "GITLEAKS_VERSION")
+	for name, version := range map[string]string{"Go": goVersion, "golangci-lint": lintVersion, "Gitleaks": secretsVersion} {
 		if !semanticVersion.MatchString(version) {
 			t.Errorf("%s version %q is not an exact semantic version", name, version)
 		}
@@ -33,6 +34,9 @@ func TestToolchainVersionsArePinned(t *testing.T) {
 	}
 	if strings.Contains(makefile, "golangci/golangci-lint:latest") {
 		t.Error("Makefile uses a mutable golangci-lint tag")
+	}
+	if !strings.Contains(makefile, "ghcr.io/gitleaks/gitleaks:v$(GITLEAKS_VERSION)") {
+		t.Error("Makefile does not derive the secret-scanner image from GITLEAKS_VERSION")
 	}
 
 	wantGoImage := "FROM golang:" + goVersion + "-bookworm"
@@ -102,6 +106,37 @@ func TestGitHooksRunEngineeringGates(t *testing.T) {
 	}
 	if !strings.Contains(prePush, "make check") {
 		t.Error("pre-push does not run make check")
+	}
+	if !strings.Contains(preCommit, "make secrets-check-staged") {
+		t.Error("pre-commit does not inspect the actual staged patch")
+	}
+	if !strings.Contains(prePush, "make secrets-check-push") || !strings.Contains(prePush, `PUSH_REMOTE="$1"`) {
+		t.Error("pre-push does not pass the destination and outgoing refs to secret scanning")
+	}
+}
+
+// TestSecretScannerBoundary pins the offline container and redaction contract;
+// make test-secrets separately verifies actual detection with synthetic inputs.
+func TestSecretScannerBoundary(t *testing.T) {
+	root := repositoryRoot(t)
+	script := readToolingFile(t, root, "scripts/check-secrets.sh")
+	for _, required := range []string{
+		"--network none", "--read-only", "--memory 512m", "--memory-swap 512m",
+		"--cpus 2", "--redact=100", "--ignore-gitleaks-allow", "--gitleaks-ignore-path /dev/null",
+		"--diff-merges=first-parent", "--no-ext-diff", "--no-textconv",
+	} {
+		if !strings.Contains(script, required) {
+			t.Errorf("secret scanner boundary is missing %q", required)
+		}
+	}
+	if strings.Contains(script, "/var/run/docker.sock") || strings.Contains(script, "src=$repo_root,dst=") {
+		t.Error("secret scanner must not mount Docker access or the full private working tree")
+	}
+	makefile := readToolingFile(t, root, "Makefile")
+	for _, gate := range []string{"check-short: secrets-check", "check: secrets-check"} {
+		if !strings.Contains(makefile, gate) {
+			t.Errorf("engineering gate missing %q", gate)
+		}
 	}
 }
 

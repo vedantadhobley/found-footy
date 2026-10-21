@@ -14,6 +14,9 @@ its historical heading anchors valid.
 
 New decisions after the frozen archive:
 
+- [Public source security and third-party references](./2026-10-21-public-source-security-and-references.md)
+  — adds isolated staged/outgoing secret gates and keeps full vendor exports
+  local without assuming redistribution rights, deleting bytes or rewriting history.
 - [Remove historical AI co-author trailers](./2026-10-21-remove-ai-coauthor-trailers.md)
   — records the approved metadata-only rewrite, private recovery backup,
   public revision map, and unchanged application/release identities.

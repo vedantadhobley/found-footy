@@ -235,8 +235,8 @@ when `len(_download_workflows) >= 10`.
   ],
   "_s3_videos": [
     {
-      "url": "/video/footy-videos/1234567_a1b2c3d4.mp4",
-      "_s3_key": "1234567_a1b2c3d4.mp4",
+      "url": "/video/footy-videos/<fixture_id>_<md5>.mp4",
+      "_s3_key": "<fixture_id>_<md5>.mp4",
       "perceptual_hash": "dense:0.25:...",
       "resolution_score": 0.95,
       "file_size": 12345678,

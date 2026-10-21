@@ -16,7 +16,7 @@ reconstruct from memory.
 | **Why** a choice was made | [`decisions/README.md`](./decisions/) — current index plus frozen archive |
 | Target designs and point-in-time audit evidence | [`design/`](./design/) |
 | The retired **Python** system | [Historical source and retrieval](./decisions/2026-10-21-retire-python-working-tree.md) and [functional specification](./design/python-functional-spec/) |
-| External API-Football behavior | [`api-football/`](./api-football/) — frozen vendor reference |
+| External API-Football behavior | [`api-football/`](./api-football/) — attributed integration notes and official sources |
 
 Precedence when sources disagree: **code > ledger** (if a ledger is
 wrong, fix the ledger); **decision record > design doc** (a landed
@@ -45,6 +45,8 @@ decision supersedes an older target design).
 - [`temporal.md`](./temporal.md) — Client/Worker adapter + registration flow
 - [`twitter-service.md`](./twitter-service.md) — Playwright search, raw-Firefox login, maintenance, and shared-cookie fleet contract
 - [`testing.md`](./testing.md) — test tiers and git test gates
+- [Public repository security](./security.md) — staged/outgoing secret gates,
+  scanner isolation, historical credential limits and third-party references
 - [`deployment.md`](./deployment.md) — compose files + Caddy + first-time bootstrap
 - [Operator video-evidence UI](../operator-ui/README.md) — removable, read-only
   companion module for retained MD5 review; not part of the public application

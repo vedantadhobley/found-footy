@@ -6,6 +6,8 @@
 # Installed via `make hooks` (sets core.hooksPath).
 set -euo pipefail
 
+printf '\n[pre-push] scan outgoing commits for secrets…\n'
+make secrets-check-push PUSH_REMOTE="$1"
 printf '\n[pre-push] make check (all gates incl. integration tests)…\n'
 make check
 printf '[pre-push] ok\n'

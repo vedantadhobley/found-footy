@@ -6,6 +6,8 @@
 # `make hooks` (sets core.hooksPath).
 set -euo pipefail
 
-printf '\n[pre-commit] make check-short (format + tidy + vet + lint + unit tests)…\n'
+printf '\n[pre-commit] scan staged changes for secrets…\n'
+make secrets-check-staged
+printf '\n[pre-commit] make check-short (secrets + format + tidy + vet + lint + unit tests)…\n'
 make check-short
 printf '[pre-commit] ok — integration tests still run at pre-push\n'

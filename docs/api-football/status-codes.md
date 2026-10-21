@@ -2,9 +2,9 @@
 
 **Status: Seeded from vendor doc v3.9.3, 2026-07-09.**
 
-**Source**: `docs/api-football/vendor/api-football-v3.9.3.{pdf,html}`
-→ "Fixtures" section, "Available fixtures status" table
-(PDF pages 58-59).
+**Source**: [official v3 documentation](https://www.api-football.com/documentation-v3),
+"Available fixtures status" table (July 9 export pages 58–59). Full exports are
+optional [ignored local references](./README.md#optional-local-exports).
 
 ## Full enum (verbatim from page 58-59)
 

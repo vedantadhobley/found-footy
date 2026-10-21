@@ -2,10 +2,9 @@
 
 **Status: partially seeded from vendor doc v3.9.3, 2026-07-09.**
 
-**Source**: `docs/api-football/vendor/api-football-v3.9.3.{pdf,html}`
-→ intro / authentication section (PDF page 3). Live URL:
-<https://www.api-football.com/documentation-v3> (Cloudflare-blocked
-to agents).
+**Source**: [official v3 documentation](https://www.api-football.com/documentation-v3),
+authentication section (July 9 export page 3). Full exports are optional
+[ignored local references](./README.md#optional-local-exports), not repository inputs.
 
 **Not yet extracted from doc**: per-plan quota table (Free / Pro /
 Ultra / Mega). The intro doc pages don't tabulate quotas by tier;
