@@ -6,7 +6,12 @@ rebuild. This directory is not the active backlog; use
 **what's already built**, see the
 as-built ledgers in [`../`](../) (start at [`../README.md`](../README.md),
 the routing index + authority map). For the **legacy Python** system,
-see [`../../archive/docs/`](../../archive/docs/).
+see [the frozen Python docs](https://github.com/vedantadhobley/found-footy/tree/4c9971bdc888791cc5a3f8d8d5d1563d0a729840/archive/docs).
+
+Historical `archive/` paths in these documents refer to the
+[pre-removal source snapshot](https://github.com/vedantadhobley/found-footy/tree/4c9971bdc888791cc5a3f8d8d5d1563d0a729840/archive)
+at commit `4c9971bdc888791cc5a3f8d8d5d1563d0a729840`, not the current working
+tree. See the [Python working-tree retirement decision](../decisions/2026-10-21-retire-python-working-tree.md).
 
 ## Foundational history
 

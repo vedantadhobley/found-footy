@@ -3,9 +3,8 @@
 // plays in league X for the currently-active season," which is what
 // the fixture-fetch filter needs.
 //
-// Mirrors Python's `get_current_season` + `get_teams_for_league` in
-// archive/src/api/api_client.py. Response types are DOMAIN-agnostic —
-// activity code translates to domain team types.
+// Response types are DOMAIN-agnostic; activity code translates them to
+// domain team types. Retired Python source is historical reference only.
 package apifootball
 
 import (
@@ -80,7 +79,7 @@ type APITeamVenue struct {
 // GetCurrentSeason returns the currently-active season year for a
 // league (e.g. 2026 for the 2026-27 season by API convention). Falls
 // back to the most-recent-year season if the API doesn't mark one
-// current — matches Python's fallback (`archive/src/api/api_client.py:174`).
+// current, retaining the historical fallback policy.
 //
 // Returns (0, error) on transport / decode failures. Returns
 // (season, nil) if a season was resolved. Returns (0, nil) with a

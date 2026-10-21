@@ -8,8 +8,8 @@ deduplication, and ranking before the surviving assets reach
 [vedanta.systems](https://vedanta.systems).
 
 Production has run the Go rebuild since the 2026-08-15 cutover. The retired
-Python implementation remains under [`archive/`](./archive/) as a historical
-behavioral reference, not a supported production rollback.
+[Python implementation is preserved in Git](./docs/decisions/2026-10-21-retire-python-working-tree.md)
+as historical reference, not a supported production rollback.
 
 ## Pipeline
 

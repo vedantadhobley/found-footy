@@ -1,6 +1,6 @@
 // hash.go — perceptual (dHash) frame hashing for video dedup. Pure Go:
 // grayscale (ITU-R 601) → histogram equalize → 9×8 area-downscale →
-// difference hash (64 bits). Ported from archive/src/activities/hashing.py.
+// difference hash (64 bits), preserving the historical algorithm.
 // We reproduce the ALGORITHM (grayscale → equalize → downscale → diff), not
 // PIL's exact pixel arithmetic: the rebuild starts on a fresh corpus, so
 // internal consistency + threshold validation on real clusters are what

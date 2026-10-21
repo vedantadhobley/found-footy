@@ -259,8 +259,8 @@ func IngestWorkflow(ctx workflow.Context, in IngestWorkflowInput) (IngestWorkflo
 		}
 		fetchOut = ingest.FetchFixturesOutput{Fixtures: accumulated, Count: len(accumulated)}
 	} else {
-		// By-date scan with smart lookahead. Mirrors Python's
-		// ingest_workflow flow (archive/src/workflows/ingest_workflow.py):
+		// By-date scan with smart lookahead. Preserve the historical
+		// timezone-coverage behavior:
 		//
 		//   1. Always fetch anchor day
 		//   2. If FetchFuture: also fetch anchor+1 (tomorrow — needed for

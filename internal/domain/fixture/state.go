@@ -186,9 +186,8 @@ func cloneInt(value *int) *int {
 //
 // LastActivityAt is intentionally NOT set — a passive poll doesn't
 // count as "activity" for frontend-sort purposes; only Activate/
-// Complete set that field. Matches Python's semantics from
-// archive/src/activities/monitor.py where `_last_activity` is only
-// touched on NS/TBD → live transitions, not on plain staging polls.
+// Complete set that field. Passive staging observations must not reorder
+// fixtures in the frontend.
 //
 // Callers: monitor.PollStagingFixtures activity, when the API poll
 // returns a non-Live status AND the kickoff isn't in the activation

@@ -4,9 +4,9 @@
 // search results, scrolls through the Latest feed, extracts tweets
 // carrying video content, and returns them as VideoRef entries.
 //
-// Design ref: docs/design/proposals/twitter-port.md § T/c. Behavioral
-// invariants ported from archive/twitter/session.py _do_search +
-// archive/twitter/scrape.py per docs/design/python-functional-spec.md.
+// Design ref: docs/design/proposals/twitter-port.md § T/c. Historical
+// behavior is documented in docs/design/python-functional-spec/twitter-service.md;
+// the retired source remains available through the Python-retirement decision.
 //
 // Search flow (top-to-bottom):
 //

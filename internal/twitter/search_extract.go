@@ -108,8 +108,8 @@ func extractUsernameFromURL(u string) string {
 // MinSnowflakeLen is the guard from scrape.py — Twitter snowflakes
 // have been ≥18 digits since ~early 2020. Shorter numeric IDs are
 // upstream X-side rendering quirks for deleted/quoted/edge-case
-// tweets that won't syndicate to a downloadable video. Same threshold
-// as archive/src/activities/download.py.
+// tweets that won't syndicate to a downloadable video. This retains the
+// historical download guard.
 const MinSnowflakeLen = 18
 
 // isTruncatedSnowflake reports whether an ID looks like a truncated

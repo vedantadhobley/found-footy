@@ -39,16 +39,15 @@ type APIFootballConfig struct {
 	// TopFlightCacheHours bounds staleness of `tracked_teams_cache`.
 	// Ingest's step-0 refresh checks the cached league set and the OLDEST
 	// row's refreshed_at against this. A configured-set change refreshes
-	// immediately; otherwise the age bound applies. Mirrors Python's 24h
-	// cache (archive/src/utils/team_data.py:TOP_FLIGHT_CACHE_HOURS).
+	// immediately; otherwise the age bound applies. The default retains
+	// the original 24-hour team-roster cache policy.
 	TopFlightCacheHours int `env:"API_FOOTBALL_TOP_FLIGHT_CACHE_HOURS" envDefault:"24"`
 
 	// FetchWindowFutureDays is the default upper bound on the by-day
 	// scan when smart-lookahead runs. IngestWorkflow always fetches
 	// today + tomorrow; if tomorrow is empty AND FetchFuture=true, it
 	// scans day+2 through day+FetchWindowFutureDays looking for the
-	// next non-empty day. Default 30 matches Python's MAX_LOOKAHEAD_DAYS
-	// (archive/src/workflows/ingest_workflow.py) — long enough to bridge
-	// international breaks and off-season gaps.
+	// next non-empty day. The 30-day default bridges international breaks
+	// and off-season gaps without making the lookahead unbounded.
 	FetchWindowFutureDays int `env:"API_FOOTBALL_FETCH_WINDOW_FUTURE_DAYS" envDefault:"30"`
 }

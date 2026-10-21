@@ -15,22 +15,23 @@ reconstruct from memory.
 | Closed issue and release evidence | [`history/README.md`](./history/) |
 | **Why** a choice was made | [`decisions/README.md`](./decisions/) — current index plus frozen archive |
 | Target designs and point-in-time audit evidence | [`design/`](./design/) |
-| The legacy **Python** system (retired at the 2026-08-15 cutover) | [`../archive/docs/`](../archive/docs/) |
+| The retired **Python** system | [Historical source and retrieval](./decisions/2026-10-21-retire-python-working-tree.md) and [functional specification](./design/python-functional-spec/) |
 | External API-Football behavior | [`api-football/`](./api-football/) — frozen vendor reference |
 
 Precedence when sources disagree: **code > ledger** (if a ledger is
 wrong, fix the ledger); **decision record > design doc** (a landed
 decision supersedes an older target design).
 
-## The three layers
+## Current and historical documentation
 
 - **`docs/` (here) — as-built.** What has actually shipped in the Go
   rebuild. The ledgers below.
 - **`docs/design/` — design history and evidence.** Target architecture,
   proposals, and point-in-time audits. Index: [`design/README.md`](./design/README.md).
-- **`archive/docs/` — legacy.** Frozen Python-era docs, next to the
-  Python code they describe (`archive/`). Use them as historical behavior
-  evidence, not as an operational rollback; production runs the Go stack.
+- **Retired Python source and docs — Git history.** The old `archive/` tree
+  is preserved at revision `4c9971b`; use the retrieval guide above. The frozen
+  behavioral specification remains under `docs/design/`. Neither is a supported
+  operational rollback; production runs the Go stack.
 
 ## As-built ledgers (this directory)
 

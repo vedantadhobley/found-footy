@@ -1,5 +1,8 @@
 # Go development returns to main
 
+The later [Python-source retirement](./2026-10-21-retire-python-working-tree.md)
+supersedes only this decision's working-tree archive retention.
+
 ## Context
 
 The Go system replaced Python in production on August 15. Development continued

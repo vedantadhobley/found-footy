@@ -1,1 +1,0 @@
-"""Found Footy - Temporal Implementation"""

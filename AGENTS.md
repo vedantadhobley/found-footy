@@ -44,8 +44,9 @@ landed here:
 - **Working on the Go system** (what prod runs now) → read [§ Go system](#go-system-current-active-work)
   and [`docs/README.md`](./docs/README.md), then follow its authority map to the
   focused as-built ledger for the subsystem.
-- **Consulting the legacy Python reference** (archived at cutover; the
-  pre-cutover system-of-record) → skip to [§ Python legacy stack](#python-legacy-stack-archived).
+- **Consulting retired Python behavior** → use the
+  [historical source guide](./docs/decisions/2026-10-21-retire-python-working-tree.md)
+  and [functional specification](./docs/design/python-functional-spec/).
 
 **Branch and release context:** `main` is the canonical Go development branch.
 The Python→Go production cutover happened **2026-08-15**. Production runs
@@ -83,7 +84,7 @@ lists.
 - [`docs/design/rebuild-plan.md`](./docs/design/rebuild-plan.md) — historical
   target architecture (§1–§16). Consult it when original rationale matters;
   do not use it as the current implementation contract.
-- [`docs/design/python-functional-spec/`](./docs/design/python-functional-spec/) — behavioral spec of the retired Python system — WHAT it did, not HOW. Use it and `archive/` as parity evidence, not as the current architecture.
+- [`docs/design/python-functional-spec/`](./docs/design/python-functional-spec/) — behavioral spec of the retired Python system — WHAT it did, not HOW. Use it and historical Git source as parity evidence, not as the current architecture.
 - [`docs/design/README.md`](./docs/design/README.md) — routing index for per-topic rebuild docs.
 - [`docs/architecture.md`](./docs/architecture.md) — **as-shipped ledger** of internal/ + cmd/ tree with per-package status.
 - [`docs/orchestration/`](./docs/orchestration/) — **as-shipped ledger** of workflows + activities.
@@ -110,9 +111,9 @@ domain change:
    accepted issue, relevant as-built ledger, decisions, and current code. Verify
    live state when the fact can drift.
 2. **Consult history when it answers a real question.** Use the rebuild plan for
-   original intent and `archive/` Python for prior behavior, never as templates
-   or automatic requirements. Re-verify old audit claims before scheduling
-   them.
+   original intent and retired Python source from Git for prior behavior, never
+   as templates or automatic requirements. Re-verify old audit claims before
+   scheduling them.
 3. **Surface material design changes before coding.** If the requested fix
    requires changing a current contract or recorded decision, propose the new
    invariant and its tradeoffs first. Do not create a silent convention from a
@@ -197,56 +198,28 @@ with `env_file`.
 - **Touching the pg schema**: update the fresh-install snapshot at [`internal/infra/pg/schema.sql`](./internal/infra/pg/schema.sql) and add one immutable ordered SQL file under [`migrations/`](./migrations/). Its first line is `-- schema-hash: <sha256 of schema.sql>`. Migrations must be transaction-safe: no `BEGIN`/`COMMIT` and no concurrent indexes. Never edit a migration once a durable environment has recorded it in `schema_migrations`. Dev Compose runs the one-shot migration gate before worker/API; production uses separately approved `make migrate-prod` before `make deploy-prod`. Run `make test` for every schema change.
 - **Ports**: metrics/healthz on `:8080` per binary. The api read surface is on `:8081` (routes under `/api/v1`). The twitter service exposes `:8888` (API) + `:6080` (VNC, opt-in via the `vnc` compose profile).
 
-## Python legacy stack (archived)
+## Retired Python reference
 
-**Until the 2026-08-15 cutover, prod ran this Python codebase.** The Go
-cutover retired it — prod no longer runs Python. The code under `archive/`
-is historical behavioral reference, not a supported production rollback.
-The current Postgres/Garage schema, migration ledger and Temporal histories
-require an explicitly compatible Go release or a reviewed recovery plan.
+Python left production on August 15; its `archive/` working tree was removed
+on October 21. The [retirement decision and retrieval guide](./docs/decisions/2026-10-21-retire-python-working-tree.md)
+pins the full source and old documentation to Git revision `4c9971b`.
+Historical `archive/...` paths in frozen reports or SQL comments refer to that
+revision, not the current filesystem. The
+[functional specification](./docs/design/python-functional-spec/) remains here.
 
-Do not delete or refactor the frozen Python reference without separate
-authorization. Git history preserves it, so keeping it in the working tree
-is not a runtime requirement. Removing legacy source is never authorization
-to remove old containers, volumes or other durable data. Its docs below
-describe the pre-cutover system, not current operational instructions.
+Python is not a supported production rollback. Recovery must use a compatible
+Go image or a reviewed plan for the exact schema ledger, Garage and Temporal
+state. Source retirement never authorizes deleting containers or durable data.
 
-**Python stack summary (as it ran pre-cutover — historical):**
-
-- **Workers**: Python 3.10 (`python:3.10-slim`), Temporal Python SDK, asyncio. 6 workflows, 42 activities. `docker-compose.prod.yml`.
-- **Application database**: MongoDB 7, 5-collection design — `fixtures_staging` / `fixtures_live` / `fixtures_active` / `fixtures_completed` / `team_aliases`. The Go rebuild moves to Postgres per [`docs/design/rebuild-plan.md`](./docs/design/rebuild-plan.md) §3.
-- **Object storage**: MinIO. The Go rebuild moves to Garage per rebuild-plan.md decisions.md 2026-07-01.
-- **Twitter scraping**: Firefox + Selenium in `twitter/`. Cookies persisted; shared between dev + prod (same account).
-- **External LLM**: Qwen3-VL-8B via llama.cpp on `joi` at `http://llama-small.joi`.
-- **Auto-scaler**: Python sidecar watching Temporal queue depth + MongoDB active-goal count.
-
-**Where to look for Python legacy context:**
-
-- [`README.md`](./README.md) — current Go project overview and development entry point
-- [`archive/docs/architecture.md`](./archive/docs/architecture.md) — 5-collection MongoDB design + workflow hierarchy
-- [`archive/docs/orchestration.md`](./archive/docs/orchestration.md) — event lifecycle state machine, debouncing
-- [`archive/docs/temporal.md`](./archive/docs/temporal.md) — per-activity timeouts, retries, heartbeats
-- [`archive/docs/logging.md`](./archive/docs/logging.md) — Python `footy_logging` reference (Grafana/Loki queries still apply)
-- [`archive/docs/rag.md`](./archive/docs/rag.md) — Wikidata + LLM team-alias pipeline
-- [`archive/docs/twitter-auth.md`](./archive/docs/twitter-auth.md) — browser automation, cookie lifecycle, VNC re-auth
-- [`archive/docs/operations.md`](./archive/docs/operations.md) — Python-era runbook
-- [`docs/decisions/README.md`](./docs/decisions/) — architectural decisions index; the pre-normalization log remains a frozen archive.
-- [`archive/docs/todo.md`](./archive/docs/todo.md) — frozen Python-era work and bug history; re-verify any relevant behavior against the Go system before intake
-- [`archive/docs/roadmap.md`](./archive/docs/roadmap.md), [`archive/docs/sprints.md`](./archive/docs/sprints.md) — historical Python-era delivery plans; no longer production status
-- [`archive/docs/proposals/`](./archive/docs/proposals/) — Python-era feature designs
-- [`archive/deploy/INFRA-NOTES.md`](./archive/deploy/INFRA-NOTES.md) — Caddyfile entries + cross-project network setup
-
-## Documentation and docstrings (both eras)
+## Documentation and docstrings
 
 Three layers of persistence, each for a different knowledge type:
 
-1. **`docs/`** — project-wide knowledge in three layers: **`docs/`**
-   itself is the **as-built** ledger for the Go system (what shipped);
-   **[`docs/design/`](./docs/design/)** is the **target** design
-   (rebuild-plan, proposals, audits); **[`archive/docs/`](./archive/docs/)**
-   is the frozen **legacy Python** knowledge, next to the Python code in
-   `archive/`. Start at [`docs/README.md`](./docs/README.md) — the routing
-   index + authority map (which source of truth answers which question).
+1. **`docs/`** — project-wide knowledge. The focused ledgers describe the
+   Go system as built; **[`docs/design/`](./docs/design/)** preserves proposals,
+   audits and the frozen Python behavioral specification. Retired Python
+   implementation and documentation remain in Git. Start at
+   [`docs/README.md`](./docs/README.md) for the routing index and authority map.
 2. **Code-level docstrings + per-file header comments** — every file
    gets a top-of-file comment describing what it is; every
    function/method/class gets a docstring. Doc-heavy by design.

@@ -14,6 +14,9 @@ its historical heading anchors valid.
 
 New decisions after the frozen archive:
 
+- [Retired Python source leaves the working tree](./2026-10-21-retire-python-working-tree.md)
+  — removes unused legacy source and caches, preserves exact Git retrieval,
+  and leaves production state and schema checksums untouched.
 - [Go development returns to main](./2026-10-20-go-development-returns-to-main.md)
   — promotes the production-tested Go lineage without rewriting history,
   preserves independent research, and separates legacy reference from rollback.

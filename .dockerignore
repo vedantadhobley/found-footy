@@ -7,9 +7,6 @@
 .gitignore
 .gitattributes
 
-# Python archive — not part of Go builds
-archive/
-
 # Build outputs + caches
 tmp/
 bin/

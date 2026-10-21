@@ -2,9 +2,8 @@
 // Activities errors.Is against these to classify a candidate's failure
 // (deleted / geo-blocked / rate-limited / CDN-forbidden / CDN-timeout / malformed URL /
 // truncated snowflake) and record the right outcome_class, rather than
-// treating every failure as a generic retryable blip. Mirrors Python's
-// VideoNotAvailableError / VideoGeoRestrictedError / VideoCDNTimeoutError /
-// VideoMalformedURLError classes (archive/src/activities/download.py).
+// treating every failure as a generic retryable blip. The typed classes
+// retain the historical availability/geo/timeout/URL distinctions.
 package syndication
 
 import "errors"

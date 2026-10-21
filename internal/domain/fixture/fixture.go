@@ -69,10 +69,8 @@ func (a APIStatus) Terminal() bool {
 // resume any minute" codes: SUSP (suspended), INT (interrupted), and
 // PST (postponed).
 //
-// Matches Python's classification per archive/src/utils/fixture_status.py:
-// "PST is treated as ACTIVE, not completed! Short delays (15-30 min)
-//
-//	are common and the match may still happen the same day."
+// PST retains active-cadence polling because a short postponement can
+// still resume on the same day.
 //
 // Consequences downstream:
 //   - ActivePollWorkflow polls Live()==true fixtures at active cadence via the

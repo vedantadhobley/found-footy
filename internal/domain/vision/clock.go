@@ -1,8 +1,7 @@
-// clock.go — broadcast-clock field parsers + the match-period map. Ported
-// from archive/src/activities/vision.py (parse_clock_field / parse_added_field
-// / parse_stoppage_clock_field / compute_absolute_minute) with the
-// period-awareness the Python version lacked. Pure + table-tested: no I/O,
-// no model, no infra. The vision model reads raw digits off the scorebug;
+// clock.go — broadcast-clock field parsers + the match-period map, with
+// period-awareness beyond the retired Python implementation. Pure and
+// table-tested: no I/O, model or infrastructure dependencies.
+// The vision model reads raw digits off the scorebug;
 // this file turns those digits into an absolute match minute + a period so
 // evaluate.go can validate them against the API's reported time.
 package vision

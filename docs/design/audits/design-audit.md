@@ -8,7 +8,7 @@ A holistic look at what found-footy is, what it does well, what it does
 clumsily, and which clumsy parts are missing a *primitive* (vs which are
 just legacy inertia or solved-but-undeployed). Companion to:
 
-- [`audit.md`](../../../archive/docs/audit.md) — file-level correctness audit (May 2026,
+- [`audit.md`](https://github.com/vedantadhobley/found-footy/blob/4c9971bdc888791cc5a3f8d8d5d1563d0a729840/archive/docs/audit.md) — file-level correctness audit (May 2026,
   ~50 findings still mostly open). Asks "what's wrong at this line?"
 - [`roadmap.md`](../../history/roadmap-2026-08-15.md) — the committed 7-phase rewrite plan.
   Asks "what do we ship this quarter?"
@@ -1586,7 +1586,7 @@ that requires a live x.com or a live joi to pass isn't a real test.
 **Current state.** ~5% coverage. `tests/test_clock_parsing.py` and
 `tests/test_activity_registration.py` are the only real tests.
 `tests/test_rag_pipeline.py` is broken at import (per May
-[`audit.md`](../../../archive/docs/audit.md)). No fixtures, no factories, no synthetic
+[`audit.md`](https://github.com/vedantadhobley/found-footy/blob/4c9971bdc888791cc5a3f8d8d5d1563d0a729840/archive/docs/audit.md)). No fixtures, no factories, no synthetic
 end-to-end harness. The dev stack is the de-facto test environment;
 "does it work?" is answered by ingesting a fixture and watching a
 real match.
@@ -1612,7 +1612,7 @@ real match.
    write that would have exercised it; the fix sat uncommitted
    because there was no signal it worked.
 4. **The 2026-06-30 video-rank-drift bug** (added to
-   [`todo.md`](../../../archive/docs/todo.md)) is exactly the kind of partial-write /
+   [`todo.md`](https://github.com/vedantadhobley/found-footy/blob/4c9971bdc888791cc5a3f8d8d5d1563d0a729840/archive/docs/todo.md)) is exactly the kind of partial-write /
    race condition a unit test of `recalculate_video_ranks` against a
    range of synthetic inputs would have caught. None exists.
 5. **No regression catch on the 2026-06-30 deploy gap.** When

@@ -1,9 +1,14 @@
 # Python Functional Specification — found-footy
 
 > **Frozen legacy behavior reference.** This describes the retired Python
-> system, not production and not the Go architecture. Use it with `archive/`
-> only when prior behavior or parity is relevant. Current authority starts at
+> system, not production and not the Go architecture. Use it with the historical
+> source below only when prior behavior or parity is relevant. Current authority starts at
 > [`docs/README.md`](../../README.md).
+
+Historical `archive/` paths and line references in this spec refer to the
+[pre-removal Python source snapshot](https://github.com/vedantadhobley/found-footy/tree/4c9971bdc888791cc5a3f8d8d5d1563d0a729840/archive)
+at commit `4c9971bdc888791cc5a3f8d8d5d1563d0a729840`, not the current working
+tree. See the [Python working-tree retirement decision](../../decisions/2026-10-21-retire-python-working-tree.md).
 
 ## Preamble
 
@@ -30,7 +35,7 @@ of intent (with any deliberate divergences flagged in
 
 **Cross-references:** Numbered sections retain the original monolithic spec's
 section numbers across the topic files below. When a section cites a file like
-`archive/src/workflows/twitter_workflow.py:249-284`, that's a live
+`archive/src/workflows/twitter_workflow.py:249-284`, that's a historical
 code location. When it says "UNCLEAR from code, would need to test,"
 it means the code is ambiguous or the behavior is undocumented and
 the Go rewrite team should determine intent from the user before
